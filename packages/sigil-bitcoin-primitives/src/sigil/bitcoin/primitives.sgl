@@ -1,0 +1,77 @@
+;;; (sigil bitcoin primitives) — Bitcoin hash combinators
+;;;
+;;; Pure Sigil library providing HASH160, HASH256, and BIP-340 tagged hashes.
+;;;
+;;; ```scheme
+;;; (import (sigil bitcoin primitives))
+;;; (hash160 #u8(0 1 2 3))  ; => 20-byte bytevector
+;;; (hash256 #u8(0 1 2 3))  ; => 32-byte bytevector
+;;; (tagged-hash "MyTag" #u8(0 1 2 3))  ; => 32-byte bytevector
+;;; ```
+
+(define-library (sigil bitcoin primitives)
+  (import (sigil crypto))
+  (export
+    hash160
+    hash256
+    tagged-hash
+    ;; Common tag constants per BIP 340
+    bip0340/challenge
+    bip0340/aux
+    bip0340/nonce
+    taproot/elements)
+  (begin
+
+    ;; ── HASH160 (Bitcoin address hash) ───────────────────────
+
+    ;;; Compute HASH160 = RIPEMD160(SHA256(data)).
+    ;;;
+    ;;; Returns a 20-byte bytevector.
+    ;;; Used for P2PKH and P2SH address derivation.
+    ;;;
+    ;;; ```scheme
+    ;;; (hash160 "hello")
+    ;;; (hash160 #u8(0 1 2 3))
+    ;;; ```
+    (define (hash160 data)
+      (ripemd160 (sha256-bytes data)))
+
+    ;; ── HASH256 (double SHA-256) ─────────────────────────────
+
+    ;;; Compute HASH256 = SHA256(SHA256(data)).
+    ;;;
+    ;;; Returns a 32-byte bytevector.
+    ;;; Used for transaction IDs (txid) and block hashes.
+    ;;;
+    ;;; ```scheme
+    ;;; (hash256 "hello")
+    ;;; (hash256 #u8(0 1 2 3))
+    ;;; ```
+    (define (hash256 data)
+      (sha256-bytes (sha256-bytes data)))
+
+    ;; ── Tagged Hashes (BIP 340) ──────────────────────────────
+
+    ;; Common BIP 340 tag strings
+    (define bip0340/challenge  "BIP0340/challenge")
+    (define bip0340/aux        "BIP0340/aux")
+    (define bip0340/nonce      "BIP0340/nonce")
+
+    ;; BIP 341 / taproot tags
+    (define taproot/elements   "TapRoot/elements")
+
+    ;;; Compute a BIP-340 tagged hash.
+    ;;;
+    ;;; tagged_hash(tag, x) = SHA256(SHA256(tag) || SHA256(tag) || x)
+    ;;;
+    ;;; `tag` is a UTF-8 string (e.g. "BIP0340/challenge").
+    ;;; `x` is a bytevector. Returns a 32-byte bytevector.
+    ;;;
+    ;;; ```scheme
+    ;;; (tagged-hash "MyApp/v1" #u8(0 1 2 3))
+    ;;; ```
+    (define (tagged-hash tag x)
+      (let ((tag-hash (sha256-bytes tag)))
+        (sha256-bytes (bytevector-append tag-hash tag-hash x))))
+    ))
+

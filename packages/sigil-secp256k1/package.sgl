@@ -1,0 +1,23 @@
+;;; sigil-secp256k1 — secp256k1 ECDSA + Schnorr via FFI
+;;;
+;;; Requires libsecp256k1.so at runtime (available in Guix).
+
+(package
+  name: "sigil-secp256k1"
+  version: "0.1.0"
+  sigil: "^0.15"
+  description: "secp256k1 ECDSA + Schnorr bindings via FFI"
+  url: "https://codeberg.org/sigil/sigil-bitcoin"
+  license: "BSD-3-Clause"
+
+  dependencies: (list
+    "sigil-crypto"
+    "sigil-ffi")
+
+  tasks: (list
+    (task
+      name: 'build
+      description: "Build sigil-secp256k1"
+      steps: (list
+        (compile-sigil-modules
+          sources: "src/**/*.sgl")))))

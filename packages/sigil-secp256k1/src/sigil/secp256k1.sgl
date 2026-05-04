@@ -1,0 +1,325 @@
+;;; (sigil secp256k1) — Bytevector-based bindings to libsecp256k1
+;;;
+;;; Wraps the low-level sigil-ffi with bytevector inputs and outputs.
+;;; Binds all C functions once at module load time.
+;;;
+;;; ```scheme
+;;; (import (sigil secp256k1) (sigil crypto))
+;;; (let* ((seckey (random-bytes 32))
+;;;        (pubkey (secp256k1-pubkey-create seckey))
+;;;        (msg32  (sha256-bytes "message"))
+;;;        (sig    (secp256k1-ecdsa-sign seckey msg32)))
+;;;   (secp256k1-ecdsa-verify sig msg32 pubkey))  ;; => #t
+;;; ```
+
+(define-library (sigil secp256k1)
+  (import (sigil ffi) (sigil crypto))
+  (export
+    secp256k1-seckey-verify?
+    secp256k1-pubkey-create
+    secp256k1-pubkey-parse
+    secp256k1-pubkey-tweak-add
+    secp256k1-seckey-tweak-add
+    secp256k1-ecdsa-sign
+    secp256k1-ecdsa-verify
+    secp256k1-ecdsa-signature-parse-der
+    secp256k1-ecdsa-signature-serialize-der
+    secp256k1-schnorrsig-sign32
+    secp256k1-schnorrsig-verify
+    secp256k1-keypair-create
+    secp256k1-keypair-pub
+    secp256k1-keypair-xonly-pub
+    secp256k1-keypair-xonly-pub-with-parity)
+
+  (begin
+
+    ;; ── Library handle ────────────────────────────────────────
+    (define %lib (c-library "libsecp256k1"))
+
+    ;; ── Pre-bound C functions ─────────────────────────────────
+    (define %context-create
+      (c-function %lib "secp256k1_context_create"
+        (list ffi/uint) ffi/pointer))
+    (define %context-destroy
+      (c-function %lib "secp256k1_context_destroy"
+        (list ffi/pointer) ffi/void))
+    (define %context-randomize
+      (c-function %lib "secp256k1_context_randomize"
+        (list ffi/pointer ffi/pointer) ffi/int))
+
+    (define %ec-seckey-verify
+      (c-function %lib "secp256k1_ec_seckey_verify"
+        (list ffi/pointer ffi/pointer) ffi/int))
+    (define %ec-pubkey-create
+      (c-function %lib "secp256k1_ec_pubkey_create"
+        (list ffi/pointer ffi/pointer ffi/pointer) ffi/int))
+    (define %ec-pubkey-parse
+      (c-function %lib "secp256k1_ec_pubkey_parse"
+        (list ffi/pointer ffi/pointer ffi/pointer ffi/size-t) ffi/int))
+    (define %ec-pubkey-serialize
+      (c-function %lib "secp256k1_ec_pubkey_serialize"
+        (list ffi/pointer ffi/pointer ffi/pointer ffi/pointer ffi/uint) ffi/int))
+    (define %ec-pubkey-tweak-add
+      (c-function %lib "secp256k1_ec_pubkey_tweak_add"
+        (list ffi/pointer ffi/pointer ffi/pointer) ffi/int))
+    (define %ec-seckey-tweak-add
+      (c-function %lib "secp256k1_ec_seckey_tweak_add"
+        (list ffi/pointer ffi/pointer ffi/pointer) ffi/int))
+
+    (define %ecdsa-sign
+      (c-function %lib "secp256k1_ecdsa_sign"
+        (list ffi/pointer ffi/pointer ffi/pointer ffi/pointer
+              ffi/pointer ffi/pointer) ffi/int))
+    (define %ecdsa-verify
+      (c-function %lib "secp256k1_ecdsa_verify"
+        (list ffi/pointer ffi/pointer ffi/pointer ffi/pointer) ffi/int))
+    (define %ecdsa-sig-parse-compact
+      (c-function %lib "secp256k1_ecdsa_signature_parse_compact"
+        (list ffi/pointer ffi/pointer ffi/pointer) ffi/int))
+    (define %ecdsa-sig-serialize-compact
+      (c-function %lib "secp256k1_ecdsa_signature_serialize_compact"
+        (list ffi/pointer ffi/pointer ffi/pointer) ffi/int))
+    (define %ecdsa-sig-parse-der
+      (c-function %lib "secp256k1_ecdsa_signature_parse_der"
+        (list ffi/pointer ffi/pointer ffi/pointer ffi/size-t) ffi/int))
+    (define %ecdsa-sig-serialize-der
+      (c-function %lib "secp256k1_ecdsa_signature_serialize_der"
+        (list ffi/pointer ffi/pointer ffi/pointer ffi/pointer) ffi/int))
+
+    (define %schnorrsig-sign32
+      (c-function %lib "secp256k1_schnorrsig_sign32"
+        (list ffi/pointer ffi/pointer ffi/pointer ffi/pointer ffi/pointer) ffi/int))
+    (define %schnorrsig-verify
+      (c-function %lib "secp256k1_schnorrsig_verify"
+        (list ffi/pointer ffi/pointer ffi/pointer ffi/size-t ffi/pointer) ffi/int))
+
+    (define %keypair-create
+      (c-function %lib "secp256k1_keypair_create"
+        (list ffi/pointer ffi/pointer ffi/pointer) ffi/int))
+    (define %keypair-pub
+      (c-function %lib "secp256k1_keypair_pub"
+        (list ffi/pointer ffi/pointer ffi/pointer) ffi/int))
+    (define %keypair-xonly-pub
+      (c-function %lib "secp256k1_keypair_xonly_pub"
+        (list ffi/pointer ffi/pointer ffi/pointer ffi/pointer) ffi/int))
+
+    ;; ── Shared context (lazy, auto-seeded) ────────────────────
+    (define %ctx (delay
+      (let ((c (%context-create 257)))     ;; SIGN | VERIFY
+        (%context-randomize c (bytevector->pointer (random-bytes 32)))
+        c)))
+
+    ;; ── Helpers ───────────────────────────────────────────────
+
+    (define (seckey-32? bv)
+      (and (bytevector? bv) (= 32 (bytevector-length bv))))
+
+    (define (check1 name ret)
+      (unless (= 1 ret) (error name "failed")))
+
+    (define (pubkey-serialize pk-ptr compressed?)
+      (let* ((flags (if compressed? 258 260))
+             (size  (if compressed? 33 65))
+             (out   (make-bytevector size 0))
+             (olen  (make-bytevector 8 0)))
+        (pointer-set! (bytevector->pointer olen) ffi/size-t 0 size)
+        (check1 "pubkey-serialize"
+                (%ec-pubkey-serialize (force %ctx) (bytevector->pointer out)
+                                      (bytevector->pointer olen) pk-ptr flags))
+        out))
+
+    ;; ── Key validation ───────────────────────────────────────
+
+    ;;; Validate a 32-byte secret key.
+    ;;;
+    ;;; Returns #t if in range [1, n-1], #f otherwise.
+    (define (secp256k1-seckey-verify? seckey)
+      (and (seckey-32? seckey)
+           (= 1 (%ec-seckey-verify (force %ctx)
+                                   (bytevector->pointer seckey)))))
+
+    ;; ── Public key derivation ─────────────────────────────────
+
+    ;;; Derive a 33-byte compressed public key from a 32-byte secret key.
+    ;;;
+    ;;; ```scheme
+    ;;; (secp256k1-pubkey-create (random-bytes 32))
+    ;;; ```
+    (define (secp256k1-pubkey-create seckey)
+      (unless (seckey-32? seckey) (error "secp256k1-pubkey-create: expected 32-byte seckey"))
+      (let ((pk (c-alloc 64)))
+        (check1 "secp256k1-pubkey-create"
+                (%ec-pubkey-create (force %ctx) pk (bytevector->pointer seckey)))
+        (let ((result (pubkey-serialize pk #t)))
+          (c-free pk)
+          result)))
+
+    ;;; Parse a 33-byte or 65-byte serialized public key into
+    ;;; an internal 64-byte buffer.
+    ;;;
+    ;;; Returns a bytevector or #f on parse failure.
+    (define (secp256k1-pubkey-parse pubkey-bv)
+      (let ((pk (c-alloc 64)))
+        (if (= 1 (%ec-pubkey-parse (force %ctx) pk
+                                   (bytevector->pointer pubkey-bv)
+                                   (bytevector-length pubkey-bv)))
+            (pointer->bytevector pk 64)
+            (begin (c-free pk) #f))))
+
+    ;; ── Tweaking (BIP32) ─────────────────────────────────────
+
+    (define (secp256k1-pubkey-tweak-add pubkey-bv tweak32)
+      (let ((pk-in (secp256k1-pubkey-parse pubkey-bv)))
+        (unless pk-in (error "secp256k1-pubkey-tweak-add: invalid pubkey"))
+        (check1 "secp256k1-pubkey-tweak-add"
+                (%ec-pubkey-tweak-add (force %ctx)
+                                      (bytevector->pointer pk-in)
+                                      (bytevector->pointer tweak32)))
+        pk-in))
+
+    (define (secp256k1-seckey-tweak-add seckey tweak32)
+      (unless (seckey-32? seckey) (error "secp256k1-seckey-tweak-add: expected 32-byte seckey"))
+      (let ((sk (bytevector-copy seckey 0 32)))
+        (check1 "secp256k1-seckey-tweak-add"
+                (%ec-seckey-tweak-add (force %ctx)
+                                      (bytevector->pointer sk)
+                                      (bytevector->pointer tweak32)))
+        sk))
+
+    ;; ── ECDSA ─────────────────────────────────────────────────
+
+    ;;; Sign a 32-byte message hash with a 32-byte secret key.
+    ;;;
+    ;;; Returns a 64-byte compact signature (r || s).
+    ;;; noncefp and ndata are passed as #f (NULL) for default nonce.
+    (define (secp256k1-ecdsa-sign seckey msghash32)
+      (unless (seckey-32? seckey) (error "secp256k1-ecdsa-sign: expected 32-byte seckey"))
+      (let ((sig (c-alloc 64)))
+        (check1 "secp256k1-ecdsa-sign"
+                (%ecdsa-sign (force %ctx) sig
+                             (bytevector->pointer msghash32)
+                             (bytevector->pointer seckey)
+                             #f #f))
+        (let ((out (make-bytevector 64 0)))
+          (check1 "secp256k1-ecdsa-sign serialize"
+                  (%ecdsa-sig-serialize-compact (force %ctx)
+                                                (bytevector->pointer out) sig))
+          (c-free sig)
+          out)))
+
+    ;;; Verify a 64-byte compact ECDSA signature.
+    ;;;
+    ;;; `pubkey` must be a 33-byte or 65-byte serialized public key.
+    (define (secp256k1-ecdsa-verify sig64 msghash32 pubkey-bv)
+      (let ((pk (secp256k1-pubkey-parse pubkey-bv)))
+        (unless pk (error "secp256k1-ecdsa-verify: invalid pubkey"))
+        (let ((sig (c-alloc 64)))
+          (check1 "secp256k1-ecdsa-verify parse"
+                  (%ecdsa-sig-parse-compact (force %ctx) sig
+                                            (bytevector->pointer sig64)))
+          (let ((result (= 1 (%ecdsa-verify (force %ctx) sig
+                                            (bytevector->pointer msghash32)
+                                            (bytevector->pointer pk)))))
+            (c-free sig)
+            result))))
+
+    ;;; Parse a DER-encoded ECDSA signature to 64-byte compact.
+    (define (secp256k1-ecdsa-signature-parse-der der-bv)
+      (let ((sig (c-alloc 64)))
+        (check1 "secp256k1-ecdsa-signature-parse-der"
+                (%ecdsa-sig-parse-der (force %ctx) sig
+                                      (bytevector->pointer der-bv)
+                                      (bytevector-length der-bv)))
+        (let ((out (make-bytevector 64 0)))
+          (%ecdsa-sig-serialize-compact (force %ctx)
+                                        (bytevector->pointer out) sig)
+          (c-free sig)
+          out)))
+
+    ;;; Serialize a 64-byte compact ECDSA signature to DER.
+    (define (secp256k1-ecdsa-signature-serialize-der sig64)
+      (let ((sig (c-alloc 64)))
+        (check1 "secp256k1-ecdsa-signature-serialize-der parse"
+                (%ecdsa-sig-parse-compact (force %ctx) sig
+                                          (bytevector->pointer sig64)))
+        (let ((out (make-bytevector 72 0))
+              (olen (make-bytevector 8 0)))
+          (pointer-set! (bytevector->pointer olen) ffi/size-t 0 72)
+          (check1 "secp256k1-ecdsa-signature-serialize-der serialize"
+                  (%ecdsa-sig-serialize-der (force %ctx)
+                                            (bytevector->pointer out)
+                                            (bytevector->pointer olen) sig))
+          (c-free sig)
+          (let ((len (pointer-ref (bytevector->pointer olen) ffi/size-t 0)))
+            (bytevector-copy out 0 len)))))
+
+    ;; ── Schnorr (BIP 340) ─────────────────────────────────────
+
+    ;;; Sign a 32-byte message with a 96-byte keypair.
+    ;;;
+    ;;; Returns a 64-byte Schnorr signature. Uses aux_rand for
+    ;;; additional nonce randomness.
+    (define (secp256k1-schnorrsig-sign32 keypair-bv msg32)
+      (let ((sig (c-alloc 64)))
+        (check1 "secp256k1-schnorrsig-sign32"
+                (%schnorrsig-sign32 (force %ctx) sig
+                                    (bytevector->pointer msg32)
+                                    (bytevector->pointer keypair-bv)
+                                    (bytevector->pointer (random-bytes 32))))
+        (let ((result (pointer->bytevector sig 64)))
+          (c-free sig)
+          result)))
+
+    ;;; Verify a 64-byte Schnorr signature.
+    ;;;
+    ;;; `msg` may be a variable-length message bytevector.
+    ;;; `xonly-pubkey` must be a 64-byte x-only public key.
+    (define (secp256k1-schnorrsig-verify sig64 msg-bv xonly-pubkey-bv)
+      (= 1 (%schnorrsig-verify (force %ctx) (bytevector->pointer sig64)
+                               (bytevector->pointer msg-bv)
+                               (bytevector-length msg-bv)
+                               (bytevector->pointer xonly-pubkey-bv))))
+
+    ;; ── Keypair (BIP 340 / taproot) ───────────────────────────
+
+    ;;; Create a 96-byte keypair from a 32-byte secret key.
+    (define (secp256k1-keypair-create seckey)
+      (unless (seckey-32? seckey) (error "secp256k1-keypair-create: expected 32-byte seckey"))
+      (let ((kp (c-alloc 96)))
+        (check1 "secp256k1-keypair-create"
+                (%keypair-create (force %ctx) kp (bytevector->pointer seckey)))
+        (pointer->bytevector kp 96)))
+
+    ;;; Extract the 33-byte compressed public key from a 96-byte keypair.
+    (define (secp256k1-keypair-pub keypair-bv)
+      (let ((pk (c-alloc 64)))
+        (check1 "secp256k1-keypair-pub"
+                (%keypair-pub (force %ctx) pk (bytevector->pointer keypair-bv)))
+        (let ((result (pubkey-serialize pk #t)))
+          (c-free pk)
+          result)))
+
+    ;;; Extract the 64-byte x-only public key from a 96-byte keypair.
+    (define (secp256k1-keypair-xonly-pub keypair-bv)
+      (let ((xonly (c-alloc 64)))
+        (check1 "secp256k1-keypair-xonly-pub"
+                (%keypair-xonly-pub (force %ctx) xonly #f
+                                    (bytevector->pointer keypair-bv)))
+        (pointer->bytevector xonly 64)))
+
+    ;;; Extract x-only public key and parity bit from a keypair.
+    ;;;
+    ;;; Returns `(cons xonly-bv parity)` where parity is 0 or 1.
+    (define (secp256k1-keypair-xonly-pub-with-parity keypair-bv)
+      (let ((xonly  (c-alloc 64))
+            (parity (c-alloc 4)))
+        (pointer-set! parity ffi/int 0 0)
+        (check1 "secp256k1-keypair-xonly-pub-with-parity"
+                (%keypair-xonly-pub (force %ctx) xonly parity
+                                    (bytevector->pointer keypair-bv)))
+        (let ((result (cons (pointer->bytevector xonly 64)
+                            (pointer-ref parity ffi/int 0))))
+          (c-free xonly)
+          (c-free parity)
+          result)))
+    ))

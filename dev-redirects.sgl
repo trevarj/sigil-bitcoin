@@ -1,0 +1,9 @@
+;; Development redirects — point sigil-crypto at local sibling checkout
+;; Use: sigil build --redirects ./dev-redirects.sgl
+;;      sigil test --redirects ./dev-redirects.sgl
+(redirects
+  repos: (list
+    (for-repo
+      url: "codeberg:sigil/sigil-crypto"
+      use: (from-path dir: "../sigil-crypto"))
+    ))

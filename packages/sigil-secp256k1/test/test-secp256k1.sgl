@@ -1,0 +1,113 @@
+(import (sigil test)
+        (sigil secp256k1)
+        (sigil crypto)
+        (sigil math))
+
+
+(test-group "seckey-verify?"
+  (test "random seckey is valid"
+    (assert-true (secp256k1-seckey-verify? (random-bytes 32))))
+  (test "all-zeros is invalid"
+    (assert-false (secp256k1-seckey-verify? (make-bytevector 32 0)))))
+
+(test-group "pubkey-create"
+  (test "returns 33-byte compressed key"
+    (let ((pk (secp256k1-pubkey-create (random-bytes 32))))
+      (assert-equal 33 (bytevector-length pk))
+      (assert-true (or (= 2 (bytevector-u8-ref pk 0))
+                       (= 3 (bytevector-u8-ref pk 0)))))))
+
+(test-group "pubkey-parse"
+  (test "round-trips through parse"
+    (let* ((sk (random-bytes 32))
+           (pk (secp256k1-pubkey-create sk))
+           (parsed (secp256k1-pubkey-parse pk)))
+      (assert-true (bytevector? parsed))
+      (assert-equal 64 (bytevector-length parsed)))))
+
+(test-group "ecdsa"
+  (test "sign returns 64-byte compact sig"
+    (let ((sig (secp256k1-ecdsa-sign (random-bytes 32)
+                                     (sha256-bytes "test"))))
+      (assert-true (bytevector? sig))
+      (assert-equal 64 (bytevector-length sig))))
+  (test "round-trip: sign then verify succeeds"
+    (let* ((sk (random-bytes 32))
+           (pk (secp256k1-pubkey-create sk))
+           (msg (sha256-bytes "round-trip"))
+           (sig (secp256k1-ecdsa-sign sk msg)))
+      (assert-true (secp256k1-ecdsa-verify sig msg pk))))
+  (test "verify fails with wrong message"
+    (let* ((sk (random-bytes 32))
+           (pk (secp256k1-pubkey-create sk))
+           (good (sha256-bytes "good"))
+           (bad  (sha256-bytes "bad"))
+           (sig (secp256k1-ecdsa-sign sk good)))
+      (assert-false (secp256k1-ecdsa-verify sig bad pk))))
+  (test "verify fails with wrong key"
+    (let* ((sk-a (random-bytes 32))
+           (sk-b (random-bytes 32))
+           (pk-b (secp256k1-pubkey-create sk-b))
+           (msg (sha256-bytes "key test"))
+           (sig (secp256k1-ecdsa-sign sk-a msg)))
+      (assert-false (secp256k1-ecdsa-verify sig msg pk-b)))))
+
+(test-group "ecdsa-der"
+  (test "compact -> DER -> compact roundtrip"
+    (let* ((sk (random-bytes 32))
+           (msg (sha256-bytes "der test"))
+           (compact (secp256k1-ecdsa-sign sk msg))
+           (der (secp256k1-ecdsa-signature-serialize-der compact))
+           (compact2 (secp256k1-ecdsa-signature-parse-der der))
+           (pk (secp256k1-pubkey-create sk)))
+      (assert-true (secp256k1-ecdsa-verify compact2 msg pk)))))
+
+(test-group "tweak-add"
+  (test "seckey tweak then derive pubkey"
+    (let* ((sk (random-bytes 32))
+           (tweak (random-bytes 32))
+           (sk2 (secp256k1-seckey-tweak-add sk tweak))
+           (pk (secp256k1-pubkey-create sk2)))
+      (assert-true (bytevector? sk2))
+      (assert-equal 33 (bytevector-length pk)))))
+
+(test-group "keypair"
+  (test "create returns 96-byte keypair"
+    (let ((kp (secp256k1-keypair-create (random-bytes 32))))
+      (assert-equal 96 (bytevector-length kp))))
+  (test "pub returns 33-byte compressed key"
+    (let* ((kp (secp256k1-keypair-create (random-bytes 32)))
+           (pk (secp256k1-keypair-pub kp)))
+      (assert-equal 33 (bytevector-length pk))))
+  (test "xonly-pub returns 64-byte key"
+    (let* ((kp (secp256k1-keypair-create (random-bytes 32)))
+           (xonly (secp256k1-keypair-xonly-pub kp)))
+      (assert-equal 64 (bytevector-length xonly))))
+  (test "xonly-pub-with-parity returns cons"
+    (let* ((kp (secp256k1-keypair-create (random-bytes 32)))
+           (result (secp256k1-keypair-xonly-pub-with-parity kp)))
+      (assert-equal 64 (bytevector-length (car result)))
+      (assert-true (or (= 0 (cdr result)) (= 1 (cdr result)))))))
+
+(test-group "schnorrsig"
+  (test "sign32 returns 64-byte sig"
+    (let* ((kp (secp256k1-keypair-create (random-bytes 32)))
+           (sig (secp256k1-schnorrsig-sign32 kp (sha256-bytes "schnorr"))))
+      (assert-equal 64 (bytevector-length sig))))
+  (test "round-trip: sign32 then verify succeeds"
+    (let* ((kp (secp256k1-keypair-create (random-bytes 32)))
+           (result (secp256k1-keypair-xonly-pub-with-parity kp))
+           (xonly (car result))
+           (msg (sha256-bytes "schnorr test"))
+           (sig (secp256k1-schnorrsig-sign32 kp msg)))
+      (assert-true (secp256k1-schnorrsig-verify sig msg xonly))))
+  (test "verify fails with wrong message"
+    (let* ((kp (secp256k1-keypair-create (random-bytes 32)))
+           (result (secp256k1-keypair-xonly-pub-with-parity kp))
+           (xonly (car result))
+           (good (sha256-bytes "good"))
+           (bad  (sha256-bytes "bad"))
+           (sig (secp256k1-schnorrsig-sign32 kp good)))
+      (assert-false (secp256k1-schnorrsig-verify sig bad xonly)))))
+
+(run-tests)
