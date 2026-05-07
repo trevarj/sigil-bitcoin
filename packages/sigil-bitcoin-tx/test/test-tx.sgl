@@ -1,5 +1,6 @@
 (import (sigil test)
         (sigil secp256k1)
+        (sigil bitcoin encoding)
         (sigil bitcoin script)
         (sigil bitcoin tx))
 
@@ -153,6 +154,16 @@
       #x00
       #x00 #x00 #x00 #x00))
 
+;; Selected Bitcoin Core `tx_valid.json` raw transaction fixtures.
+(define %bitcoin-core-rawtx-fixtures
+  (list
+    (list
+      "tx_valid multisig standard form"
+      "0100000001b14bdcbc3e01bdaad36cc08e81e69c82e1060bc14e518db2b49aa43ad90ba26000000000490047304402203f16c6f40162ab686621ef3000b04e75418a0c0cb2d8aebeac894ae360ac1e780220ddc15ecdfc3507ac48e1681a33eb60996631bf6bf5bc0a0682c4db743ce7ca2b01ffffffff0140420f00000000001976a914660d4ef3a743e3e696ad990364e555c271ad504b88ac00000000")
+    (list
+      "tx_valid multisig extra dummy byte"
+      "0100000001b14bdcbc3e01bdaad36cc08e81e69c82e1060bc14e518db2b49aa43ad90ba260000000004a0048304402203f16c6f40162ab686621ef3000b04e75418a0c0cb2d8aebeac894ae360ac1e780220ddc15ecdfc3507ac48e1681a33eb60996631bf6bf5bc0a0682c4db743ce7ca2bab01ffffffff0140420f00000000001976a914660d4ef3a743e3e696ad990364e555c271ad504b88ac00000000")))
+
 (test-group "compactSize"
   (test "single byte range"
     (assert-equal #u8(#xfc) (compact-size-encode #xfc))
@@ -220,6 +231,17 @@
   (test "txid and wtxid differ when witness is present"
     (assert-false (equal? (transaction-txid %witness-tx)
                           (transaction-wtxid %witness-tx)))))
+
+(test-group "Bitcoin Core rawtx fixtures"
+  (test "round-trips tx_valid raw transactions"
+    (do ((xs %bitcoin-core-rawtx-fixtures (cdr xs)))
+        ((null? xs))
+      (let* ((fixture (car xs))
+             (raw (hex-decode (cadr fixture)))
+             (parsed (transaction-parse raw)))
+        (assert-equal raw (transaction-serialize parsed))
+        (assert-equal raw (transaction-base-serialize parsed))
+        (assert-false (transaction-has-witness? parsed))))))
 
 (test-group "sighash"
   (test "legacy SIGHASH_ALL returns 32-byte digest"
