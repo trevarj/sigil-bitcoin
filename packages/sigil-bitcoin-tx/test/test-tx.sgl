@@ -1,0 +1,203 @@
+(import (sigil test)
+        (sigil bitcoin script)
+        (sigil bitcoin tx))
+
+(define %zero-txid (make-bytevector 32 0))
+
+(define %ascending-txid
+  #u8(#x00 #x01 #x02 #x03 #x04 #x05 #x06 #x07
+      #x08 #x09 #x0a #x0b #x0c #x0d #x0e #x0f
+      #x10 #x11 #x12 #x13 #x14 #x15 #x16 #x17
+      #x18 #x19 #x1a #x1b #x1c #x1d #x1e #x1f))
+
+(define %coinbase-script #u8(#x03 #x04 #x05 #x06))
+
+(define %pubkey-hash
+  #u8(#x75 #x1e #x76 #xe8 #x19 #x91 #x96 #xd4 #x54 #x94
+      #x1c #x45 #xd1 #xb3 #xa3 #x23 #xf1 #x43 #x3b #xd6))
+
+(define %p2pkh-script (script-p2pkh %pubkey-hash))
+
+(define %legacy-tx
+  (transaction
+    version: 1
+    inputs: (list
+      (txin
+        previous-output: (outpoint txid: %zero-txid index: #xffffffff)
+        script-sig: %coinbase-script
+        sequence: #xffffffff
+        witness: '()))
+    outputs: (list
+      (txout value: 5000000000 script-pubkey: %p2pkh-script))
+    lock-time: 0))
+
+(define %legacy-serialized
+  #u8(#x01 #x00 #x00 #x00
+      #x01
+      #x00 #x00 #x00 #x00 #x00 #x00 #x00 #x00
+      #x00 #x00 #x00 #x00 #x00 #x00 #x00 #x00
+      #x00 #x00 #x00 #x00 #x00 #x00 #x00 #x00
+      #x00 #x00 #x00 #x00 #x00 #x00 #x00 #x00
+      #xff #xff #xff #xff
+      #x04 #x03 #x04 #x05 #x06
+      #xff #xff #xff #xff
+      #x01
+      #x00 #xf2 #x05 #x2a #x01 #x00 #x00 #x00
+      #x19
+      #x76 #xa9 #x14 #x75 #x1e #x76 #xe8 #x19 #x91 #x96
+      #xd4 #x54 #x94 #x1c #x45 #xd1 #xb3 #xa3 #x23 #xf1
+      #x43 #x3b #xd6 #x88 #xac
+      #x00 #x00 #x00 #x00))
+
+(define %witness-tx
+  (transaction
+    version: 2
+    inputs: (list
+      (txin
+        previous-output: (outpoint txid: %zero-txid index: 0)
+        script-sig: #u8()
+        sequence: #xfffffffe
+        witness: (list #u8(#x30 #x01) #u8(#x02 #x79))))
+    outputs: (list
+      (txout value: 1000 script-pubkey: (script-p2wpkh %pubkey-hash)))
+    lock-time: 0))
+
+(define %witness-serialized
+  #u8(#x02 #x00 #x00 #x00
+      #x00 #x01
+      #x01
+      #x00 #x00 #x00 #x00 #x00 #x00 #x00 #x00
+      #x00 #x00 #x00 #x00 #x00 #x00 #x00 #x00
+      #x00 #x00 #x00 #x00 #x00 #x00 #x00 #x00
+      #x00 #x00 #x00 #x00 #x00 #x00 #x00 #x00
+      #x00 #x00 #x00 #x00
+      #x00
+      #xfe #xff #xff #xff
+      #x01
+      #xe8 #x03 #x00 #x00 #x00 #x00 #x00 #x00
+      #x16
+      #x00 #x14 #x75 #x1e #x76 #xe8 #x19 #x91 #x96 #xd4
+      #x54 #x94 #x1c #x45 #xd1 #xb3 #xa3 #x23 #xf1 #x43
+      #x3b #xd6
+      #x02
+      #x02 #x30 #x01
+      #x02 #x02 #x79
+      #x00 #x00 #x00 #x00))
+
+(define %witness-base-serialized
+  #u8(#x02 #x00 #x00 #x00
+      #x01
+      #x00 #x00 #x00 #x00 #x00 #x00 #x00 #x00
+      #x00 #x00 #x00 #x00 #x00 #x00 #x00 #x00
+      #x00 #x00 #x00 #x00 #x00 #x00 #x00 #x00
+      #x00 #x00 #x00 #x00 #x00 #x00 #x00 #x00
+      #x00 #x00 #x00 #x00
+      #x00
+      #xfe #xff #xff #xff
+      #x01
+      #xe8 #x03 #x00 #x00 #x00 #x00 #x00 #x00
+      #x16
+      #x00 #x14 #x75 #x1e #x76 #xe8 #x19 #x91 #x96 #xd4
+      #x54 #x94 #x1c #x45 #xd1 #xb3 #xa3 #x23 #xf1 #x43
+      #x3b #xd6
+      #x00 #x00 #x00 #x00))
+
+(define %nonzero-prevout-tx
+  (transaction
+    version: 1
+    inputs: (list
+      (txin
+        previous-output: (outpoint txid: %ascending-txid index: #x01020304)
+        script-sig: #u8()
+        sequence: 0
+        witness: '()))
+    outputs: '()
+    lock-time: 0))
+
+(define %nonzero-prevout-serialized
+  #u8(#x01 #x00 #x00 #x00
+      #x01
+      #x1f #x1e #x1d #x1c #x1b #x1a #x19 #x18
+      #x17 #x16 #x15 #x14 #x13 #x12 #x11 #x10
+      #x0f #x0e #x0d #x0c #x0b #x0a #x09 #x08
+      #x07 #x06 #x05 #x04 #x03 #x02 #x01 #x00
+      #x04 #x03 #x02 #x01
+      #x00
+      #x00 #x00 #x00 #x00
+      #x00
+      #x00 #x00 #x00 #x00))
+
+(test-group "compactSize"
+  (test "single byte range"
+    (assert-equal #u8(#xfc) (compact-size-encode #xfc)))
+
+  (test "u16 range"
+    (assert-equal #u8(#xfd #xfd #x00) (compact-size-encode #xfd))
+    (assert-equal #u8(#xfd #xff #xff) (compact-size-encode #xffff)))
+
+  (test "u32 and u64 ranges"
+    (assert-equal #u8(#xfe #x00 #x00 #x01 #x00) (compact-size-encode #x10000))
+    (assert-equal #u8(#xff #x00 #x00 #x00 #x00 #x01 #x00 #x00 #x00)
+                  (compact-size-encode #x100000000))))
+
+(test-group "legacy transaction serialization"
+  (test "serializes without witness marker"
+    (assert-equal %legacy-serialized (transaction-serialize %legacy-tx)))
+
+  (test "base serialization matches default for no-witness transaction"
+    (assert-equal (transaction-serialize %legacy-tx)
+                  (transaction-base-serialize %legacy-tx)))
+
+  (test "txid and wtxid match for no-witness transaction"
+    (assert-equal (transaction-txid %legacy-tx)
+                  (transaction-wtxid %legacy-tx))))
+
+(test-group "little-endian wire order"
+  (test "serializes previous txid and index in wire order"
+    (assert-equal %nonzero-prevout-serialized
+                  (transaction-serialize %nonzero-prevout-tx)))
+
+  (test "transaction IDs are 32-byte hashes"
+    (assert-equal 32 (bytevector-length (transaction-txid %legacy-tx)))
+    (assert-equal 32 (bytevector-length (transaction-wtxid %witness-tx)))))
+
+(test-group "segwit transaction serialization"
+  (test "serializes with BIP144 marker and witness stack"
+    (assert-equal %witness-serialized (transaction-serialize %witness-tx)))
+
+  (test "base serialization excludes marker, flag, and witnesses"
+    (assert-equal %witness-base-serialized
+                  (transaction-base-serialize %witness-tx)))
+
+  (test "txid and wtxid differ when witness is present"
+    (assert-false (equal? (transaction-txid %witness-tx)
+                          (transaction-wtxid %witness-tx)))))
+
+(test-group "transaction validation"
+  (test "rejects malformed compactSize"
+    (assert-error (compact-size-encode -1)))
+
+  (test "rejects invalid outpoint txid length"
+    (assert-error
+      (transaction-serialize
+        (transaction
+          version: 1
+          inputs: (list
+            (txin
+              previous-output: (outpoint txid: (make-bytevector 31 0) index: 0)
+              script-sig: #u8()
+              sequence: #xffffffff
+              witness: '()))
+          outputs: '()
+          lock-time: 0))))
+
+  (test "rejects output values outside u64"
+    (assert-error
+      (transaction-serialize
+        (transaction
+          version: 1
+          inputs: '()
+          outputs: (list (txout value: -1 script-pubkey: #u8()))
+          lock-time: 0)))))
+
+(run-tests)

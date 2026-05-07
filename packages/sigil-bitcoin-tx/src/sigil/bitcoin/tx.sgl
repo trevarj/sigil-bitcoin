@@ -1,0 +1,248 @@
+;;; (sigil bitcoin tx) — Bitcoin transaction structs and serialization
+
+(define-library (sigil bitcoin tx)
+  (import (sigil struct)
+          (sigil math)
+          (sigil bitcoin primitives))
+  (export
+    outpoint outpoint?
+    outpoint-txid outpoint-index
+    txin txin?
+    txin-previous-output txin-script-sig txin-sequence txin-witness
+    txout txout?
+    txout-value txout-script-pubkey
+    transaction transaction?
+    transaction-version transaction-inputs transaction-outputs
+    transaction-lock-time
+    compact-size-encode
+    transaction-has-witness?
+    transaction-serialize
+    transaction-base-serialize
+    transaction-txid
+    transaction-wtxid)
+  (begin
+
+    (define %u32-max #xffffffff)
+    (define %u64-max #xffffffffffffffff)
+
+    (define-struct outpoint
+      (txid bytevector?)
+      (index integer?))
+
+    (define-struct txin
+      (previous-output outpoint?)
+      (script-sig bytevector?)
+      (sequence integer?)
+      (witness list?))
+
+    (define-struct txout
+      (value integer?)
+      (script-pubkey bytevector?))
+
+    (define-struct transaction
+      (version integer?)
+      (inputs list?)
+      (outputs list?)
+      (lock-time integer?))
+
+    (define (require-bytevector who bytes)
+      (unless (bytevector? bytes)
+        (error (string-append who ": expected bytevector")))
+      bytes)
+
+    (define (require-bytevector-length who bytes len)
+      (require-bytevector who bytes)
+      (unless (= len (bytevector-length bytes))
+        (error (string-append who ": expected "
+                              (number->string len)
+                              "-byte bytevector")))
+      bytes)
+
+    (define (require-uint who value max)
+      (unless (and (integer? value) (<= 0 value max))
+        (error (string-append who ": unsigned integer out of range")))
+      value)
+
+    (define (reverse-bytevector bytes)
+      (require-bytevector "reverse-bytevector" bytes)
+      (let* ((len (bytevector-length bytes))
+             (out (make-bytevector len 0)))
+        (do ((i 0 (+ i 1)))
+            ((>= i len) out)
+          (bytevector-u8-set! out i (bytevector-u8-ref bytes (- len 1 i))))))
+
+    (define (u16-le n)
+      (require-uint "u16-le" n #xffff)
+      (let ((out (make-bytevector 2 0)))
+        (bytevector-u8-set! out 0 (bitwise-and n #xff))
+        (bytevector-u8-set! out 1 (bitwise-and (arithmetic-shift n -8) #xff))
+        out))
+
+    (define (u32-le n)
+      (require-uint "u32-le" n %u32-max)
+      (let ((out (make-bytevector 4 0)))
+        (bytevector-u8-set! out 0 (bitwise-and n #xff))
+        (bytevector-u8-set! out 1 (bitwise-and (arithmetic-shift n -8) #xff))
+        (bytevector-u8-set! out 2 (bitwise-and (arithmetic-shift n -16) #xff))
+        (bytevector-u8-set! out 3 (bitwise-and (arithmetic-shift n -24) #xff))
+        out))
+
+    (define (u64-le n)
+      (require-uint "u64-le" n %u64-max)
+      (let ((out (make-bytevector 8 0)))
+        (do ((i 0 (+ i 1))
+             (v n (quotient v 256)))
+            ((>= i 8) out)
+          (bytevector-u8-set! out i (remainder v 256)))))
+
+    (define (compact-size-encode n)
+      (: integer? -> bytevector?)
+      (require-uint "compact-size-encode" n %u64-max)
+      (cond ((< n #xfd)
+             (make-bytevector 1 n))
+            ((<= n #xffff)
+             (bytevector-append #u8(#xfd) (u16-le n)))
+            ((<= n %u32-max)
+             (bytevector-append #u8(#xfe) (u32-le n)))
+            (else
+             (bytevector-append #u8(#xff) (u64-le n)))))
+
+    (define (bytes-with-length bytes)
+      (require-bytevector "bytes-with-length" bytes)
+      (bytevector-append
+        (compact-size-encode (bytevector-length bytes))
+        bytes))
+
+    (define (validate-outpoint op)
+      (unless (outpoint? op)
+        (error "outpoint: expected outpoint"))
+      (require-bytevector-length "outpoint txid" (outpoint-txid op) 32)
+      (require-uint "outpoint index" (outpoint-index op) %u32-max)
+      op)
+
+    (define (validate-witness-item item)
+      (require-bytevector "txin witness item" item))
+
+    (define (validate-witness witness)
+      (unless (list? witness)
+        (error "txin witness: expected list"))
+      (do ((xs witness (cdr xs)))
+          ((null? xs) witness)
+        (validate-witness-item (car xs))))
+
+    (define (validate-txin input)
+      (unless (txin? input)
+        (error "txin: expected txin"))
+      (validate-outpoint (txin-previous-output input))
+      (require-bytevector "txin script-sig" (txin-script-sig input))
+      (require-uint "txin sequence" (txin-sequence input) %u32-max)
+      (validate-witness (txin-witness input))
+      input)
+
+    (define (validate-txout output)
+      (unless (txout? output)
+        (error "txout: expected txout"))
+      (require-uint "txout value" (txout-value output) %u64-max)
+      (require-bytevector "txout script-pubkey" (txout-script-pubkey output))
+      output)
+
+    (define (validate-transaction tx)
+      (unless (transaction? tx)
+        (error "transaction: expected transaction"))
+      (require-uint "transaction version" (transaction-version tx) %u32-max)
+      (unless (list? (transaction-inputs tx))
+        (error "transaction inputs: expected list"))
+      (unless (list? (transaction-outputs tx))
+        (error "transaction outputs: expected list"))
+      (require-uint "transaction lock-time" (transaction-lock-time tx) %u32-max)
+      (do ((xs (transaction-inputs tx) (cdr xs)))
+          ((null? xs))
+        (validate-txin (car xs)))
+      (do ((xs (transaction-outputs tx) (cdr xs)))
+          ((null? xs) tx)
+        (validate-txout (car xs))))
+
+    (define (serialize-outpoint op)
+      (validate-outpoint op)
+      (bytevector-append
+        (reverse-bytevector (outpoint-txid op))
+        (u32-le (outpoint-index op))))
+
+    (define (serialize-txin input)
+      (validate-txin input)
+      (bytevector-append
+        (serialize-outpoint (txin-previous-output input))
+        (bytes-with-length (txin-script-sig input))
+        (u32-le (txin-sequence input))))
+
+    (define (serialize-txout output)
+      (validate-txout output)
+      (bytevector-append
+        (u64-le (txout-value output))
+        (bytes-with-length (txout-script-pubkey output))))
+
+    (define (serialize-vector items serializer)
+      (let ((parts '()))
+        (do ((xs items (cdr xs)))
+            ((null? xs))
+          (set! parts (append parts (list (serializer (car xs))))))
+        (apply bytevector-append
+               (cons (compact-size-encode (length items)) parts))))
+
+    (define (serialize-witness witness)
+      (validate-witness witness)
+      (let ((parts '()))
+        (do ((xs witness (cdr xs)))
+            ((null? xs))
+          (set! parts (append parts (list (bytes-with-length (car xs))))))
+        (apply bytevector-append
+               (cons (compact-size-encode (length witness)) parts))))
+
+    (define (transaction-has-witness? tx)
+      (: transaction? -> boolean?)
+      (validate-transaction tx)
+      (let ((has? #f))
+        (do ((xs (transaction-inputs tx) (cdr xs)))
+            ((or (null? xs) has?) has?)
+          (when (not (null? (txin-witness (car xs))))
+            (set! has? #t)))))
+
+    (define (transaction-serialize tx . maybe-include-witness)
+      (: transaction? boolean? ... -> bytevector?)
+      (validate-transaction tx)
+      (let* ((allow-witness? (if (null? maybe-include-witness)
+                                 #t
+                                 (car maybe-include-witness)))
+             (include-witness? (and allow-witness? (transaction-has-witness? tx)))
+             (prefix (if include-witness?
+                         (bytevector-append (u32-le (transaction-version tx))
+                                            #u8(#x00 #x01))
+                         (u32-le (transaction-version tx))))
+             (base (bytevector-append
+                     prefix
+                     (serialize-vector (transaction-inputs tx) serialize-txin)
+                     (serialize-vector (transaction-outputs tx) serialize-txout))))
+        (if include-witness?
+            (let ((witnesses '()))
+              (do ((xs (transaction-inputs tx) (cdr xs)))
+                  ((null? xs))
+                (set! witnesses
+                      (append witnesses
+                              (list (serialize-witness (txin-witness (car xs)))))))
+              (bytevector-append
+                base
+                (apply bytevector-append witnesses)
+                (u32-le (transaction-lock-time tx))))
+            (bytevector-append base (u32-le (transaction-lock-time tx))))))
+
+    (define (transaction-base-serialize tx)
+      (: transaction? -> bytevector?)
+      (transaction-serialize tx #f))
+
+    (define (transaction-txid tx)
+      (: transaction? -> bytevector?)
+      (hash256 (transaction-base-serialize tx)))
+
+    (define (transaction-wtxid tx)
+      (: transaction? -> bytevector?)
+      (hash256 (transaction-serialize tx #t)))))

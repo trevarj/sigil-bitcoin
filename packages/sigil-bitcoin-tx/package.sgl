@@ -1,0 +1,25 @@
+;;; sigil-bitcoin-tx — Bitcoin transaction primitives
+;;;
+;;; Pure Sigil library providing transaction structs and wire serialization.
+
+(package
+  name: "sigil-bitcoin-tx"
+  version: "0.1.0"
+  sigil: "^0.16"
+  description: "Bitcoin transaction structs, compactSize, and wire serialization"
+  url: "https://codeberg.org/sigil/sigil-bitcoin"
+  license: "BSD-3-Clause"
+
+  dependencies: (list
+    (from-path dir: "../sigil-bitcoin-primitives"
+               package: "sigil-bitcoin-primitives")
+    (from-path dir: "../sigil-bitcoin-script"
+               package: "sigil-bitcoin-script"))
+
+  tasks: (list
+    (task
+      name: 'build
+      description: "Build sigil-bitcoin-tx"
+      steps: (list
+        (compile-sigil-modules
+          sources: "src/**/*.sgl")))))
