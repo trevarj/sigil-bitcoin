@@ -27,6 +27,11 @@
 
 (define %p2pkh-script (script-p2pkh %pubkey-hash))
 
+(define %p2wpkh-script (script-p2wpkh %pubkey-hash))
+
+(define %p2wpkh-utxo
+  (txout value: 1000 script-pubkey: %p2wpkh-script))
+
 (define %legacy-tx
   (transaction
     version: 1
@@ -69,6 +74,18 @@
         witness: (list #u8(#x30 #x01) #u8(#x02 #x79))))
     outputs: (list
       (txout value: 1000 script-pubkey: (script-p2wpkh %pubkey-hash)))
+    lock-time: 0))
+
+(define %unsigned-p2wpkh-tx
+  (transaction
+    version: 2
+    inputs: (list
+      (txin
+        previous-output: (outpoint txid: %zero-txid index: 0)
+        script-sig: #u8()
+        sequence: #xfffffffe
+        witness: '()))
+    outputs: (list %p2wpkh-utxo)
     lock-time: 0))
 
 (define %witness-serialized
@@ -242,6 +259,61 @@
             msghash
             pubkey)))))
   (test-group "P2WPKH signing"
+    (test-skip "native secp256k1 module is not linked in direct workspace runner"
+      #t)))
+
+(test-group "PSBT"
+  (test "creates empty input and output maps from unsigned tx"
+    (let ((p (psbt-create %unsigned-p2wpkh-tx)))
+      (assert-equal 1 (length (psbt-inputs p)))
+      (assert-equal 1 (length (psbt-outputs p)))))
+
+  (test "serializes and parses unsigned transaction"
+    (let* ((p (psbt-create %unsigned-p2wpkh-tx))
+           (parsed (psbt-parse (psbt-serialize p))))
+      (assert-equal (transaction-base-serialize %unsigned-p2wpkh-tx)
+                    (transaction-base-serialize (psbt-unsigned-tx parsed)))))
+
+  (test "round-trips witness UTXO input data"
+    (let* ((p (psbt
+                unsigned-tx: %unsigned-p2wpkh-tx
+                inputs: (list
+                  (psbt-input
+                    witness-utxo: %p2wpkh-utxo
+                    partial-sigs: '()
+                    sighash-type: #f
+                    final-script-sig: #u8()
+                    final-script-witness: '()))
+                outputs: (list (psbt-output))))
+           (parsed (psbt-parse (psbt-serialize p)))
+           (input (car (psbt-inputs parsed))))
+      (assert-equal 1000 (txout-value (psbt-input-witness-utxo input)))
+      (assert-equal %p2wpkh-script
+                    (txout-script-pubkey (psbt-input-witness-utxo input))))))
+
+(if %native-secp256k1?
+  (test-group "PSBT signing"
+    (test "signs, finalizes, and extracts P2WPKH transaction"
+      (let* ((p (psbt
+                  unsigned-tx: %unsigned-p2wpkh-tx
+                  inputs: (list
+                    (psbt-input
+                      witness-utxo: %p2wpkh-utxo
+                      partial-sigs: '()
+                      sighash-type: #f
+                      final-script-sig: #u8()
+                      final-script-witness: '()))
+                  outputs: (list (psbt-output))))
+             (signed (psbt-sign-p2wpkh-input p 0 %one))
+             (signed-input (car (psbt-inputs signed)))
+             (parsed (psbt-parse (psbt-serialize signed)))
+             (finalized (psbt-finalize-p2wpkh-input parsed 0))
+             (extracted (psbt-extract-transaction finalized))
+             (witness (txin-witness (car (transaction-inputs extracted)))))
+        (assert-equal 1 (length (psbt-input-partial-sigs signed-input)))
+        (assert-equal 2 (length witness))
+        (assert-true (transaction-has-witness? extracted)))))
+  (test-group "PSBT signing"
     (test-skip "native secp256k1 module is not linked in direct workspace runner"
       #t)))
 
