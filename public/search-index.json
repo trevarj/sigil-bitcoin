@@ -1428,6 +1428,27 @@
     "summary": "Get the `taproot-key-sig` field of a `psbt-input` struct."
   },
   {
+    "name": "psbt-input-bip32-derivations",
+    "kind": "procedure",
+    "module": "(sigil bitcoin tx)",
+    "url": "api/sigil/bitcoin/tx.html#psbt-input-bip32-derivations",
+    "summary": "Get the `bip32-derivations` field of a `psbt-input` struct."
+  },
+  {
+    "name": "psbt-input-taproot-bip32-derivations",
+    "kind": "procedure",
+    "module": "(sigil bitcoin tx)",
+    "url": "api/sigil/bitcoin/tx.html#psbt-input-taproot-bip32-derivations",
+    "summary": "Get the `taproot-bip32-derivations` field of a `psbt-input` struct."
+  },
+  {
+    "name": "psbt-input-unknowns",
+    "kind": "procedure",
+    "module": "(sigil bitcoin tx)",
+    "url": "api/sigil/bitcoin/tx.html#psbt-input-unknowns",
+    "summary": "Get the `unknowns` field of a `psbt-input` struct."
+  },
+  {
     "name": "psbt-output",
     "kind": "procedure",
     "module": "(sigil bitcoin tx)",
@@ -1440,6 +1461,13 @@
     "module": "(sigil bitcoin tx)",
     "url": "api/sigil/bitcoin/tx.html#psbt-output?",
     "summary": "Test if a value is a `psbt-output` struct."
+  },
+  {
+    "name": "psbt-output-unknowns",
+    "kind": "procedure",
+    "module": "(sigil bitcoin tx)",
+    "url": "api/sigil/bitcoin/tx.html#psbt-output-unknowns",
+    "summary": "Get the `unknowns` field of a `psbt-output` struct."
   },
   {
     "name": "psbt",
@@ -1475,6 +1503,13 @@
     "module": "(sigil bitcoin tx)",
     "url": "api/sigil/bitcoin/tx.html#psbt-outputs",
     "summary": "Get the `outputs` field of a `psbt` struct."
+  },
+  {
+    "name": "psbt-unknowns",
+    "kind": "procedure",
+    "module": "(sigil bitcoin tx)",
+    "url": "api/sigil/bitcoin/tx.html#psbt-unknowns",
+    "summary": "Get the `unknowns` field of a `psbt` struct."
   },
   {
     "name": "compact-size-encode",

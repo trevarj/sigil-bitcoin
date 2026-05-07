@@ -126,7 +126,13 @@
     sighash-type: #f
     final-script-sig: #u8()
     final-script-witness: '()
-    taproot-key-sig: #f))
+    taproot-key-sig: #f
+    bip32-derivations: '()
+    taproot-bip32-derivations: '()
+    unknowns: '()))
+
+(define (empty-test-psbt-output)
+  (psbt-output unknowns: '()))
 
 (define (funding-transaction script-pubkey)
   (transaction
@@ -153,6 +159,29 @@
     outputs: (list
       (txout value: 500 script-pubkey: %p2pkh-script))
     lock-time: 0))
+
+(define %psbt-test-pubkey
+  #u8(#x02 #x00 #x01 #x02 #x03 #x04 #x05 #x06 #x07
+      #x08 #x09 #x0a #x0b #x0c #x0d #x0e #x0f #x10
+      #x11 #x12 #x13 #x14 #x15 #x16 #x17 #x18 #x19
+      #x1a #x1b #x1c #x1d #x1e #x1f))
+
+(define %psbt-test-xonly
+  #u8(#x00 #x01 #x02 #x03 #x04 #x05 #x06 #x07
+      #x08 #x09 #x0a #x0b #x0c #x0d #x0e #x0f
+      #x10 #x11 #x12 #x13 #x14 #x15 #x16 #x17
+      #x18 #x19 #x1a #x1b #x1c #x1d #x1e #x1f))
+
+(define %psbt-test-origin
+  #u8(#xaa #xbb #xcc #xdd
+      #x2c #x00 #x00 #x80
+      #x00 #x00 #x00 #x00))
+
+(define %psbt-test-taproot-origin
+  #u8(#x00
+      #xaa #xbb #xcc #xdd
+      #x56 #x00 #x00 #x80
+      #x01 #x00 #x00 #x00))
 
 (define %witness-serialized
   #u8(#x02 #x00 #x00 #x00
@@ -460,7 +489,8 @@
                 unsigned-tx: %unsigned-p2wpkh-tx
                 inputs: (list
                   (empty-test-psbt-input #f %p2wpkh-utxo))
-                outputs: (list (psbt-output))))
+                outputs: (list (empty-test-psbt-output))
+                unknowns: '()))
            (parsed (psbt-parse (psbt-serialize p)))
            (input (car (psbt-inputs parsed))))
       (assert-equal 1000 (txout-value (psbt-input-witness-utxo input)))
@@ -472,11 +502,46 @@
                 unsigned-tx: %unsigned-p2pkh-tx
                 inputs: (list
                   (empty-test-psbt-input %legacy-tx #f))
-                outputs: (list (psbt-output))))
+                outputs: (list (empty-test-psbt-output))
+                unknowns: '()))
            (parsed (psbt-parse (psbt-serialize p)))
            (input (car (psbt-inputs parsed))))
       (assert-equal (transaction-txid %legacy-tx)
-                    (transaction-txid (psbt-input-non-witness-utxo input))))))
+                    (transaction-txid (psbt-input-non-witness-utxo input)))))
+
+  (test "round-trips derivation and unknown records"
+    (let* ((global-unknowns (list (cons #u8(#xfb) #u8(#x01 #x02))))
+           (input-unknowns (list (cons #u8(#xfc #x01 #x99) #u8(#xaa))))
+           (output-unknowns (list (cons #u8(#xfc #x02 #x77) #u8(#xbb #xcc))))
+           (input
+             (psbt-input
+               non-witness-utxo: #f
+               witness-utxo: %p2wpkh-utxo
+               partial-sigs: '()
+               sighash-type: #f
+               final-script-sig: #u8()
+               final-script-witness: '()
+               taproot-key-sig: #f
+               bip32-derivations: (list (cons %psbt-test-pubkey %psbt-test-origin))
+               taproot-bip32-derivations: (list (cons %psbt-test-xonly
+                                                       %psbt-test-taproot-origin))
+               unknowns: input-unknowns))
+           (output (psbt-output unknowns: output-unknowns))
+           (p (psbt
+                unsigned-tx: %unsigned-p2wpkh-tx
+                inputs: (list input)
+                outputs: (list output)
+                unknowns: global-unknowns))
+           (parsed (psbt-parse (psbt-serialize p)))
+           (parsed-input (car (psbt-inputs parsed)))
+           (parsed-output (car (psbt-outputs parsed))))
+      (assert-equal global-unknowns (psbt-unknowns parsed))
+      (assert-equal input-unknowns (psbt-input-unknowns parsed-input))
+      (assert-equal output-unknowns (psbt-output-unknowns parsed-output))
+      (assert-equal (list (cons %psbt-test-pubkey %psbt-test-origin))
+                    (psbt-input-bip32-derivations parsed-input))
+      (assert-equal (list (cons %psbt-test-xonly %psbt-test-taproot-origin))
+                    (psbt-input-taproot-bip32-derivations parsed-input)))))
 
 (if %native-secp256k1?
   (test-group "PSBT signing"
@@ -485,7 +550,8 @@
                   unsigned-tx: %unsigned-p2wpkh-tx
                   inputs: (list
                     (empty-test-psbt-input #f %p2wpkh-utxo))
-                  outputs: (list (psbt-output))))
+                  outputs: (list (empty-test-psbt-output))
+                  unknowns: '()))
              (signed (psbt-sign-p2wpkh-input p 0 %one))
              (signed-input (car (psbt-inputs signed)))
              (parsed (psbt-parse (psbt-serialize signed)))
@@ -505,7 +571,8 @@
                   unsigned-tx: unsigned
                   inputs: (list
                     (empty-test-psbt-input funding #f))
-                  outputs: (list (psbt-output))))
+                  outputs: (list (empty-test-psbt-output))
+                  unknowns: '()))
              (signed (psbt-sign-p2pkh-input p 0 %one))
              (parsed (psbt-parse (psbt-serialize signed)))
              (finalized (psbt-finalize-p2pkh-input parsed 0))
@@ -526,7 +593,8 @@
                   unsigned-tx: %witness-tx
                   inputs: (list
                     (empty-test-psbt-input #f prevout))
-                  outputs: (list (psbt-output))))
+                  outputs: (list (empty-test-psbt-output))
+                  unknowns: '()))
              (signed (psbt-sign-p2tr-keypath-input p 0 %one))
              (signed-input (car (psbt-inputs signed)))
              (parsed (psbt-parse (psbt-serialize signed)))

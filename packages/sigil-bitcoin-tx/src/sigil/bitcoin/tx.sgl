@@ -27,7 +27,12 @@
     psbt-input-partial-sigs
     psbt-input-sighash-type psbt-input-final-script-sig
     psbt-input-final-script-witness psbt-input-taproot-key-sig
+    psbt-input-bip32-derivations
+    psbt-input-taproot-bip32-derivations
+    psbt-input-unknowns
     psbt-output psbt-output?
+    psbt-output-unknowns
+    psbt-unknowns
     compact-size-encode
     compact-size-decode
     transaction-has-witness?
@@ -95,16 +100,21 @@
       (sighash-type any?)
       (final-script-sig bytevector?)
       (final-script-witness list?)
-      (taproot-key-sig any?))
+      (taproot-key-sig any?)
+      (bip32-derivations list?)
+      (taproot-bip32-derivations list?)
+      (unknowns list?))
 
     ;;; PSBT output map placeholder.
-    (define-struct psbt-output)
+    (define-struct psbt-output
+      (unknowns list?))
 
     ;;; Partially Signed Bitcoin Transaction record.
     (define-struct psbt
       (unsigned-tx transaction?)
       (inputs list?)
-      (outputs list?))
+      (outputs list?)
+      (unknowns list?))
 
     (define (require-bytevector who bytes)
       (unless (bytevector? bytes)
@@ -246,6 +256,13 @@
         (bytevector-append
           (bytes-with-length key)
           (bytes-with-length value))))
+
+    (define (psbt-raw-keyval entry)
+      (require-bytevector "psbt raw key" (car entry))
+      (require-bytevector "psbt raw value" (cdr entry))
+      (bytevector-append
+        (bytes-with-length (car entry))
+        (bytes-with-length (cdr entry))))
 
     (define (read-bytes bytes offset count who)
       (ensure-available who bytes offset count)
@@ -858,10 +875,55 @@
                   sighash-type: #f
                   final-script-sig: #u8()
                   final-script-witness: '()
-                  taproot-key-sig: #f))
+                  taproot-key-sig: #f
+                  bip32-derivations: '()
+                  taproot-bip32-derivations: '()
+                  unknowns: '()))
 
     (define (empty-psbt-output)
-      (psbt-output))
+      (psbt-output unknowns: '()))
+
+    (define (validate-raw-keyvals who keyvals)
+      (unless (list? keyvals)
+        (error (string-append who ": expected list")))
+      (do ((xs keyvals (cdr xs)))
+          ((null? xs) keyvals)
+        (let ((entry (car xs)))
+          (unless (pair? entry)
+            (error (string-append who ": expected key-value pair")))
+          (require-bytevector (string-append who " key") (car entry))
+          (require-bytevector (string-append who " value") (cdr entry))
+          (when (= 0 (bytevector-length (car entry)))
+            (error (string-append who ": empty key is reserved for map terminator"))))))
+
+    (define (validate-bip32-origin-value who value)
+      (require-bytevector who value)
+      (when (or (< (bytevector-length value) 4)
+                (not (= 0 (remainder (- (bytevector-length value) 4) 4))))
+        (error (string-append who ": expected fingerprint plus u32 path elements")))
+      value)
+
+    (define (validate-taproot-origin-value who value)
+      (require-bytevector who value)
+      (let* ((count-result (compact-size-decode-at value 0))
+             (count (car count-result))
+             (path-start (+ (cadr count-result) (* count 32))))
+        (ensure-available who value (cadr count-result) (* count 32))
+        (when (or (< (- (bytevector-length value) path-start) 4)
+                  (not (= 0 (remainder (- (bytevector-length value) path-start 4) 4))))
+          (error (string-append who ": expected leaf hashes, fingerprint, and u32 path elements"))))
+      value)
+
+    (define (validate-bip32-derivations who derivations key-length value-validator)
+      (unless (list? derivations)
+        (error (string-append who ": expected list")))
+      (do ((xs derivations (cdr xs)))
+          ((null? xs) derivations)
+        (let ((entry (car xs)))
+          (unless (pair? entry)
+            (error (string-append who ": expected key-value pair")))
+          (require-bytevector-length who (car entry) key-length)
+          (value-validator who (cdr entry)))))
 
     (define (make-empty-list count maker)
       (let loop ((i 0) (out '()))
@@ -877,7 +939,8 @@
             inputs: (make-empty-list (length (transaction-inputs unsigned-tx))
                                      empty-psbt-input)
             outputs: (make-empty-list (length (transaction-outputs unsigned-tx))
-                                      empty-psbt-output)))
+                                      empty-psbt-output)
+            unknowns: '()))
 
     (define (validate-psbt-input input)
       (unless (psbt-input? input)
@@ -903,12 +966,30 @@
                                          (psbt-input-taproot-key-sig input)))))
           (unless (or (= len 64) (= len 65))
             (error "psbt taproot key signature: expected 64 or 65 bytes"))))
+      (validate-bip32-derivations
+        "psbt input BIP32 derivation"
+        (psbt-input-bip32-derivations input)
+        33
+        validate-bip32-origin-value)
+      (validate-bip32-derivations
+        "psbt input Taproot BIP32 derivation"
+        (psbt-input-taproot-bip32-derivations input)
+        32
+        validate-taproot-origin-value)
+      (validate-raw-keyvals "psbt input unknowns" (psbt-input-unknowns input))
       input)
+
+    (define (validate-psbt-output output)
+      (unless (psbt-output? output)
+        (error "psbt output: expected psbt-output"))
+      (validate-raw-keyvals "psbt output unknowns" (psbt-output-unknowns output))
+      output)
 
     (define (validate-psbt p)
       (unless (psbt? p)
         (error "psbt: expected psbt"))
       (validate-transaction (psbt-unsigned-tx p))
+      (validate-raw-keyvals "psbt global unknowns" (psbt-unknowns p))
       (unless (= (length (transaction-inputs (psbt-unsigned-tx p)))
                  (length (psbt-inputs p)))
         (error "psbt: input map count mismatch"))
@@ -916,8 +997,11 @@
                  (length (psbt-outputs p)))
         (error "psbt: output map count mismatch"))
       (do ((xs (psbt-inputs p) (cdr xs)))
+          ((null? xs))
+        (validate-psbt-input (car xs)))
+      (do ((xs (psbt-outputs p) (cdr xs)))
           ((null? xs) p)
-        (validate-psbt-input (car xs))))
+        (validate-psbt-output (car xs))))
 
     (define (psbt-input->keyvals input)
       (validate-psbt-input input)
@@ -961,7 +1045,23 @@
                 (append parts
                         (list (psbt-keyval #x13 #u8()
                                            (psbt-input-taproot-key-sig input))))))
-        parts))
+        (do ((xs (psbt-input-bip32-derivations input) (cdr xs)))
+            ((null? xs))
+          (let ((entry (car xs)))
+            (set! parts
+                  (append parts
+                          (list (psbt-keyval #x06 (car entry) (cdr entry)))))))
+        (do ((xs (psbt-input-taproot-bip32-derivations input) (cdr xs)))
+            ((null? xs))
+          (let ((entry (car xs)))
+            (set! parts
+                  (append parts
+                          (list (psbt-keyval #x16 (car entry) (cdr entry)))))))
+        (append parts (map psbt-raw-keyval (psbt-input-unknowns input)))))
+
+    (define (psbt-output->keyvals output)
+      (validate-psbt-output output)
+      (map psbt-raw-keyval (psbt-output-unknowns output)))
 
     (define (serialize-psbt-map keyvals)
       (apply bytevector-append (append keyvals (list #u8(0)))))
@@ -971,16 +1071,19 @@
       (: psbt? -> bytevector?)
       (validate-psbt p)
       (let* ((global (serialize-psbt-map
-                       (list
-                         (psbt-keyval #x00 #u8()
-                                      (transaction-base-serialize
-                                        (psbt-unsigned-tx p))))))
+                       (append
+                         (list
+                           (psbt-keyval #x00 #u8()
+                                        (transaction-base-serialize
+                                          (psbt-unsigned-tx p))))
+                         (map psbt-raw-keyval (psbt-unknowns p)))))
              (input-maps (map (lambda (input)
                                 (serialize-psbt-map
                                   (psbt-input->keyvals input)))
                               (psbt-inputs p)))
              (output-maps (map (lambda (output)
-                                 (serialize-psbt-map '()))
+                                 (serialize-psbt-map
+                                   (psbt-output->keyvals output)))
                                (psbt-outputs p))))
         (apply bytevector-append
                (append (list #u8(#x70 #x73 #x62 #x74 #xff) global)
@@ -999,19 +1102,21 @@
                 (loop (cadr value-result)
                       (cons (cons key value) entries)))))))
 
-    (define (parse-global-unsigned-tx entries)
-      (let ((unsigned #f))
+    (define (parse-global-map entries)
+      (let ((unsigned #f)
+            (unknowns '()))
         (do ((xs entries (cdr xs)))
             ((null? xs))
           (let* ((entry (car xs))
                  (key (car entry))
                  (value (cdr entry)))
-            (when (and (= 1 (bytevector-length key))
-                       (= #x00 (bytevector-u8-ref key 0)))
-              (set! unsigned (transaction-parse value)))))
+            (if (and (= 1 (bytevector-length key))
+                     (= #x00 (bytevector-u8-ref key 0)))
+                (set! unsigned (transaction-parse value))
+                (set! unknowns (append unknowns (list (cons key value)))))))
         (unless unsigned
           (error "psbt-parse: missing unsigned transaction"))
-        unsigned))
+        (list unsigned unknowns)))
 
     (define (parse-input-entry input entry)
       (let* ((key (car entry))
@@ -1028,7 +1133,10 @@
                              sighash-type: (psbt-input-sighash-type input)
                              final-script-sig: (psbt-input-final-script-sig input)
                              final-script-witness: (psbt-input-final-script-witness input)
-                             taproot-key-sig: (psbt-input-taproot-key-sig input))))
+                             taproot-key-sig: (psbt-input-taproot-key-sig input)
+                             bip32-derivations: (psbt-input-bip32-derivations input)
+                             taproot-bip32-derivations: (psbt-input-taproot-bip32-derivations input)
+                             unknowns: (psbt-input-unknowns input))))
               ((= key-type #x02)
                (psbt-input non-witness-utxo: (psbt-input-non-witness-utxo input)
                            witness-utxo: (psbt-input-witness-utxo input)
@@ -1037,7 +1145,10 @@
                            sighash-type: (psbt-input-sighash-type input)
                            final-script-sig: (psbt-input-final-script-sig input)
                            final-script-witness: (psbt-input-final-script-witness input)
-                           taproot-key-sig: (psbt-input-taproot-key-sig input)))
+                           taproot-key-sig: (psbt-input-taproot-key-sig input)
+                           bip32-derivations: (psbt-input-bip32-derivations input)
+                           taproot-bip32-derivations: (psbt-input-taproot-bip32-derivations input)
+                           unknowns: (psbt-input-unknowns input)))
               ((= key-type #x03)
                (psbt-input non-witness-utxo: (psbt-input-non-witness-utxo input)
                            witness-utxo: (psbt-input-witness-utxo input)
@@ -1045,7 +1156,10 @@
                            sighash-type: (read-u32-le value 0 "psbt sighash type")
                            final-script-sig: (psbt-input-final-script-sig input)
                            final-script-witness: (psbt-input-final-script-witness input)
-                           taproot-key-sig: (psbt-input-taproot-key-sig input)))
+                           taproot-key-sig: (psbt-input-taproot-key-sig input)
+                           bip32-derivations: (psbt-input-bip32-derivations input)
+                           taproot-bip32-derivations: (psbt-input-taproot-bip32-derivations input)
+                           unknowns: (psbt-input-unknowns input)))
               ((= key-type #x07)
                (psbt-input non-witness-utxo: (psbt-input-non-witness-utxo input)
                            witness-utxo: (psbt-input-witness-utxo input)
@@ -1053,7 +1167,10 @@
                            sighash-type: (psbt-input-sighash-type input)
                            final-script-sig: value
                            final-script-witness: (psbt-input-final-script-witness input)
-                           taproot-key-sig: (psbt-input-taproot-key-sig input)))
+                           taproot-key-sig: (psbt-input-taproot-key-sig input)
+                           bip32-derivations: (psbt-input-bip32-derivations input)
+                           taproot-bip32-derivations: (psbt-input-taproot-bip32-derivations input)
+                           unknowns: (psbt-input-unknowns input)))
               ((= key-type #x08)
                (psbt-input non-witness-utxo: (psbt-input-non-witness-utxo input)
                            witness-utxo: (psbt-input-witness-utxo input)
@@ -1061,7 +1178,10 @@
                            sighash-type: (psbt-input-sighash-type input)
                            final-script-sig: (psbt-input-final-script-sig input)
                            final-script-witness: (parse-serialized-witness value)
-                           taproot-key-sig: (psbt-input-taproot-key-sig input)))
+                           taproot-key-sig: (psbt-input-taproot-key-sig input)
+                           bip32-derivations: (psbt-input-bip32-derivations input)
+                           taproot-bip32-derivations: (psbt-input-taproot-bip32-derivations input)
+                           unknowns: (psbt-input-unknowns input)))
               ((= key-type #x00)
                (psbt-input non-witness-utxo: (transaction-parse value)
                            witness-utxo: (psbt-input-witness-utxo input)
@@ -1069,7 +1189,10 @@
                            sighash-type: (psbt-input-sighash-type input)
                            final-script-sig: (psbt-input-final-script-sig input)
                            final-script-witness: (psbt-input-final-script-witness input)
-                           taproot-key-sig: (psbt-input-taproot-key-sig input)))
+                           taproot-key-sig: (psbt-input-taproot-key-sig input)
+                           bip32-derivations: (psbt-input-bip32-derivations input)
+                           taproot-bip32-derivations: (psbt-input-taproot-bip32-derivations input)
+                           unknowns: (psbt-input-unknowns input)))
               ((= key-type #x13)
                (psbt-input non-witness-utxo: (psbt-input-non-witness-utxo input)
                            witness-utxo: (psbt-input-witness-utxo input)
@@ -1077,8 +1200,50 @@
                            sighash-type: (psbt-input-sighash-type input)
                            final-script-sig: (psbt-input-final-script-sig input)
                            final-script-witness: (psbt-input-final-script-witness input)
-                           taproot-key-sig: value))
-              (else input))))
+                           taproot-key-sig: value
+                           bip32-derivations: (psbt-input-bip32-derivations input)
+                           taproot-bip32-derivations: (psbt-input-taproot-bip32-derivations input)
+                           unknowns: (psbt-input-unknowns input)))
+              ((= key-type #x06)
+               (require-bytevector-length "psbt BIP32 derivation pubkey" key-data 33)
+               (validate-bip32-origin-value "psbt BIP32 derivation" value)
+               (psbt-input non-witness-utxo: (psbt-input-non-witness-utxo input)
+                           witness-utxo: (psbt-input-witness-utxo input)
+                           partial-sigs: (psbt-input-partial-sigs input)
+                           sighash-type: (psbt-input-sighash-type input)
+                           final-script-sig: (psbt-input-final-script-sig input)
+                           final-script-witness: (psbt-input-final-script-witness input)
+                           taproot-key-sig: (psbt-input-taproot-key-sig input)
+                           bip32-derivations: (append (psbt-input-bip32-derivations input)
+                                                      (list (cons key-data value)))
+                           taproot-bip32-derivations: (psbt-input-taproot-bip32-derivations input)
+                           unknowns: (psbt-input-unknowns input)))
+              ((= key-type #x16)
+               (require-bytevector-length "psbt Taproot BIP32 derivation xonly pubkey" key-data 32)
+               (validate-taproot-origin-value "psbt Taproot BIP32 derivation" value)
+               (psbt-input non-witness-utxo: (psbt-input-non-witness-utxo input)
+                           witness-utxo: (psbt-input-witness-utxo input)
+                           partial-sigs: (psbt-input-partial-sigs input)
+                           sighash-type: (psbt-input-sighash-type input)
+                           final-script-sig: (psbt-input-final-script-sig input)
+                           final-script-witness: (psbt-input-final-script-witness input)
+                           taproot-key-sig: (psbt-input-taproot-key-sig input)
+                           bip32-derivations: (psbt-input-bip32-derivations input)
+                           taproot-bip32-derivations: (append (psbt-input-taproot-bip32-derivations input)
+                                                              (list (cons key-data value)))
+                           unknowns: (psbt-input-unknowns input)))
+              (else
+               (psbt-input non-witness-utxo: (psbt-input-non-witness-utxo input)
+                           witness-utxo: (psbt-input-witness-utxo input)
+                           partial-sigs: (psbt-input-partial-sigs input)
+                           sighash-type: (psbt-input-sighash-type input)
+                           final-script-sig: (psbt-input-final-script-sig input)
+                           final-script-witness: (psbt-input-final-script-witness input)
+                           taproot-key-sig: (psbt-input-taproot-key-sig input)
+                           bip32-derivations: (psbt-input-bip32-derivations input)
+                           taproot-bip32-derivations: (psbt-input-taproot-bip32-derivations input)
+                           unknowns: (append (psbt-input-unknowns input)
+                                             (list (cons key value))))))))
 
     (define (parse-psbt-input entries)
       (let ((input (empty-psbt-input)))
@@ -1102,7 +1267,7 @@
             (let ((parsed (parse-psbt-map bytes next)))
               (loop (+ i 1)
                     (cadr parsed)
-                    (cons (empty-psbt-output) outputs))))))
+                    (cons (psbt-output unknowns: (car parsed)) outputs))))))
 
     ;;; Parse PSBT v0 bytes into a PSBT record.
     (define (psbt-parse bytes)
@@ -1113,7 +1278,8 @@
                       (bytevector-copy bytes 0 5))
         (error "psbt-parse: bad magic"))
       (let* ((global-result (parse-psbt-map bytes 5))
-             (unsigned (parse-global-unsigned-tx (car global-result)))
+             (global-map (parse-global-map (car global-result)))
+             (unsigned (car global-map))
              (input-result (parse-psbt-inputs
                              bytes
                              (cadr global-result)
@@ -1126,7 +1292,8 @@
           (error "psbt-parse: trailing bytes"))
         (psbt unsigned-tx: unsigned
               inputs: (car input-result)
-              outputs: (car output-result))))
+              outputs: (car output-result)
+              unknowns: (cadr global-map))))
 
     (define (psbt-update-input p input-index input)
       (psbt unsigned-tx: (psbt-unsigned-tx p)
@@ -1134,7 +1301,8 @@
                                  input-index
                                  input
                                  "psbt input")
-            outputs: (psbt-outputs p)))
+            outputs: (psbt-outputs p)
+            unknowns: (psbt-unknowns p)))
 
     (define (psbt-input-sighash-or-default input default)
       (if (psbt-input-sighash-type input)
@@ -1204,7 +1372,10 @@
                    sighash-type: sighash-type
                    final-script-sig: (psbt-input-final-script-sig input)
                    final-script-witness: (psbt-input-final-script-witness input)
-                   taproot-key-sig: (psbt-input-taproot-key-sig input))))
+                   taproot-key-sig: (psbt-input-taproot-key-sig input)
+                   bip32-derivations: (psbt-input-bip32-derivations input)
+                   taproot-bip32-derivations: (psbt-input-taproot-bip32-derivations input)
+                   unknowns: (psbt-input-unknowns input))))
           (psbt-update-input p input-index signed-input))))
 
     ;;; Add a P2WPKH partial signature to a PSBT input.
@@ -1242,7 +1413,10 @@
                      sighash-type: sighash-type
                      final-script-sig: (psbt-input-final-script-sig input)
                      final-script-witness: (psbt-input-final-script-witness input)
-                     taproot-key-sig: (psbt-input-taproot-key-sig input))))
+                     taproot-key-sig: (psbt-input-taproot-key-sig input)
+                     bip32-derivations: (psbt-input-bip32-derivations input)
+                     taproot-bip32-derivations: (psbt-input-taproot-bip32-derivations input)
+                     unknowns: (psbt-input-unknowns input))))
             (psbt-update-input p input-index signed-input)))))
 
     ;;; Add a Taproot key-path signature to a PSBT input.
@@ -1272,7 +1446,10 @@
                    sighash-type: sighash-type
                    final-script-sig: (psbt-input-final-script-sig input)
                    final-script-witness: (psbt-input-final-script-witness input)
-                   taproot-key-sig: sig)))
+                   taproot-key-sig: sig
+                   bip32-derivations: (psbt-input-bip32-derivations input)
+                   taproot-bip32-derivations: (psbt-input-taproot-bip32-derivations input)
+                   unknowns: (psbt-input-unknowns input))))
           (psbt-update-input p input-index signed-input))))
 
     ;;; Finalize a signed P2PKH PSBT input.
@@ -1294,7 +1471,10 @@
                                        (script-push-data (cdr entry))
                                        (script-push-data (car entry)))
                    final-script-witness: '()
-                   taproot-key-sig: (psbt-input-taproot-key-sig input))))
+                   taproot-key-sig: (psbt-input-taproot-key-sig input)
+                   bip32-derivations: (psbt-input-bip32-derivations input)
+                   taproot-bip32-derivations: (psbt-input-taproot-bip32-derivations input)
+                   unknowns: (psbt-input-unknowns input))))
           (psbt-update-input p input-index final-input))))
 
     ;;; Finalize a signed P2WPKH PSBT input.
@@ -1314,7 +1494,10 @@
                    sighash-type: (psbt-input-sighash-type input)
                    final-script-sig: #u8()
                    final-script-witness: (list (cdr entry) (car entry))
-                   taproot-key-sig: (psbt-input-taproot-key-sig input))))
+                   taproot-key-sig: (psbt-input-taproot-key-sig input)
+                   bip32-derivations: (psbt-input-bip32-derivations input)
+                   taproot-bip32-derivations: (psbt-input-taproot-bip32-derivations input)
+                   unknowns: (psbt-input-unknowns input))))
           (psbt-update-input p input-index final-input))))
 
     ;;; Finalize a signed Taproot key-path PSBT input.
@@ -1333,7 +1516,10 @@
                   sighash-type: (psbt-input-sighash-type input)
                   final-script-sig: #u8()
                   final-script-witness: (list sig)
-                  taproot-key-sig: sig)))
+                  taproot-key-sig: sig
+                  bip32-derivations: (psbt-input-bip32-derivations input)
+                  taproot-bip32-derivations: (psbt-input-taproot-bip32-derivations input)
+                  unknowns: (psbt-input-unknowns input))))
           (psbt-update-input p input-index final-input))))
 
     ;;; Extract the final transaction from a fully-finalized PSBT.

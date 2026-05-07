@@ -85,7 +85,7 @@ Layer 6 — Networking (sigil-bitcoin-p2p)
 - `sigil-bitcoin-keys` provides network structs, WIF, public-key predicates, P2PKH/P2SH/P2WPKH/P2WSH/P2TR address helpers, BIP32 extended-key structs and derivation, BIP43/BIP44/BIP49/BIP84/BIP86 account helpers, and BIP39 English mnemonic helpers.
 - `sigil-bitcoin-keys` package harness tests pass WIF, address, BIP32 vectors 1/2/3, invalid extended-key, public-derivation parity, account derivation helpers, and BIP39 128/160/192/224/256-bit entropy assertions.
 - `sigil-bitcoin-script` provides script byte constructors, pushdata encoding, witness programs, and standard P2PKH/P2SH/P2WPKH/P2WSH/P2TR scriptPubKey templates.
-- `sigil-bitcoin-tx` provides transaction structs, compactSize encoding/decoding, legacy/SegWit parsing and serialization, Bitcoin Core raw transaction round-trip coverage, txid/wtxid helpers, `SIGHASH_ALL` legacy/BIP143 hashes, BIP341 key-path sighashes, P2PKH/P2WPKH/P2TR key-path signing, and PSBT v0 support for witness UTXOs, non-witness UTXOs, partial signatures, Taproot key signatures, finalization, and extraction.
+- `sigil-bitcoin-tx` provides transaction structs, compactSize encoding/decoding, legacy/SegWit parsing and serialization, Bitcoin Core raw transaction round-trip coverage, txid/wtxid helpers, `SIGHASH_ALL` legacy/BIP143 hashes, BIP341 key-path sighashes, P2PKH/P2WPKH/P2TR key-path signing, and PSBT v0 support for witness UTXOs, non-witness UTXOs, partial signatures, BIP32/Taproot derivation records, unknown/proprietary key preservation, Taproot key signatures, finalization, and extraction.
 - `sigil-bitcoin-miniscript` provides fragment ASTs, parsing, canonical strings, partial script compilation, descriptor parsing/scriptPubKey compilation, and BIP388 wallet policy descriptor expansion.
 - `sigil-bitcoin` has a standalone documentation site generator that reads compiler JSON docs, emits a docs.rs-inspired static site to `public/`, and includes concise guide pages under `docs/site/`.
 - `hash160` currently uses a pure Sigil RIPEMD-160 fallback. The local `sigil-crypto` source and build metadata expose `ripemd160`; package-native harnesses that depend on the sibling checkout bind it correctly, but the root direct runner imports the host/bundled crypto module and leaves newer native bindings unbound.
@@ -215,9 +215,10 @@ or pure Sigil code. No changes to the Sigil VM or compiler are required.
 - [x] Add P2PKH and P2TR key-path signing helpers.
 - [x] Extend PSBT signing/finalization beyond P2WPKH to P2PKH and P2TR key-path inputs.
 - [x] Add PSBT non-witness UTXO and Taproot key-signature fields.
-- [ ] Add PSBT BIP32 derivation records, Taproot derivation fields, and unknown/proprietary key preservation.
+- [x] Add PSBT BIP32 derivation records, Taproot derivation fields, and unknown/proprietary key preservation.
 - [ ] Add hash-lock fragments, `andor`, `or_b`, `or_c`, `or_i`, and executable `thresh` compilation using rust-miniscript/Bitcoin Core vectors.
 - [ ] Add Miniscript type metadata beyond the current coarse base type, including malleability and satisfaction properties needed for signing.
 - [ ] Add descriptor checksums, BIP389 multipath parsing, Taproot script trees, and BIP388 `musig(...)` placeholders.
 - [ ] Connect descriptors and wallet policies to PSBT by deriving scripts, key origins, change detection, and signing inputs.
+- [ ] Add PSBT output BIP32/Taproot derivation fields when descriptor change-output tracking starts using them.
 - [ ] Replace the repo-local docs generator with Press/`sigil-publish` once the site generation package is available in this workspace.
