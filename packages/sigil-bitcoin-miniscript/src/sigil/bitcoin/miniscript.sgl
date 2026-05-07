@@ -31,6 +31,13 @@
     miniscript-thresh
     miniscript-wrapper
     miniscript-parse
+    miniscript-type-info miniscript-type-info?
+    miniscript-type-info-base miniscript-type-info-properties
+    miniscript-type-info-satisfaction-items
+    miniscript-type-info-requires-signature
+    miniscript-type-info-requires-preimage
+    miniscript-type-info-has-timelock
+    miniscript-type-info-nonmalleable
     miniscript-type
     miniscript-type-check
     miniscript->string
@@ -51,6 +58,16 @@
       (kind symbol?)
       (args list?)
       (data any?))
+
+    ;;; Derived metadata used by descriptor policy and signing flows.
+    (define-struct miniscript-type-info-record
+      (base symbol?)
+      (properties list?)
+      (satisfaction-items integer?)
+      (requires-signature boolean?)
+      (requires-preimage boolean?)
+      (has-timelock boolean?)
+      (nonmalleable boolean?))
 
     ;;; Output descriptor AST node.
     (define-struct descriptor
@@ -466,39 +483,156 @@
       (: string? -> miniscript-fragment?)
       (parse-fragment (strip-whitespace s)))
 
+    (define (max-integer a b)
+      (if (> a b) a b))
+
+    (define (any-info? accessor infos)
+      (let loop ((xs infos))
+        (cond ((null? xs) #f)
+              ((accessor (car xs)) #t)
+              (else (loop (cdr xs))))))
+
+    (define (miniscript-type-info? value)
+      (miniscript-type-info-record? value))
+
+    (define (miniscript-type-info-base info)
+      (miniscript-type-info-record-base info))
+
+    (define (miniscript-type-info-properties info)
+      (miniscript-type-info-record-properties info))
+
+    (define (miniscript-type-info-satisfaction-items info)
+      (miniscript-type-info-record-satisfaction-items info))
+
+    (define (miniscript-type-info-requires-signature info)
+      (miniscript-type-info-record-requires-signature info))
+
+    (define (miniscript-type-info-requires-preimage info)
+      (miniscript-type-info-record-requires-preimage info))
+
+    (define (miniscript-type-info-has-timelock info)
+      (miniscript-type-info-record-has-timelock info))
+
+    (define (miniscript-type-info-nonmalleable info)
+      (miniscript-type-info-record-nonmalleable info))
+
+    (define (all-info? accessor infos)
+      (let loop ((xs infos))
+        (cond ((null? xs) #t)
+              ((accessor (car xs)) (loop (cdr xs)))
+              (else #f))))
+
+    (define (sum-satisfaction-items infos)
+      (let loop ((xs infos)
+                 (total 0))
+        (if (null? xs)
+            total
+            (loop (cdr xs)
+                  (+ total (miniscript-type-info-satisfaction-items (car xs)))))))
+
+    (define (max-satisfaction-items infos)
+      (let loop ((xs infos)
+                 (best 0))
+        (if (null? xs)
+            best
+            (loop (cdr xs)
+                  (max-integer best (miniscript-type-info-satisfaction-items (car xs)))))))
+
+    (define (type-properties unit? safe? nonmalleable?)
+      (let ((props '()))
+        (when unit?
+          (set! props (cons 'unit props)))
+        (when safe?
+          (set! props (cons 'safe props)))
+        (when nonmalleable?
+          (set! props (cons 'nonmalleable props)))
+        (reverse props)))
+
+    (define (make-type-info base unit? safe? satisfaction-items requires-signature requires-preimage has-timelock nonmalleable)
+      (miniscript-type-info-record
+        base: base
+        properties: (type-properties unit? safe? nonmalleable)
+        satisfaction-items: satisfaction-items
+        requires-signature: requires-signature
+        requires-preimage: requires-preimage
+        has-timelock: has-timelock
+        nonmalleable: nonmalleable))
+
+    (define (combine-type-info base children satisfaction-items nonmalleable)
+      (make-type-info
+        base
+        #t
+        (all-info? miniscript-type-info-nonmalleable children)
+        satisfaction-items
+        (any-info? miniscript-type-info-requires-signature children)
+        (any-info? miniscript-type-info-requires-preimage children)
+        (any-info? miniscript-type-info-has-timelock children)
+        nonmalleable))
+
+    ;;; Return Miniscript base type and signing/satisfaction metadata.
+    (define (miniscript-type-info fragment)
+      (: miniscript-fragment? -> any?)
+      (unless (miniscript-fragment? fragment)
+        (error "miniscript-type-info: expected miniscript fragment"))
+      (let ((kind (miniscript-fragment-kind fragment)))
+        (cond ((eq? kind 'pk-k)
+               (make-type-info 'K #t #t 1 #t #f #f #t))
+              ((eq? kind 'pk-h)
+               (make-type-info 'K #t #t 2 #t #f #f #t))
+              ((eq? kind 'pk)
+               (make-type-info 'B #t #t 1 #t #f #f #t))
+              ((eq? kind 'one)
+               (make-type-info 'B #t #t 0 #f #f #f #t))
+              ((or (eq? kind 'after) (eq? kind 'older))
+               (make-type-info 'B #t #t 0 #f #f #t #t))
+              ((or (eq? kind 'sha256)
+                   (eq? kind 'hash256)
+                   (eq? kind 'ripemd160)
+                   (eq? kind 'hash160))
+               (make-type-info 'B #t #t 1 #f #t #f #t))
+              ((or (eq? kind 'multi) (eq? kind 'sortedmulti))
+               (make-type-info 'B #t #t (+ 1 (miniscript-fragment-data fragment)) #t #f #f #t))
+              ((eq? kind 'wrapper)
+               (let* ((child (car (miniscript-fragment-args fragment)))
+                      (child-info (miniscript-type-info child))
+                      (base (if (string=? "v" (miniscript-fragment-data fragment))
+                                'V
+                                (miniscript-type-info-base child-info))))
+                 (make-type-info
+                   base
+                   #t
+                   (miniscript-type-info-nonmalleable child-info)
+                   (miniscript-type-info-satisfaction-items child-info)
+                   (miniscript-type-info-requires-signature child-info)
+                   (miniscript-type-info-requires-preimage child-info)
+                   (miniscript-type-info-has-timelock child-info)
+                   (miniscript-type-info-nonmalleable child-info))))
+              ((or (eq? kind 'and-v) (eq? kind 'and-b))
+               (let* ((infos (map miniscript-type-info (miniscript-fragment-args fragment)))
+                      (nonmalleable (all-info? miniscript-type-info-nonmalleable infos)))
+                 (combine-type-info 'B infos (sum-satisfaction-items infos) nonmalleable)))
+              ((eq? kind 'andor)
+               (let ((infos (map miniscript-type-info (miniscript-fragment-args fragment))))
+                 (combine-type-info 'B infos (sum-satisfaction-items infos) #f)))
+              ((or (eq? kind 'or-b)
+                   (eq? kind 'or-c)
+                   (eq? kind 'or-d))
+               (let ((infos (map miniscript-type-info (miniscript-fragment-args fragment))))
+                 (combine-type-info 'B infos (sum-satisfaction-items infos) #f)))
+              ((eq? kind 'or-i)
+               (let ((infos (map miniscript-type-info (miniscript-fragment-args fragment))))
+                 (combine-type-info 'B infos (+ 1 (max-satisfaction-items infos)) #f)))
+              ((eq? kind 'thresh)
+               (let ((infos (map miniscript-type-info (miniscript-fragment-args fragment))))
+                 (combine-type-info 'B infos (sum-satisfaction-items infos)
+                                    (all-info? miniscript-type-info-nonmalleable infos))))
+              (else
+               (error "miniscript-type-info: unsupported fragment")))))
+
     ;;; Return the coarse Miniscript base type for a fragment.
     (define (miniscript-type fragment)
       (: miniscript-fragment? -> symbol?)
-      (unless (miniscript-fragment? fragment)
-        (error "miniscript-type: expected miniscript fragment"))
-      (let ((kind (miniscript-fragment-kind fragment)))
-        (cond ((or (eq? kind 'pk-k) (eq? kind 'pk-h))
-               'K)
-              ((eq? kind 'wrapper)
-               (if (string=? "v" (miniscript-fragment-data fragment))
-                   'V
-                   'B))
-              ((or (eq? kind 'pk)
-                   (eq? kind 'after)
-                   (eq? kind 'older)
-                   (eq? kind 'sha256)
-                   (eq? kind 'hash256)
-                   (eq? kind 'ripemd160)
-                   (eq? kind 'hash160)
-                   (eq? kind 'multi)
-                   (eq? kind 'sortedmulti)
-                   (eq? kind 'and-v)
-                   (eq? kind 'and-b)
-                   (eq? kind 'andor)
-                   (eq? kind 'or-b)
-                   (eq? kind 'or-c)
-                   (eq? kind 'or-d)
-                   (eq? kind 'or-i)
-                   (eq? kind 'thresh)
-                   (eq? kind 'one))
-               'B)
-              (else
-               (error "miniscript-type: unsupported fragment")))))
+      (miniscript-type-info-base (miniscript-type-info fragment)))
 
     ;;; Validate a Miniscript fragment and return its coarse base type.
     (define (miniscript-type-check fragment)

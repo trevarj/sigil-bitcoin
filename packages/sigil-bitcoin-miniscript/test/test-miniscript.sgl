@@ -54,7 +54,35 @@
   (test "constructs multisig fragments"
     (let ((fragment (miniscript-multi 2 (list %generator-pub %second-pub))))
       (assert-equal 'multi (miniscript-fragment-kind fragment))
-      (assert-equal 'B (miniscript-type fragment)))))
+      (assert-equal 'B (miniscript-type fragment))))
+
+  (test "derives type metadata for signing"
+    (let* ((fragment (miniscript-parse
+                       (string-append "and_v(v:" %pk-text ",older(12960))")))
+           (info (miniscript-type-info fragment)))
+      (assert-true (miniscript-type-info? info))
+      (assert-equal 'B (miniscript-type-info-base info))
+      (assert-equal '(unit safe nonmalleable)
+                    (miniscript-type-info-properties info))
+      (assert-equal 1 (miniscript-type-info-satisfaction-items info))
+      (assert-true (miniscript-type-info-requires-signature info))
+      (assert-false (miniscript-type-info-requires-preimage info))
+      (assert-true (miniscript-type-info-has-timelock info))
+      (assert-true (miniscript-type-info-nonmalleable info))))
+
+  (test "derives type metadata for preimages and branches"
+    (let ((hash-info (miniscript-type-info
+                       (miniscript-parse (string-append "sha256(" %zero-sha256 ")"))))
+          (or-info (miniscript-type-info
+                     (miniscript-parse
+                       (string-append "or_i(" %pk-text ",pk(" %second-pub-text "))")))))
+      (assert-equal 'B (miniscript-type-info-base hash-info))
+      (assert-equal 1 (miniscript-type-info-satisfaction-items hash-info))
+      (assert-false (miniscript-type-info-requires-signature hash-info))
+      (assert-true (miniscript-type-info-requires-preimage hash-info))
+      (assert-equal 2 (miniscript-type-info-satisfaction-items or-info))
+      (assert-true (miniscript-type-info-requires-signature or-info))
+      (assert-false (miniscript-type-info-nonmalleable or-info)))))
 
 (test-group "miniscript parser"
   (test "parses pk_k"

@@ -588,6 +588,69 @@
     "summary": "Get the `data` field of a `miniscript-fragment` struct."
   },
   {
+    "name": "miniscript-type-info-record",
+    "kind": "procedure",
+    "module": "(sigil bitcoin miniscript)",
+    "url": "api/sigil/bitcoin/miniscript.html#miniscript-type-info-record",
+    "summary": "Derived metadata used by descriptor policy and signing flows."
+  },
+  {
+    "name": "miniscript-type-info-record?",
+    "kind": "procedure",
+    "module": "(sigil bitcoin miniscript)",
+    "url": "api/sigil/bitcoin/miniscript.html#miniscript-type-info-record?",
+    "summary": "Test if a value is a `miniscript-type-info-record` struct."
+  },
+  {
+    "name": "miniscript-type-info-record-base",
+    "kind": "procedure",
+    "module": "(sigil bitcoin miniscript)",
+    "url": "api/sigil/bitcoin/miniscript.html#miniscript-type-info-record-base",
+    "summary": "Get the `base` field of a `miniscript-type-info-record` struct."
+  },
+  {
+    "name": "miniscript-type-info-record-properties",
+    "kind": "procedure",
+    "module": "(sigil bitcoin miniscript)",
+    "url": "api/sigil/bitcoin/miniscript.html#miniscript-type-info-record-properties",
+    "summary": "Get the `properties` field of a `miniscript-type-info-record` struct."
+  },
+  {
+    "name": "miniscript-type-info-record-satisfaction-items",
+    "kind": "procedure",
+    "module": "(sigil bitcoin miniscript)",
+    "url": "api/sigil/bitcoin/miniscript.html#miniscript-type-info-record-satisfaction-items",
+    "summary": "Get the `satisfaction-items` field of a `miniscript-type-info-record` struct."
+  },
+  {
+    "name": "miniscript-type-info-record-requires-signature",
+    "kind": "procedure",
+    "module": "(sigil bitcoin miniscript)",
+    "url": "api/sigil/bitcoin/miniscript.html#miniscript-type-info-record-requires-signature",
+    "summary": "Get the `requires-signature` field of a `miniscript-type-info-record` struct."
+  },
+  {
+    "name": "miniscript-type-info-record-requires-preimage",
+    "kind": "procedure",
+    "module": "(sigil bitcoin miniscript)",
+    "url": "api/sigil/bitcoin/miniscript.html#miniscript-type-info-record-requires-preimage",
+    "summary": "Get the `requires-preimage` field of a `miniscript-type-info-record` struct."
+  },
+  {
+    "name": "miniscript-type-info-record-has-timelock",
+    "kind": "procedure",
+    "module": "(sigil bitcoin miniscript)",
+    "url": "api/sigil/bitcoin/miniscript.html#miniscript-type-info-record-has-timelock",
+    "summary": "Get the `has-timelock` field of a `miniscript-type-info-record` struct."
+  },
+  {
+    "name": "miniscript-type-info-record-nonmalleable",
+    "kind": "procedure",
+    "module": "(sigil bitcoin miniscript)",
+    "url": "api/sigil/bitcoin/miniscript.html#miniscript-type-info-record-nonmalleable",
+    "summary": "Get the `nonmalleable` field of a `miniscript-type-info-record` struct."
+  },
+  {
     "name": "descriptor",
     "kind": "procedure",
     "module": "(sigil bitcoin miniscript)",
@@ -798,6 +861,13 @@
     "summary": "Parse a Miniscript expression into a fragment AST."
   },
   {
+    "name": "miniscript-type-info",
+    "kind": "procedure",
+    "module": "(sigil bitcoin miniscript)",
+    "url": "api/sigil/bitcoin/miniscript.html#miniscript-type-info",
+    "summary": "Return Miniscript base type and signing/satisfaction metadata."
+  },
+  {
     "name": "miniscript-type",
     "kind": "procedure",
     "module": "(sigil bitcoin miniscript)",
@@ -859,6 +929,62 @@
     "module": "(sigil bitcoin miniscript)",
     "url": "api/sigil/bitcoin/miniscript.html#wallet-policy-descriptor",
     "summary": "Expand a wallet policy into a concrete descriptor."
+  },
+  {
+    "name": "miniscript-type-info?",
+    "kind": "variable",
+    "module": "(sigil bitcoin miniscript)",
+    "url": "api/sigil/bitcoin/miniscript.html#miniscript-type-info?",
+    "summary": ""
+  },
+  {
+    "name": "miniscript-type-info-base",
+    "kind": "variable",
+    "module": "(sigil bitcoin miniscript)",
+    "url": "api/sigil/bitcoin/miniscript.html#miniscript-type-info-base",
+    "summary": ""
+  },
+  {
+    "name": "miniscript-type-info-properties",
+    "kind": "variable",
+    "module": "(sigil bitcoin miniscript)",
+    "url": "api/sigil/bitcoin/miniscript.html#miniscript-type-info-properties",
+    "summary": ""
+  },
+  {
+    "name": "miniscript-type-info-satisfaction-items",
+    "kind": "variable",
+    "module": "(sigil bitcoin miniscript)",
+    "url": "api/sigil/bitcoin/miniscript.html#miniscript-type-info-satisfaction-items",
+    "summary": ""
+  },
+  {
+    "name": "miniscript-type-info-requires-signature",
+    "kind": "variable",
+    "module": "(sigil bitcoin miniscript)",
+    "url": "api/sigil/bitcoin/miniscript.html#miniscript-type-info-requires-signature",
+    "summary": ""
+  },
+  {
+    "name": "miniscript-type-info-requires-preimage",
+    "kind": "variable",
+    "module": "(sigil bitcoin miniscript)",
+    "url": "api/sigil/bitcoin/miniscript.html#miniscript-type-info-requires-preimage",
+    "summary": ""
+  },
+  {
+    "name": "miniscript-type-info-has-timelock",
+    "kind": "variable",
+    "module": "(sigil bitcoin miniscript)",
+    "url": "api/sigil/bitcoin/miniscript.html#miniscript-type-info-has-timelock",
+    "summary": ""
+  },
+  {
+    "name": "miniscript-type-info-nonmalleable",
+    "kind": "variable",
+    "module": "(sigil bitcoin miniscript)",
+    "url": "api/sigil/bitcoin/miniscript.html#miniscript-type-info-nonmalleable",
+    "summary": ""
   },
   {
     "name": "sigil bitcoin primitives",
