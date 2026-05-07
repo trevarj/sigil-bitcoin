@@ -1,0 +1,209 @@
+;;; (sigil bitcoin miniscript) — Miniscript AST, parser, and compiler
+
+(define-library (sigil bitcoin miniscript)
+  (import (sigil struct)
+          (sigil math)
+          (sigil bitcoin encoding)
+          (sigil bitcoin script))
+  (export
+    miniscript-fragment miniscript-fragment?
+    miniscript-fragment-kind miniscript-fragment-args miniscript-fragment-data
+    miniscript-pk-k
+    miniscript-after
+    miniscript-older
+    miniscript-and-v
+    miniscript-parse
+    miniscript-type
+    miniscript-type-check
+    miniscript-compile)
+  (begin
+
+    (define-struct miniscript-fragment
+      (kind symbol?)
+      (args list?)
+      (data any?))
+
+    (define (miniscript-pk-k pubkey)
+      (: bytevector? -> miniscript-fragment?)
+      (unless (and (bytevector? pubkey) (= 33 (bytevector-length pubkey)))
+        (error "miniscript-pk-k: expected 33-byte compressed public key"))
+      (miniscript-fragment kind: 'pk-k args: '() data: (bytevector-copy pubkey)))
+
+    (define (miniscript-after locktime)
+      (: integer? -> miniscript-fragment?)
+      (unless (and (integer? locktime) (<= 0 locktime #xffffffff))
+        (error "miniscript-after: locktime out of range"))
+      (miniscript-fragment kind: 'after args: '() data: locktime))
+
+    (define (miniscript-older sequence)
+      (: integer? -> miniscript-fragment?)
+      (unless (and (integer? sequence) (<= 0 sequence #xffffffff))
+        (error "miniscript-older: sequence out of range"))
+      (miniscript-fragment kind: 'older args: '() data: sequence))
+
+    (define (miniscript-and-v left right)
+      (: miniscript-fragment? miniscript-fragment? -> miniscript-fragment?)
+      (miniscript-fragment kind: 'and-v args: (list left right) data: #f))
+
+    (define (whitespace? c)
+      (or (char=? c #\space)
+          (char=? c #\tab)
+          (char=? c #\newline)
+          (char=? c #\return)))
+
+    (define (strip-whitespace s)
+      (let ((chars '()))
+        (do ((i 0 (+ i 1)))
+            ((>= i (string-length s)) (list->string (reverse chars)))
+          (let ((c (string-ref s i)))
+            (unless (whitespace? c)
+              (set! chars (cons c chars)))))))
+
+    (define (string-prefix? prefix s)
+      (let ((plen (string-length prefix)))
+        (and (<= plen (string-length s))
+             (string=? prefix (substring s 0 plen)))))
+
+    (define (string-ends-with? s c)
+      (and (> (string-length s) 0)
+           (char=? c (string-ref s (- (string-length s) 1)))))
+
+    (define (function-inner who prefix s)
+      (unless (and (string-prefix? prefix s)
+                   (string-ends-with? s #\)))
+        (error (string-append who ": malformed fragment")))
+      (substring s (string-length prefix) (- (string-length s) 1)))
+
+    (define (decimal-digit c)
+      (let ((n (char->integer c)))
+        (and (<= 48 n 57) (- n 48))))
+
+    (define (parse-decimal s who)
+      (when (= 0 (string-length s))
+        (error (string-append who ": empty number")))
+      (let ((n 0))
+        (do ((i 0 (+ i 1)))
+            ((>= i (string-length s)) n)
+          (let ((d (decimal-digit (string-ref s i))))
+            (when (not d)
+              (error (string-append who ": invalid decimal number")))
+            (set! n (+ (* n 10) d))))))
+
+    (define (split-top-level-comma s)
+      (let loop ((i 0)
+                 (depth 0)
+                 (comma #f))
+        (if (>= i (string-length s))
+            (begin
+              (when (> depth 0)
+                (error "miniscript-parse: unbalanced parentheses"))
+              (unless comma
+                (error "miniscript-parse: expected comma"))
+              (list (substring s 0 comma)
+                    (substring s (+ comma 1) (string-length s))))
+            (let ((c (string-ref s i)))
+              (cond ((char=? c #\()
+                     (loop (+ i 1) (+ depth 1) comma))
+                    ((char=? c #\))
+                     (let ((next-depth (- depth 1)))
+                       (when (< next-depth 0)
+                         (error "miniscript-parse: unbalanced parentheses"))
+                       (loop (+ i 1) next-depth comma)))
+                    ((and (char=? c #\,) (= depth 0))
+                     (when comma
+                       (error "miniscript-parse: too many top-level arguments"))
+                     (loop (+ i 1) depth i))
+                    (else
+                     (loop (+ i 1) depth comma)))))))
+
+    (define (parse-fragment s)
+      (cond ((string-prefix? "pk_k(" s)
+             (let* ((pubkey (hex-decode (function-inner "pk_k" "pk_k(" s))))
+               (miniscript-pk-k pubkey)))
+            ((string-prefix? "after(" s)
+             (miniscript-after
+               (parse-decimal (function-inner "after" "after(" s) "after")))
+            ((string-prefix? "older(" s)
+             (miniscript-older
+               (parse-decimal (function-inner "older" "older(" s) "older")))
+            ((string-prefix? "and_v(" s)
+             (let ((parts (split-top-level-comma
+                            (function-inner "and_v" "and_v(" s))))
+               (miniscript-and-v
+                 (parse-fragment (car parts))
+                 (parse-fragment (cadr parts)))))
+            (else
+             (error "miniscript-parse: unsupported fragment"))))
+
+    (define (miniscript-parse s)
+      (: string? -> miniscript-fragment?)
+      (parse-fragment (strip-whitespace s)))
+
+    (define (miniscript-type fragment)
+      (: miniscript-fragment? -> symbol?)
+      (unless (miniscript-fragment? fragment)
+        (error "miniscript-type: expected miniscript fragment"))
+      (let ((kind (miniscript-fragment-kind fragment)))
+        (cond ((or (eq? kind 'pk-k)
+                   (eq? kind 'after)
+                   (eq? kind 'older))
+               'B)
+              ((eq? kind 'and-v)
+               (let ((left (car (miniscript-fragment-args fragment)))
+                     (right (cadr (miniscript-fragment-args fragment))))
+                 (unless (and (eq? 'B (miniscript-type left))
+                              (eq? 'B (miniscript-type right)))
+                   (error "miniscript-type: and_v expects B fragments"))
+                 'B))
+              (else
+               (error "miniscript-type: unsupported fragment")))))
+
+    (define (miniscript-type-check fragment)
+      (: miniscript-fragment? -> boolean?)
+      (eq? 'B (miniscript-type fragment)))
+
+    (define (integer->script-number n)
+      (unless (and (integer? n) (<= 0 n #xffffffff))
+        (error "integer->script-number: value out of range"))
+      (if (= n 0)
+          #u8()
+          (let loop ((v n) (bytes '()))
+            (if (= v 0)
+                (let ((out (make-bytevector (length bytes) 0)))
+                  (do ((xs bytes (cdr xs))
+                       (i 0 (+ i 1)))
+                      ((null? xs) out)
+                    (bytevector-u8-set! out i (car xs))))
+                (loop (quotient v 256)
+                      (append bytes (list (remainder v 256))))))))
+
+    (define (script-push-int n)
+      (cond ((= n 0)
+             (script-op op-0))
+            ((and (>= n 1) (<= n 16))
+             (script-op (+ #x50 n)))
+            (else
+             (script-push-data (integer->script-number n)))))
+
+    (define (miniscript-compile fragment)
+      (: miniscript-fragment? -> bytevector?)
+      (miniscript-type-check fragment)
+      (let ((kind (miniscript-fragment-kind fragment)))
+        (cond ((eq? kind 'pk-k)
+               (script-append
+                 (script-push-data (miniscript-fragment-data fragment))
+                 (script-op op-checksig)))
+              ((eq? kind 'after)
+               (script-append
+                 (script-push-int (miniscript-fragment-data fragment))
+                 (script-op op-checklocktimeverify)))
+              ((eq? kind 'older)
+               (script-append
+                 (script-push-int (miniscript-fragment-data fragment))
+                 (script-op op-checksequenceverify)))
+              ((eq? kind 'and-v)
+               (script-append
+                 (miniscript-compile (car (miniscript-fragment-args fragment)))
+                 (miniscript-compile (cadr (miniscript-fragment-args fragment)))))
+              (else
+               (error "miniscript-compile: unsupported fragment")))))))

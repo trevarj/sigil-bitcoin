@@ -1,0 +1,25 @@
+;;; sigil-bitcoin-miniscript — Bitcoin Miniscript policy fragments
+;;;
+;;; Initial Miniscript AST, parser, type checker, and script compiler.
+
+(package
+  name: "sigil-bitcoin-miniscript"
+  version: "0.1.0"
+  sigil: "^0.16"
+  description: "Bitcoin Miniscript AST, parser, type checker, and script compiler"
+  url: "https://codeberg.org/sigil/sigil-bitcoin"
+  license: "BSD-3-Clause"
+
+  dependencies: (list
+    (from-path dir: "../sigil-bitcoin-encoding"
+               package: "sigil-bitcoin-encoding")
+    (from-path dir: "../sigil-bitcoin-script"
+               package: "sigil-bitcoin-script"))
+
+  tasks: (list
+    (task
+      name: 'build
+      description: "Build sigil-bitcoin-miniscript"
+      steps: (list
+        (compile-sigil-modules
+          sources: "src/**/*.sgl")))))

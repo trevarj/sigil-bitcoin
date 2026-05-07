@@ -1,0 +1,60 @@
+(import (sigil test)
+        (sigil bitcoin encoding)
+        (sigil bitcoin miniscript))
+
+(define %generator-pub
+  (hex-decode "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"))
+
+(define %pk-k-text
+  "pk_k(0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798)")
+
+(test-group "miniscript AST"
+  (test "constructs pk_k fragment"
+    (let ((fragment (miniscript-pk-k %generator-pub)))
+      (assert-true (miniscript-fragment? fragment))
+      (assert-equal 'pk-k (miniscript-fragment-kind fragment))
+      (assert-equal 'B (miniscript-type fragment))))
+
+  (test "constructs locktime fragments"
+    (assert-equal 'after (miniscript-fragment-kind (miniscript-after 500)))
+    (assert-equal 'older (miniscript-fragment-kind (miniscript-older 12)))))
+
+(test-group "miniscript parser"
+  (test "parses pk_k"
+    (let ((fragment (miniscript-parse %pk-k-text)))
+      (assert-equal 'pk-k (miniscript-fragment-kind fragment))
+      (assert-equal %generator-pub (miniscript-fragment-data fragment))))
+
+  (test "parses nested and_v"
+    (let ((fragment (miniscript-parse
+                      (string-append "and_v(after(500), " %pk-k-text ")"))))
+      (assert-equal 'and-v (miniscript-fragment-kind fragment))
+      (assert-true (miniscript-type-check fragment))))
+
+  (test "rejects unsupported fragments"
+    (assert-error (miniscript-parse "or_b(after(1),older(2))"))
+    (assert-error (miniscript-parse "pk_k(00)"))))
+
+(test-group "miniscript compiler"
+  (test "compiles pk_k to push pubkey checksig"
+    (assert-equal
+      "210279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798ac"
+      (hex-encode (miniscript-compile (miniscript-parse %pk-k-text)))))
+
+  (test "compiles after"
+    (assert-equal "02f401b1"
+                  (hex-encode (miniscript-compile (miniscript-after 500)))))
+
+  (test "compiles older small integer"
+    (assert-equal "5cb2"
+                  (hex-encode (miniscript-compile (miniscript-older 12)))))
+
+  (test "compiles and_v by concatenating child scripts"
+    (assert-equal
+      "02f401b1210279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798ac"
+      (hex-encode
+        (miniscript-compile
+          (miniscript-parse
+            (string-append "and_v(after(500)," %pk-k-text ")")))))))
+
+(run-tests)

@@ -86,6 +86,7 @@ Layer 6 — Networking (sigil-bitcoin-p2p)
 - `sigil-bitcoin-keys` package harness tests pass WIF, address, BIP32 vectors 1/2/3, invalid extended-key, public-derivation parity, and BIP39 128/160/192/224/256-bit entropy assertions.
 - `sigil-bitcoin-script` provides script byte constructors, pushdata encoding, witness programs, and standard P2PKH/P2SH/P2WPKH/P2WSH/P2TR scriptPubKey templates.
 - `sigil-bitcoin-tx` provides transaction structs, compactSize encoding/decoding, legacy/SegWit parsing and serialization, txid/wtxid helpers, `SIGHASH_ALL` legacy/BIP143 hashes, P2WPKH signing, and basic PSBT v0 support.
+- `sigil-bitcoin-miniscript` provides an initial fragment AST, parser, type checker, and script compiler for `pk_k`, `after`, `older`, and `and_v`.
 - `hash160` currently uses a pure Sigil RIPEMD-160 fallback. The local `sigil-crypto` source and build metadata expose `ripemd160`; package-native harnesses that depend on the sibling checkout bind it correctly, but the root direct runner imports the host/bundled crypto module and leaves newer native bindings unbound.
 - Root workspace tests pass under the direct runner. The secp and keys test files record skip markers there because multi-package workspace tests do not currently build a native harness.
 - `sigil-crypto` now exposes `pbkdf2-sha512`, used by BIP39 seed derivation.
@@ -197,6 +198,7 @@ or pure Sigil code. No changes to the Sigil VM or compiler are required.
 - [x] Add `SIGHASH_ALL` helpers for legacy and BIP143 SegWit v0 transactions.
 - [x] Add P2WPKH signing helper and native tx harness coverage.
 - [x] Add PSBT global/input/output maps, serialization/parsing, witness UTXOs, partial signatures, P2WPKH finalization, and extraction.
+- [x] Add `sigil-bitcoin-miniscript` with initial AST, parser, type checker, and script compiler coverage.
 
 ### Next
 
@@ -209,4 +211,7 @@ or pure Sigil code. No changes to the Sigil VM or compiler are required.
 - [ ] Add BIP341 Taproot sighash helpers.
 - [ ] Add P2PKH and P2TR key-path signing helpers.
 - [ ] Extend PSBT support with non-witness UTXOs, BIP32 derivation records, unknown/proprietary key preservation, and Taproot fields.
-- [ ] Add `sigil-bitcoin-miniscript` after raw script and tx signing stabilize, covering fragment ASTs, parsing, type checking, script compilation, and descriptor integration.
+- [ ] Expand Miniscript fragments with `pk_h`, `multi`, `sortedmulti`, hash locks, `and_b`, `or_*`, `thresh`, and wrappers.
+- [ ] Add Miniscript policy/type metadata beyond base `B`, including malleability and satisfaction properties needed for signing.
+- [ ] Add descriptor parsing and scriptPubKey compilation for `wpkh`, `wsh`, `sh`, `tr`, and key-origin expressions.
+- [ ] Connect descriptors/Miniscript to PSBT by deriving required scripts, key origins, and signing inputs.

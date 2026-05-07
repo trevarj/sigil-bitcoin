@@ -19,7 +19,8 @@
     "packages/sigil-bitcoin-encoding"
     "packages/sigil-bitcoin-keys"
     "packages/sigil-bitcoin-script"
-    "packages/sigil-bitcoin-tx")
+    "packages/sigil-bitcoin-tx"
+    "packages/sigil-bitcoin-miniscript")
 
   configs: (list
     (config
