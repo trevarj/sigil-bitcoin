@@ -78,7 +78,7 @@ Layer 6 — Networking (sigil-bitcoin-p2p)
 
 - Phase 0 is complete.
 - `sigil-bitcoin-primitives` passes HASH160, HASH256, and BIP-340 tagged-hash vectors.
-- `sigil-bitcoin-encoding` passes hex, Base58, Base58Check, Bech32, Bech32m, SegWit v0, and SegWit v1 vectors.
+- `sigil-bitcoin-encoding` passes hex, Base58, Base58Check, full BIP173/BIP350 Bech32/Bech32m checksum vectors, SegWit v0, and SegWit v1 vectors.
 - `sigil-secp256k1` now uses a native C module linked against `libsecp256k1` instead of runtime `(sigil ffi)` dynamic loading.
 - `sigil-secp256k1` package harness tests pass all ECDSA, DER, tweak, keypair, and Schnorr assertions.
 - `sigil-bitcoin-keys` provides network structs, WIF, public-key predicates, P2PKH/P2SH/P2WPKH/P2WSH/P2TR address helpers, BIP32 extended-key structs and derivation, and BIP39 English mnemonic helpers.
@@ -177,6 +177,7 @@ or pure Sigil code. No changes to the Sigil VM or compiler are required.
 - [x] Add native harness dependencies and redirects for `sigil-secp256k1`.
 - [x] Gate secp256k1 tests under the direct workspace runner while keeping full assertions in the native harness.
 - [x] Add `pbkdf2-sha512` to `sigil-crypto` for BIP39 seed derivation.
+- [x] Expand Bech32/Bech32m coverage with the full BIP173/BIP350 valid and invalid checksum vector sets.
 - [x] Add `sigil-bitcoin-keys` with native-secp package harness.
 - [x] Add network structs, WIF encode/decode, and public-key predicates.
 - [x] Add P2PKH, P2SH, P2WPKH, P2WSH, and P2TR address helpers.
@@ -190,7 +191,6 @@ or pure Sigil code. No changes to the Sigil VM or compiler are required.
 - [ ] Replace absolute local Sigil redirects in `dev-redirects.sgl` with a portable workspace-local path when the Sigil checkout layout is finalized.
 - [x] Add invalid-input coverage for `sigil-secp256k1` length/type checks and parse failures.
 - [ ] Consider returning serialized 32-byte x-only public keys in a future API, while preserving current 64-byte internal-key compatibility or adding a clearly named variant.
-- [ ] Expand Bech32/Bech32m coverage with the full BIP173/BIP350 valid and invalid vector sets.
 - [ ] Expand `sigil-bitcoin-keys` with BIP32 vectors 2 and 3, invalid extended-key checksum/version coverage, and public-derivation parity checks.
 - [ ] Add BIP39 vectors for 160/192/224/256-bit entropy and document the generated wordlist source.
 - [ ] Add account-level helpers for common paths after deciding whether descriptors or PSBT should own derivation-path policy.

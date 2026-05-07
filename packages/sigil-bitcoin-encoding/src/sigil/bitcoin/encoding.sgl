@@ -220,6 +220,20 @@
             (set! result (append result (list (bitwise-and c 31))))))
         result))
 
+    (define (bech32-valid-hrp? hrp)
+      (let ((len (string-length hrp))
+            (ok #t))
+        (do ((i 0 (+ i 1)))
+            ((>= i len) ok)
+          (let ((c (char->integer (string-ref hrp i))))
+            (when (or (< c 33) (> c 126))
+              (set! ok #f)
+              (set! i len))))))
+
+    (define (bech32-mixed-case? str)
+      (and (not (string=? str (string-downcase str)))
+           (not (string=? str (string-upcase str)))))
+
     (define (bech32-create-checksum hrp data const)
       (let* ((values (append (bech32-hrp-expand hrp) data '(0 0 0 0 0 0)))
              (polymod (bitwise-xor (bech32-polymod values) const))
@@ -247,11 +261,14 @@
                         (if (char=? #\1 (string-ref str i))
                             i
                             (find-1 (- i 1)))))))
-        (if (not pos)
+        (if (or (not pos) (bech32-mixed-case? str))
             #f
             (let* ((hrp (substring str 0 pos))
                    (dlen (- len pos 1)))
-              (if (or (< dlen 6) (zero? (string-length hrp)) (> len 90))
+              (if (or (< dlen 6)
+                      (zero? (string-length hrp))
+                      (not (bech32-valid-hrp? hrp))
+                      (> len 90))
                   #f
                   (let ((data (make-bytevector dlen 0)))
                     (do ((i 0 (+ i 1)))
@@ -293,11 +310,14 @@
                         (if (char=? #\1 (string-ref str i))
                             i
                             (find-1 (- i 1)))))))
-        (if (not pos)
+        (if (or (not pos) (bech32-mixed-case? str))
             #f
             (let* ((hrp (substring str 0 pos))
                    (dlen (- len pos 1)))
-              (if (or (< dlen 6) (zero? (string-length hrp)) (> len 90))
+              (if (or (< dlen 6)
+                      (zero? (string-length hrp))
+                      (not (bech32-valid-hrp? hrp))
+                      (> len 90))
                   #f
                   (let ((data (make-bytevector dlen 0)))
                     (do ((i 0 (+ i 1)))

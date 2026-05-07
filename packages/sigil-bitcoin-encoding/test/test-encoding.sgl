@@ -135,43 +135,93 @@
 ;; Bech32 — BIP 173 test vectors
 ;; ════════════════════════════════════════════════════════════
 
+(define %bip173-valid-bech32
+  (list
+    "A12UEL5L"
+    "a12uel5l"
+    "an83characterlonghumanreadablepartthatcontainsthenumber1andtheexcludedcharactersbio1tt5tgs"
+    "abcdef1qpzry9x8gf2tvdw0s3jn54khce6mua7lmqqqxw"
+    "11qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqc8247j"
+    "split1checkupstagehandshakeupstreamerranterredcaperred2y9e3w"
+    "?1ezyfcl"))
+
+(define %bip173-invalid-bech32
+  (list
+    " 1nwldj5"
+    "\x7f;1axkwrx"
+    "\x80;1eym55h"
+    "an84characterslonghumanreadablepartthatcontainsthenumber1andtheexcludedcharactersbio1569pvx"
+    "pzry9x0s0muk"
+    "1pzry9x0s0muk"
+    "x1b4n0q5v"
+    "li1dgmt3"
+    "de1lg7wt\xff;"
+    "A1G7SGD8"
+    "10a06t8"
+    "1qzzfhee"))
+
+(define %bip350-valid-bech32m
+  (list
+    "A1LQFN3A"
+    "a1lqfn3a"
+    "an83characterlonghumanreadablepartthatcontainsthetheexcludedcharactersbioandnumber11sg7hg6"
+    "abcdef1l7aum6echk45nj3s0wdvt2fg8x9yrzpqzd3ryx"
+    "11llllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllludsr8"
+    "split1checkupstagehandshakeupstreamerranterredcaperredlc445v"
+    "?1v759aa"))
+
+(define %bip350-invalid-bech32m
+  (list
+    " 1xj0phk"
+    "\x7f;1g6xzxy"
+    "\x80;1vctc34"
+    "an84characterslonghumanreadablepartthatcontainsthetheexcludedcharactersbioandnumber11d6pts4"
+    "qyrz8wqd2c9m"
+    "1qyrz8wqd2c9m"
+    "y1b0jsk6g"
+    "lt1igcx5c0"
+    "in1muywd"
+    "mm1crxm3i"
+    "au1s5cgom"
+    "M1VUXWEZ"
+    "16plkw9"
+    "1p2gdwpf"))
+
 (test-group "bech32-encode-decode"
-  (test "valid: A12UEL5L round-trips"
-    (let ((decoded (bech32-decode "A12UEL5L")))
-      (assert-true (list? decoded))
-      (assert-equal "A" (car decoded))))
-  (test "valid: a12uel5l round-trips"
-    (let ((decoded (bech32-decode "a12uel5l")))
-      (assert-true (list? decoded))
-      (assert-equal "a" (car decoded))))
-  (test "valid: ?1ezyfcl round-trips"
-    (let ((decoded (bech32-decode "?1ezyfcl")))
-      (assert-true (list? decoded))))
-  (test "invalid: no separator"
-    (assert-false (bech32-decode "pzry9x0s0muk")))
-  (test "invalid: empty HRP"
-    (assert-false (bech32-decode "1pzry9x0s0muk")))
-  (test "invalid: too short checksum"
-    (assert-false (bech32-decode "li1dgmt3"))))
+  (test "BIP173 valid checksum vectors decode"
+    (do ((xs %bip173-valid-bech32 (cdr xs)))
+        ((null? xs))
+      (assert-true (list? (bech32-decode (car xs))))))
+  (test "BIP173 invalid checksum vectors fail"
+    (do ((xs %bip173-invalid-bech32 (cdr xs)))
+        ((null? xs))
+      (assert-false (bech32-decode (car xs)))))
+  (test "BIP350 valid Bech32m vectors are invalid Bech32"
+    (do ((xs %bip350-valid-bech32m (cdr xs)))
+        ((null? xs))
+      (assert-false (bech32-decode (car xs)))))
+  (test "mixed case is invalid"
+    (assert-false (bech32-decode "a12UEL5L"))))
 
 ;; ════════════════════════════════════════════════════════════
 ;; Bech32m — BIP 350 test vectors
 ;; ════════════════════════════════════════════════════════════
 
 (test-group "bech32m-encode-decode"
-  (test "valid: A1LQFN3A"
-    (let ((decoded (bech32m-decode "A1LQFN3A")))
-      (assert-true (list? decoded))
-      (assert-equal "A" (car decoded))))
-  (test "valid: ?1v759aa"
-    (let ((decoded (bech32m-decode "?1v759aa")))
-      (assert-true (list? decoded))))
-  (test "invalid: no separator"
-    (assert-false (bech32m-decode "qyrz8wqd2c9m")))
-  (test "invalid: empty HRP"
-    (assert-false (bech32m-decode "1qyrz8wqd2c9m")))
-  (test "invalid: too short"
-    (assert-false (bech32m-decode "in1muywd"))))
+  (test "BIP350 valid checksum vectors decode"
+    (do ((xs %bip350-valid-bech32m (cdr xs)))
+        ((null? xs))
+      (assert-true (list? (bech32m-decode (car xs))))))
+  (test "BIP350 invalid checksum vectors fail"
+    (do ((xs %bip350-invalid-bech32m (cdr xs)))
+        ((null? xs))
+      (assert-false (bech32m-decode (car xs)))))
+  (test "BIP173 valid Bech32 vectors are invalid Bech32m"
+    (do ((xs %bip173-valid-bech32 (cdr xs)))
+        ((null? xs))
+      (assert-false (bech32m-decode (car xs)))))
+  (test "mixed case is invalid"
+    (assert-false (bech32m-decode "a1LQFN3A"))))
 
 ;; ════════════════════════════════════════════════════════════
 ;; SegWit Address — BIP 173 / BIP 350 address vectors
