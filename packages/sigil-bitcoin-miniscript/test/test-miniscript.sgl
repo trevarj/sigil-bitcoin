@@ -17,6 +17,20 @@
 (define %second-pub-text
   "03f028892bad7ed57d2fb57bf33081d5cfcf6f9ed3d3d7f159c2e2fff579dc341a")
 
+(define %zero-sha256
+  "0000000000000000000000000000000000000000000000000000000000000000")
+
+(define %zero-hash160
+  "0000000000000000000000000000000000000000")
+
+(define %pk-script
+  (string-append "21"
+                 "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+                 "ac"))
+
+(define %second-pk-script
+  (string-append "21" %second-pub-text "ac"))
+
 (define %bip388-xpub
   "[6738736c/44'/0'/0']xpub6Br37sWxruYfT8ASpCjVHKGwgdnYFEn98DwiN76i2oyY6fgH1LAPmmDcF46xjxJr22gw4jmVjTE2E3URMnRPEPYyo1zoPSUba563ESMXCeb")
 
@@ -67,8 +81,22 @@
         "thresh(3,pk(@0/**),s:pk(@1/**),s:pk(@2/**),sln:older(12960))"
         (miniscript->string fragment))))
 
+  (test "parses hash locks and branch combinators"
+    (assert-equal (string-append "sha256(" %zero-sha256 ")")
+                  (miniscript->string (miniscript-parse
+                                        (string-append "sha256(" %zero-sha256 ")"))))
+    (assert-equal (string-append "hash160(" %zero-hash160 ")")
+                  (miniscript->string (miniscript-parse
+                                        (string-append "hash160(" %zero-hash160 ")"))))
+    (assert-equal "andor(pk(A),pk(B),older(10))"
+                  (miniscript->string
+                    (miniscript-parse "andor(pk(A),pk(B),older(10))")))
+    (assert-equal "or_i(pk(A),pk(B))"
+                  (miniscript->string
+                    (miniscript-parse "or_i(pk(A),pk(B))"))))
+
   (test "rejects unsupported fragments"
-    (assert-error (miniscript-parse "andor(after(1),older(2),pk(A))"))
+    (assert-error (miniscript-parse "or_n(after(1),older(2))"))
     (assert-error (miniscript-parse "pk_k(00)"))))
 
 (test-group "miniscript compiler"
@@ -109,7 +137,59 @@
         (miniscript-compile
           (miniscript-parse
             (string-append "multi(2,0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798,"
-                           %second-pub-text ")")))))))
+                           %second-pub-text ")"))))))
+
+  (test "compiles hash locks"
+    (assert-equal
+      (string-append "82012088a820" %zero-sha256 "87")
+      (hex-encode
+        (miniscript-compile
+          (miniscript-parse (string-append "sha256(" %zero-sha256 ")")))))
+    (assert-equal
+      (string-append "82012088a914" %zero-hash160 "87")
+      (hex-encode
+        (miniscript-compile
+          (miniscript-parse (string-append "hash160(" %zero-hash160 ")"))))))
+
+  (test "compiles branch combinators"
+    (assert-equal
+      (string-append %pk-script %second-pk-script "9a")
+      (hex-encode
+        (miniscript-compile
+          (miniscript-parse
+            (string-append "and_b(" %pk-text ",pk(" %second-pub-text "))")))))
+    (assert-equal
+      (string-append %pk-script %second-pk-script "9b")
+      (hex-encode
+        (miniscript-compile
+          (miniscript-parse
+            (string-append "or_b(" %pk-text ",pk(" %second-pub-text "))")))))
+    (assert-equal
+      (string-append %pk-script "64" %second-pk-script "69" "68")
+      (hex-encode
+        (miniscript-compile
+          (miniscript-parse
+            (string-append "or_c(" %pk-text ",v:pk(" %second-pub-text "))")))))
+    (assert-equal
+      (string-append "63" %pk-script "67" %second-pk-script "68")
+      (hex-encode
+        (miniscript-compile
+          (miniscript-parse
+            (string-append "or_i(" %pk-text ",pk(" %second-pub-text "))")))))
+    (assert-equal
+      (string-append %pk-script "64" %pk-script "67" %second-pk-script "68")
+      (hex-encode
+        (miniscript-compile
+          (miniscript-parse
+            (string-append "andor(" %pk-text ",pk(" %second-pub-text ")," %pk-text ")"))))))
+
+  (test "compiles executable thresh"
+    (assert-equal
+      (string-append %pk-script %second-pk-script "93" %pk-script "93" "52" "87")
+      (hex-encode
+        (miniscript-compile
+          (miniscript-parse
+            (string-append "thresh(2," %pk-text ",pk(" %second-pub-text ")," %pk-text ")")))))))
 
 (test-group "descriptors"
   (test "parses descriptors and serializes canonically"

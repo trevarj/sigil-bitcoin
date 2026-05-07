@@ -686,6 +686,34 @@
     "summary": "Construct a relative locktime `older(n)` fragment."
   },
   {
+    "name": "miniscript-sha256",
+    "kind": "procedure",
+    "module": "(sigil bitcoin miniscript)",
+    "url": "api/sigil/bitcoin/miniscript.html#miniscript-sha256",
+    "summary": "Construct a `sha256(hash)` preimage fragment."
+  },
+  {
+    "name": "miniscript-hash256",
+    "kind": "procedure",
+    "module": "(sigil bitcoin miniscript)",
+    "url": "api/sigil/bitcoin/miniscript.html#miniscript-hash256",
+    "summary": "Construct a `hash256(hash)` preimage fragment."
+  },
+  {
+    "name": "miniscript-ripemd160",
+    "kind": "procedure",
+    "module": "(sigil bitcoin miniscript)",
+    "url": "api/sigil/bitcoin/miniscript.html#miniscript-ripemd160",
+    "summary": "Construct a `ripemd160(hash)` preimage fragment."
+  },
+  {
+    "name": "miniscript-hash160",
+    "kind": "procedure",
+    "module": "(sigil bitcoin miniscript)",
+    "url": "api/sigil/bitcoin/miniscript.html#miniscript-hash160",
+    "summary": "Construct a `hash160(hash)` preimage fragment."
+  },
+  {
     "name": "miniscript-multi",
     "kind": "procedure",
     "module": "(sigil bitcoin miniscript)",
@@ -714,11 +742,39 @@
     "summary": "Construct an `and_b(left, right)` fragment."
   },
   {
+    "name": "miniscript-andor",
+    "kind": "procedure",
+    "module": "(sigil bitcoin miniscript)",
+    "url": "api/sigil/bitcoin/miniscript.html#miniscript-andor",
+    "summary": "Construct an `andor(left, then, else)` fragment."
+  },
+  {
+    "name": "miniscript-or-b",
+    "kind": "procedure",
+    "module": "(sigil bitcoin miniscript)",
+    "url": "api/sigil/bitcoin/miniscript.html#miniscript-or-b",
+    "summary": "Construct an `or_b(left, right)` fragment."
+  },
+  {
+    "name": "miniscript-or-c",
+    "kind": "procedure",
+    "module": "(sigil bitcoin miniscript)",
+    "url": "api/sigil/bitcoin/miniscript.html#miniscript-or-c",
+    "summary": "Construct an `or_c(left, right)` fragment."
+  },
+  {
     "name": "miniscript-or-d",
     "kind": "procedure",
     "module": "(sigil bitcoin miniscript)",
     "url": "api/sigil/bitcoin/miniscript.html#miniscript-or-d",
     "summary": "Construct an `or_d(left, right)` fragment."
+  },
+  {
+    "name": "miniscript-or-i",
+    "kind": "procedure",
+    "module": "(sigil bitcoin miniscript)",
+    "url": "api/sigil/bitcoin/miniscript.html#miniscript-or-i",
+    "summary": "Construct an `or_i(left, right)` fragment."
   },
   {
     "name": "miniscript-thresh",
@@ -1113,6 +1169,13 @@
     "summary": "Bitcoin Script opcode constant."
   },
   {
+    "name": "op-ifdup",
+    "kind": "variable",
+    "module": "(sigil bitcoin script)",
+    "url": "api/sigil/bitcoin/script.html#op-ifdup",
+    "summary": "Bitcoin Script opcode constant."
+  },
+  {
     "name": "op-dup",
     "kind": "variable",
     "module": "(sigil bitcoin script)",
@@ -1120,10 +1183,38 @@
     "summary": "Bitcoin Script opcode constant."
   },
   {
+    "name": "op-size",
+    "kind": "variable",
+    "module": "(sigil bitcoin script)",
+    "url": "api/sigil/bitcoin/script.html#op-size",
+    "summary": "Bitcoin Script opcode constant."
+  },
+  {
+    "name": "op-ripemd160",
+    "kind": "variable",
+    "module": "(sigil bitcoin script)",
+    "url": "api/sigil/bitcoin/script.html#op-ripemd160",
+    "summary": "Bitcoin Script opcode constant."
+  },
+  {
+    "name": "op-sha256",
+    "kind": "variable",
+    "module": "(sigil bitcoin script)",
+    "url": "api/sigil/bitcoin/script.html#op-sha256",
+    "summary": "Bitcoin Script opcode constant."
+  },
+  {
     "name": "op-hash160",
     "kind": "variable",
     "module": "(sigil bitcoin script)",
     "url": "api/sigil/bitcoin/script.html#op-hash160",
+    "summary": "Bitcoin Script opcode constant."
+  },
+  {
+    "name": "op-hash256",
+    "kind": "variable",
+    "module": "(sigil bitcoin script)",
+    "url": "api/sigil/bitcoin/script.html#op-hash256",
     "summary": "Bitcoin Script opcode constant."
   },
   {
@@ -1159,6 +1250,13 @@
     "kind": "variable",
     "module": "(sigil bitcoin script)",
     "url": "api/sigil/bitcoin/script.html#op-booland",
+    "summary": "Bitcoin Script opcode constant."
+  },
+  {
+    "name": "op-boolor",
+    "kind": "variable",
+    "module": "(sigil bitcoin script)",
+    "url": "api/sigil/bitcoin/script.html#op-boolor",
     "summary": "Bitcoin Script opcode constant."
   },
   {

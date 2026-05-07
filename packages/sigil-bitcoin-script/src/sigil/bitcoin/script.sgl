@@ -7,8 +7,9 @@
     op-1 op-2 op-3 op-4 op-5 op-6 op-7 op-8
     op-9 op-10 op-11 op-12 op-13 op-14 op-15 op-16
     op-if op-notif op-else op-endif op-verify
-    op-dup op-hash160 op-equal op-equalverify op-swap
-    op-add op-booland op-checksig op-checksigverify
+    op-ifdup op-dup op-size op-ripemd160 op-sha256 op-hash160
+    op-hash256 op-equal op-equalverify op-swap
+    op-add op-booland op-boolor op-checksig op-checksigverify
     op-checkmultisig op-checkmultisigverify
     op-checklocktimeverify op-checksequenceverify
     script-empty
@@ -48,13 +49,19 @@
     (define op-else #x67)
     (define op-endif #x68)
     (define op-verify #x69)
+    (define op-ifdup #x73)
     (define op-dup #x76)
     (define op-swap #x7c)
+    (define op-size #x82)
+    (define op-ripemd160 #xa6)
+    (define op-sha256 #xa8)
     (define op-hash160 #xa9)
+    (define op-hash256 #xaa)
     (define op-equal #x87)
     (define op-equalverify #x88)
     (define op-add #x93)
     (define op-booland #x9a)
+    (define op-boolor #x9b)
     (define op-checksig #xac)
     (define op-checksigverify #xad)
     (define op-checkmultisig #xae)

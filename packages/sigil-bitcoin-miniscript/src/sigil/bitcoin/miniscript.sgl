@@ -15,11 +15,19 @@
     miniscript-pk
     miniscript-after
     miniscript-older
+    miniscript-sha256
+    miniscript-hash256
+    miniscript-ripemd160
+    miniscript-hash160
     miniscript-multi
     miniscript-sortedmulti
     miniscript-and-v
     miniscript-and-b
+    miniscript-andor
+    miniscript-or-b
+    miniscript-or-c
     miniscript-or-d
+    miniscript-or-i
     miniscript-thresh
     miniscript-wrapper
     miniscript-parse
@@ -148,6 +156,11 @@
             (else
              (error "miniscript: invalid key expression"))))
 
+    (define (parse-hash-expression s len who)
+      (unless (and (= (* len 2) (string-length s)) (hex-string? s))
+        (error (string-append who ": invalid hash expression")))
+      (hex-decode s))
+
     (define (key->string key)
       (cond ((bytevector? key)
              (hex-encode key))
@@ -174,6 +187,11 @@
         (error (string-append who ": value out of range")))
       n)
 
+    (define (require-hash who value len)
+      (unless (and (bytevector? value) (= len (bytevector-length value)))
+        (error (string-append who ": invalid hash length")))
+      value)
+
     ;;; Construct a `pk_k(key)` Miniscript fragment.
     (define (miniscript-pk-k key)
       (: any? -> miniscript-fragment?)
@@ -198,6 +216,26 @@
     (define (miniscript-older sequence)
       (: integer? -> miniscript-fragment?)
       (miniscript-fragment kind: 'older args: '() data: (require-locktime "miniscript-older" sequence)))
+
+    ;;; Construct a `sha256(hash)` preimage fragment.
+    (define (miniscript-sha256 hash)
+      (: bytevector? -> miniscript-fragment?)
+      (miniscript-fragment kind: 'sha256 args: '() data: (require-hash "miniscript-sha256" hash 32)))
+
+    ;;; Construct a `hash256(hash)` preimage fragment.
+    (define (miniscript-hash256 hash)
+      (: bytevector? -> miniscript-fragment?)
+      (miniscript-fragment kind: 'hash256 args: '() data: (require-hash "miniscript-hash256" hash 32)))
+
+    ;;; Construct a `ripemd160(hash)` preimage fragment.
+    (define (miniscript-ripemd160 hash)
+      (: bytevector? -> miniscript-fragment?)
+      (miniscript-fragment kind: 'ripemd160 args: '() data: (require-hash "miniscript-ripemd160" hash 20)))
+
+    ;;; Construct a `hash160(hash)` preimage fragment.
+    (define (miniscript-hash160 hash)
+      (: bytevector? -> miniscript-fragment?)
+      (miniscript-fragment kind: 'hash160 args: '() data: (require-hash "miniscript-hash160" hash 20)))
 
     (define (require-fragments who fragments)
       (do ((xs fragments (cdr xs)))
@@ -235,10 +273,30 @@
       (: miniscript-fragment? miniscript-fragment? -> miniscript-fragment?)
       (miniscript-fragment kind: 'and-b args: (list left right) data: #f))
 
+    ;;; Construct an `andor(left, then, else)` fragment.
+    (define (miniscript-andor left then-fragment else-fragment)
+      (: miniscript-fragment? miniscript-fragment? miniscript-fragment? -> miniscript-fragment?)
+      (miniscript-fragment kind: 'andor args: (list left then-fragment else-fragment) data: #f))
+
+    ;;; Construct an `or_b(left, right)` fragment.
+    (define (miniscript-or-b left right)
+      (: miniscript-fragment? miniscript-fragment? -> miniscript-fragment?)
+      (miniscript-fragment kind: 'or-b args: (list left right) data: #f))
+
+    ;;; Construct an `or_c(left, right)` fragment.
+    (define (miniscript-or-c left right)
+      (: miniscript-fragment? miniscript-fragment? -> miniscript-fragment?)
+      (miniscript-fragment kind: 'or-c args: (list left right) data: #f))
+
     ;;; Construct an `or_d(left, right)` fragment.
     (define (miniscript-or-d left right)
       (: miniscript-fragment? miniscript-fragment? -> miniscript-fragment?)
       (miniscript-fragment kind: 'or-d args: (list left right) data: #f))
+
+    ;;; Construct an `or_i(left, right)` fragment.
+    (define (miniscript-or-i left right)
+      (: miniscript-fragment? miniscript-fragment? -> miniscript-fragment?)
+      (miniscript-fragment kind: 'or-i args: (list left right) data: #f))
 
     ;;; Construct a `thresh(k, fragments...)` fragment.
     (define (miniscript-thresh threshold fragments)
@@ -331,6 +389,18 @@
                   ((string-prefix? "older(" s)
                    (miniscript-older
                      (parse-decimal (function-inner "older" "older(" s) "older")))
+                  ((string-prefix? "sha256(" s)
+                   (miniscript-sha256
+                     (parse-hash-expression (function-inner "sha256" "sha256(" s) 32 "sha256")))
+                  ((string-prefix? "hash256(" s)
+                   (miniscript-hash256
+                     (parse-hash-expression (function-inner "hash256" "hash256(" s) 32 "hash256")))
+                  ((string-prefix? "ripemd160(" s)
+                   (miniscript-ripemd160
+                     (parse-hash-expression (function-inner "ripemd160" "ripemd160(" s) 20 "ripemd160")))
+                  ((string-prefix? "hash160(" s)
+                   (miniscript-hash160
+                     (parse-hash-expression (function-inner "hash160" "hash160(" s) 20 "hash160")))
                   ((string-prefix? "multi(" s)
                    (let ((args (split-top-level-commas (function-inner "multi" "multi(" s))))
                      (miniscript-multi
@@ -351,9 +421,32 @@
                      (miniscript-and-b
                        (parse-fragment (car parts))
                        (parse-fragment (cadr parts)))))
+                  ((string-prefix? "andor(" s)
+                   (let ((parts (split-top-level-commas (function-inner "andor" "andor(" s))))
+                     (unless (= 3 (length parts))
+                       (error "miniscript-parse: andor expected three arguments"))
+                     (miniscript-andor
+                       (parse-fragment (car parts))
+                       (parse-fragment (cadr parts))
+                       (parse-fragment (caddr parts)))))
+                  ((string-prefix? "or_b(" s)
+                   (let ((parts (split-top-level-comma (function-inner "or_b" "or_b(" s))))
+                     (miniscript-or-b
+                       (parse-fragment (car parts))
+                       (parse-fragment (cadr parts)))))
+                  ((string-prefix? "or_c(" s)
+                   (let ((parts (split-top-level-comma (function-inner "or_c" "or_c(" s))))
+                     (miniscript-or-c
+                       (parse-fragment (car parts))
+                       (parse-fragment (cadr parts)))))
                   ((string-prefix? "or_d(" s)
                    (let ((parts (split-top-level-comma (function-inner "or_d" "or_d(" s))))
                      (miniscript-or-d
+                       (parse-fragment (car parts))
+                       (parse-fragment (cadr parts)))))
+                  ((string-prefix? "or_i(" s)
+                   (let ((parts (split-top-level-comma (function-inner "or_i" "or_i(" s))))
+                     (miniscript-or-i
                        (parse-fragment (car parts))
                        (parse-fragment (cadr parts)))))
                   ((string-prefix? "thresh(" s)
@@ -388,11 +481,19 @@
               ((or (eq? kind 'pk)
                    (eq? kind 'after)
                    (eq? kind 'older)
+                   (eq? kind 'sha256)
+                   (eq? kind 'hash256)
+                   (eq? kind 'ripemd160)
+                   (eq? kind 'hash160)
                    (eq? kind 'multi)
                    (eq? kind 'sortedmulti)
                    (eq? kind 'and-v)
                    (eq? kind 'and-b)
+                   (eq? kind 'andor)
+                   (eq? kind 'or-b)
+                   (eq? kind 'or-c)
                    (eq? kind 'or-d)
+                   (eq? kind 'or-i)
                    (eq? kind 'thresh)
                    (eq? kind 'one))
                'B)
@@ -450,6 +551,14 @@
                (string-append "after(" (number->string (miniscript-fragment-data fragment)) ")"))
               ((eq? kind 'older)
                (string-append "older(" (number->string (miniscript-fragment-data fragment)) ")"))
+              ((eq? kind 'sha256)
+               (string-append "sha256(" (hex-encode (miniscript-fragment-data fragment)) ")"))
+              ((eq? kind 'hash256)
+               (string-append "hash256(" (hex-encode (miniscript-fragment-data fragment)) ")"))
+              ((eq? kind 'ripemd160)
+               (string-append "ripemd160(" (hex-encode (miniscript-fragment-data fragment)) ")"))
+              ((eq? kind 'hash160)
+               (string-append "hash160(" (hex-encode (miniscript-fragment-data fragment)) ")"))
               ((eq? kind 'multi)
                (string-append "multi("
                               (number->string (miniscript-fragment-data fragment))
@@ -466,8 +575,16 @@
                (string-append "and_v(" (fragment-list->string (miniscript-fragment-args fragment)) ")"))
               ((eq? kind 'and-b)
                (string-append "and_b(" (fragment-list->string (miniscript-fragment-args fragment)) ")"))
+              ((eq? kind 'andor)
+               (string-append "andor(" (fragment-list->string (miniscript-fragment-args fragment)) ")"))
+              ((eq? kind 'or-b)
+               (string-append "or_b(" (fragment-list->string (miniscript-fragment-args fragment)) ")"))
+              ((eq? kind 'or-c)
+               (string-append "or_c(" (fragment-list->string (miniscript-fragment-args fragment)) ")"))
               ((eq? kind 'or-d)
                (string-append "or_d(" (fragment-list->string (miniscript-fragment-args fragment)) ")"))
+              ((eq? kind 'or-i)
+               (string-append "or_i(" (fragment-list->string (miniscript-fragment-args fragment)) ")"))
               ((eq? kind 'thresh)
                (string-append "thresh("
                               (number->string (miniscript-fragment-data fragment))
@@ -518,6 +635,29 @@
                          (script-push-int (length keys))
                          (script-op (if verify? op-checkmultisigverify op-checkmultisig))))))
 
+    (define (compile-hashlock opcode expected)
+      (script-append
+        (script-op op-size)
+        (script-push-int 32)
+        (script-op op-equalverify)
+        (script-op opcode)
+        (script-push-data expected)
+        (script-op op-equal)))
+
+    (define (compile-thresh fragment)
+      (let ((fragments (miniscript-fragment-args fragment))
+            (threshold (miniscript-fragment-data fragment)))
+        (let ((script (miniscript-compile (car fragments))))
+          (do ((xs (cdr fragments) (cdr xs)))
+              ((null? xs))
+            (set! script
+                  (script-append script
+                                 (miniscript-compile (car xs))
+                                 (script-op op-add))))
+          (script-append script
+                         (script-push-int threshold)
+                         (script-op op-equal)))))
+
     (define (compile-wrapper wrappers child)
       (cond ((string=? wrappers "c")
              (let ((kind (miniscript-fragment-kind child)))
@@ -564,12 +704,60 @@
                (script-append
                  (script-push-int (miniscript-fragment-data fragment))
                  (script-op op-checksequenceverify)))
+              ((eq? kind 'sha256)
+               (compile-hashlock op-sha256 (miniscript-fragment-data fragment)))
+              ((eq? kind 'hash256)
+               (compile-hashlock op-hash256 (miniscript-fragment-data fragment)))
+              ((eq? kind 'ripemd160)
+               (compile-hashlock op-ripemd160 (miniscript-fragment-data fragment)))
+              ((eq? kind 'hash160)
+               (compile-hashlock op-hash160 (miniscript-fragment-data fragment)))
               ((or (eq? kind 'multi) (eq? kind 'sortedmulti))
                (compile-multisig fragment #f))
               ((eq? kind 'and-v)
                (script-append
                  (miniscript-compile (car (miniscript-fragment-args fragment)))
                  (miniscript-compile (cadr (miniscript-fragment-args fragment)))))
+              ((eq? kind 'and-b)
+               (script-append
+                 (miniscript-compile (car (miniscript-fragment-args fragment)))
+                 (miniscript-compile (cadr (miniscript-fragment-args fragment)))
+                 (script-op op-booland)))
+              ((eq? kind 'andor)
+               (script-append
+                 (miniscript-compile (car (miniscript-fragment-args fragment)))
+                 (script-op op-notif)
+                 (miniscript-compile (caddr (miniscript-fragment-args fragment)))
+                 (script-op op-else)
+                 (miniscript-compile (cadr (miniscript-fragment-args fragment)))
+                 (script-op op-endif)))
+              ((eq? kind 'or-b)
+               (script-append
+                 (miniscript-compile (car (miniscript-fragment-args fragment)))
+                 (miniscript-compile (cadr (miniscript-fragment-args fragment)))
+                 (script-op op-boolor)))
+              ((eq? kind 'or-c)
+               (script-append
+                 (miniscript-compile (car (miniscript-fragment-args fragment)))
+                 (script-op op-notif)
+                 (miniscript-compile (cadr (miniscript-fragment-args fragment)))
+                 (script-op op-endif)))
+              ((eq? kind 'or-d)
+               (script-append
+                 (miniscript-compile (car (miniscript-fragment-args fragment)))
+                 (script-op op-ifdup)
+                 (script-op op-notif)
+                 (miniscript-compile (cadr (miniscript-fragment-args fragment)))
+                 (script-op op-endif)))
+              ((eq? kind 'or-i)
+               (script-append
+                 (script-op op-if)
+                 (miniscript-compile (car (miniscript-fragment-args fragment)))
+                 (script-op op-else)
+                 (miniscript-compile (cadr (miniscript-fragment-args fragment)))
+                 (script-op op-endif)))
+              ((eq? kind 'thresh)
+               (compile-thresh fragment))
               ((eq? kind 'wrapper)
                (compile-wrapper
                  (miniscript-fragment-data fragment)
@@ -721,6 +909,11 @@
                (string-append "pk_h(" (wallet-policy-expand-key (miniscript-fragment-data fragment) keys) ")"))
               ((eq? kind 'pk)
                (string-append "pk(" (wallet-policy-expand-key (miniscript-fragment-data fragment) keys) ")"))
+              ((or (eq? kind 'sha256)
+                   (eq? kind 'hash256)
+                   (eq? kind 'ripemd160)
+                   (eq? kind 'hash160))
+               (miniscript->string fragment))
               ((or (eq? kind 'multi) (eq? kind 'sortedmulti))
                (string-append
                  (if (eq? kind 'multi) "multi(" "sortedmulti(")
@@ -747,9 +940,39 @@
                  ","
                  (miniscript->string-with-keys (cadr (miniscript-fragment-args fragment)) keys)
                  ")"))
+              ((eq? kind 'andor)
+               (string-append
+                 "andor("
+                 (miniscript->string-with-keys (car (miniscript-fragment-args fragment)) keys)
+                 ","
+                 (miniscript->string-with-keys (cadr (miniscript-fragment-args fragment)) keys)
+                 ","
+                 (miniscript->string-with-keys (caddr (miniscript-fragment-args fragment)) keys)
+                 ")"))
+              ((eq? kind 'or-b)
+               (string-append
+                 "or_b("
+                 (miniscript->string-with-keys (car (miniscript-fragment-args fragment)) keys)
+                 ","
+                 (miniscript->string-with-keys (cadr (miniscript-fragment-args fragment)) keys)
+                 ")"))
+              ((eq? kind 'or-c)
+               (string-append
+                 "or_c("
+                 (miniscript->string-with-keys (car (miniscript-fragment-args fragment)) keys)
+                 ","
+                 (miniscript->string-with-keys (cadr (miniscript-fragment-args fragment)) keys)
+                 ")"))
               ((eq? kind 'or-d)
                (string-append
                  "or_d("
+                 (miniscript->string-with-keys (car (miniscript-fragment-args fragment)) keys)
+                 ","
+                 (miniscript->string-with-keys (cadr (miniscript-fragment-args fragment)) keys)
+                 ")"))
+              ((eq? kind 'or-i)
+               (string-append
+                 "or_i("
                  (miniscript->string-with-keys (car (miniscript-fragment-args fragment)) keys)
                  ","
                  (miniscript->string-with-keys (cadr (miniscript-fragment-args fragment)) keys)
