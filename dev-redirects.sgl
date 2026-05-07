@@ -1,21 +1,49 @@
-;; Development redirects — point sigil-crypto at local sibling checkout
+;; Development redirects — point workspace deps at local checkouts.
 ;; Use: sigil build --redirects ./dev-redirects.sgl
 ;;      sigil test --redirects ./dev-redirects.sgl
+(import (sigil fs))
+
+(define (first-existing paths)
+  (cond ((null? paths) #f)
+        ((directory? (car paths)) (car paths))
+        (else (first-existing (cdr paths)))))
+
+(define (workspace-sibling name)
+  (or (first-existing
+        (list
+          (string-append "../" name)
+          (string-append "../../../" name)))
+      (error "dev-redirects: missing workspace sibling" name)))
+
+(define (workspace-dep name)
+  (or (first-existing
+        (list
+          (string-append ".sigil/deps/" name)
+          (string-append "../../.sigil/deps/" name)
+          (string-append "../../../.sigil/deps/" name)))
+      (error "dev-redirects: missing workspace dependency" name)))
+
+(define (dep name)
+  (for-package
+    name: name
+    use: (from-path dir: (workspace-dep name))))
+
 (redirects
   repos: (list
     (for-repo
-      url: "codeberg:sigil/sigil"
-      use: (from-path dir: "/home/trev/.sigil/deps/codeberg-sigil-sigil-7db1bfd330550f7b473a38513c99eda5be7b3411"))
-    (for-repo
-      url: "codeberg:sigil/sigil-ansi"
-      use: (from-path dir: "/home/trev/.sigil/deps/codeberg-sigil-sigil-ansi-ffee474670cfecc41bce437a173bf4c7830464bf"))
-    (for-repo
-      url: "codeberg:sigil/sigil-json"
-      use: (from-path dir: "/home/trev/.sigil/deps/codeberg-sigil-sigil-json-811b63925399a663e4b7dd25fb0813d59d33f557"))
-    (for-repo
-      url: "codeberg:sigil/sigil-version"
-      use: (from-path dir: "/home/trev/.sigil/deps/codeberg-sigil-sigil-version-f3a59bf7d0da81ad5206df5b2719e0a27b5b5904"))
-    (for-repo
       url: "codeberg:sigil/sigil-crypto"
-      use: (from-path dir: "../sigil-crypto"))
-    ))
+      use: (from-path dir: (workspace-sibling "sigil-crypto"))))
+  packages: (list
+    (dep "sigil-lib")
+    (dep "sigil-stdlib")
+    (dep "sigil-test")
+    (dep "sigil-test-runner")
+    (for-package
+      name: "sigil-ansi"
+      use: (from-path dir: (workspace-dep "sigil-ansi-v0.16")))
+    (for-package
+      name: "sigil-json"
+      use: (from-path dir: (workspace-dep "sigil-json-v0.16")))
+    (for-package
+      name: "sigil-version"
+      use: (from-path dir: (workspace-dep "sigil-version-v0.16")))))
