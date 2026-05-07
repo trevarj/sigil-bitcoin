@@ -118,6 +118,42 @@
          (tweak (tagged-hash "TapTweak" internal-xonly)))
     (secp256k1-keypair-xonly-tweak-add keypair tweak)))
 
+(define (empty-test-psbt-input non-witness-utxo witness-utxo)
+  (psbt-input
+    non-witness-utxo: non-witness-utxo
+    witness-utxo: witness-utxo
+    partial-sigs: '()
+    sighash-type: #f
+    final-script-sig: #u8()
+    final-script-witness: '()
+    taproot-key-sig: #f))
+
+(define (funding-transaction script-pubkey)
+  (transaction
+    version: 1
+    inputs: (list
+      (txin
+        previous-output: (outpoint txid: %zero-txid index: #xffffffff)
+        script-sig: %coinbase-script
+        sequence: #xffffffff
+        witness: '()))
+    outputs: (list
+      (txout value: 1000 script-pubkey: script-pubkey))
+    lock-time: 0))
+
+(define (spending-transaction funding-tx)
+  (transaction
+    version: 1
+    inputs: (list
+      (txin
+        previous-output: (outpoint txid: (transaction-txid funding-tx) index: 0)
+        script-sig: #u8()
+        sequence: #xfffffffe
+        witness: '()))
+    outputs: (list
+      (txout value: 500 script-pubkey: %p2pkh-script))
+    lock-time: 0))
+
 (define %witness-serialized
   #u8(#x02 #x00 #x00 #x00
       #x00 #x01
@@ -423,18 +459,24 @@
     (let* ((p (psbt
                 unsigned-tx: %unsigned-p2wpkh-tx
                 inputs: (list
-                  (psbt-input
-                    witness-utxo: %p2wpkh-utxo
-                    partial-sigs: '()
-                    sighash-type: #f
-                    final-script-sig: #u8()
-                    final-script-witness: '()))
+                  (empty-test-psbt-input #f %p2wpkh-utxo))
                 outputs: (list (psbt-output))))
            (parsed (psbt-parse (psbt-serialize p)))
            (input (car (psbt-inputs parsed))))
       (assert-equal 1000 (txout-value (psbt-input-witness-utxo input)))
       (assert-equal %p2wpkh-script
-                    (txout-script-pubkey (psbt-input-witness-utxo input))))))
+                    (txout-script-pubkey (psbt-input-witness-utxo input)))))
+
+  (test "round-trips non-witness UTXO input data"
+    (let* ((p (psbt
+                unsigned-tx: %unsigned-p2pkh-tx
+                inputs: (list
+                  (empty-test-psbt-input %legacy-tx #f))
+                outputs: (list (psbt-output))))
+           (parsed (psbt-parse (psbt-serialize p)))
+           (input (car (psbt-inputs parsed))))
+      (assert-equal (transaction-txid %legacy-tx)
+                    (transaction-txid (psbt-input-non-witness-utxo input))))))
 
 (if %native-secp256k1?
   (test-group "PSBT signing"
@@ -442,12 +484,7 @@
       (let* ((p (psbt
                   unsigned-tx: %unsigned-p2wpkh-tx
                   inputs: (list
-                    (psbt-input
-                      witness-utxo: %p2wpkh-utxo
-                      partial-sigs: '()
-                      sighash-type: #f
-                      final-script-sig: #u8()
-                      final-script-witness: '()))
+                    (empty-test-psbt-input #f %p2wpkh-utxo))
                   outputs: (list (psbt-output))))
              (signed (psbt-sign-p2wpkh-input p 0 %one))
              (signed-input (car (psbt-inputs signed)))
@@ -457,6 +494,47 @@
              (witness (txin-witness (car (transaction-inputs extracted)))))
         (assert-equal 1 (length (psbt-input-partial-sigs signed-input)))
         (assert-equal 2 (length witness))
+        (assert-true (transaction-has-witness? extracted))))
+
+    (test "signs, finalizes, and extracts P2PKH transaction"
+      (let* ((pubkey (secp256k1-pubkey-create %one))
+             (script (script-p2pkh (hash160 pubkey)))
+             (funding (funding-transaction script))
+             (unsigned (spending-transaction funding))
+             (p (psbt
+                  unsigned-tx: unsigned
+                  inputs: (list
+                    (empty-test-psbt-input funding #f))
+                  outputs: (list (psbt-output))))
+             (signed (psbt-sign-p2pkh-input p 0 %one))
+             (parsed (psbt-parse (psbt-serialize signed)))
+             (finalized (psbt-finalize-p2pkh-input parsed 0))
+             (extracted (psbt-extract-transaction finalized))
+             (input (car (transaction-inputs extracted)))
+             (script-sig (txin-script-sig input))
+             (sig-result (read-push script-sig 0))
+             (pubkey-result (read-push script-sig (cdr sig-result))))
+        (assert-equal '() (txin-witness input))
+        (assert-equal (bytevector-length script-sig) (cdr pubkey-result))
+        (assert-false (transaction-has-witness? extracted))))
+
+    (test "signs, finalizes, and extracts P2TR key-path transaction"
+      (let* ((tweaked (bip86-tweaked-keypair %one))
+             (xonly (secp256k1-keypair-xonly-pub tweaked))
+             (prevout (txout value: 1000 script-pubkey: (script-p2tr xonly)))
+             (p (psbt
+                  unsigned-tx: %witness-tx
+                  inputs: (list
+                    (empty-test-psbt-input #f prevout))
+                  outputs: (list (psbt-output))))
+             (signed (psbt-sign-p2tr-keypath-input p 0 %one))
+             (signed-input (car (psbt-inputs signed)))
+             (parsed (psbt-parse (psbt-serialize signed)))
+             (finalized (psbt-finalize-p2tr-keypath-input parsed 0))
+             (extracted (psbt-extract-transaction finalized))
+             (witness (txin-witness (car (transaction-inputs extracted)))))
+        (assert-equal 64 (bytevector-length (psbt-input-taproot-key-sig signed-input)))
+        (assert-equal 1 (length witness))
         (assert-true (transaction-has-witness? extracted)))))
   (test-group "PSBT signing"
     (test-skip "native secp256k1 module is not linked in direct workspace runner"

@@ -23,9 +23,10 @@
     psbt psbt?
     psbt-unsigned-tx psbt-inputs psbt-outputs
     psbt-input psbt-input?
-    psbt-input-witness-utxo psbt-input-partial-sigs
+    psbt-input-non-witness-utxo psbt-input-witness-utxo
+    psbt-input-partial-sigs
     psbt-input-sighash-type psbt-input-final-script-sig
-    psbt-input-final-script-witness
+    psbt-input-final-script-witness psbt-input-taproot-key-sig
     psbt-output psbt-output?
     compact-size-encode
     compact-size-decode
@@ -44,8 +45,12 @@
     psbt-create
     psbt-serialize
     psbt-parse
+    psbt-sign-p2pkh-input
     psbt-sign-p2wpkh-input
+    psbt-sign-p2tr-keypath-input
+    psbt-finalize-p2pkh-input
     psbt-finalize-p2wpkh-input
+    psbt-finalize-p2tr-keypath-input
     psbt-extract-transaction)
   (begin
 
@@ -84,11 +89,13 @@
 
     ;;; PSBT input map subset supported by this package.
     (define-struct psbt-input
+      (non-witness-utxo any?)
       (witness-utxo any?)
       (partial-sigs list?)
       (sighash-type any?)
       (final-script-sig bytevector?)
-      (final-script-witness list?))
+      (final-script-witness list?)
+      (taproot-key-sig any?))
 
     ;;; PSBT output map placeholder.
     (define-struct psbt-output)
@@ -845,11 +852,13 @@
           lock-time: (transaction-lock-time tx))))
 
     (define (empty-psbt-input)
-      (psbt-input witness-utxo: #f
+      (psbt-input non-witness-utxo: #f
+                  witness-utxo: #f
                   partial-sigs: '()
                   sighash-type: #f
                   final-script-sig: #u8()
-                  final-script-witness: '()))
+                  final-script-witness: '()
+                  taproot-key-sig: #f))
 
     (define (empty-psbt-output)
       (psbt-output))
@@ -873,6 +882,8 @@
     (define (validate-psbt-input input)
       (unless (psbt-input? input)
         (error "psbt input: expected psbt-input"))
+      (when (psbt-input-non-witness-utxo input)
+        (validate-transaction (psbt-input-non-witness-utxo input)))
       (when (psbt-input-witness-utxo input)
         (validate-txout (psbt-input-witness-utxo input)))
       (unless (list? (psbt-input-partial-sigs input))
@@ -886,6 +897,12 @@
         (require-uint "psbt input sighash type" (psbt-input-sighash-type input) %u32-max))
       (require-bytevector "psbt final scriptSig" (psbt-input-final-script-sig input))
       (validate-witness (psbt-input-final-script-witness input))
+      (when (psbt-input-taproot-key-sig input)
+        (let ((len (bytevector-length
+                     (require-bytevector "psbt taproot key signature"
+                                         (psbt-input-taproot-key-sig input)))))
+          (unless (or (= len 64) (= len 65))
+            (error "psbt taproot key signature: expected 64 or 65 bytes"))))
       input)
 
     (define (validate-psbt p)
@@ -905,6 +922,12 @@
     (define (psbt-input->keyvals input)
       (validate-psbt-input input)
       (let ((parts '()))
+        (when (psbt-input-non-witness-utxo input)
+          (set! parts
+                (append parts
+                        (list (psbt-keyval #x00 #u8()
+                                           (transaction-serialize
+                                             (psbt-input-non-witness-utxo input)))))))
         (when (psbt-input-witness-utxo input)
           (set! parts
                 (append parts
@@ -933,6 +956,11 @@
                         (list (psbt-keyval #x08 #u8()
                                            (serialize-witness
                                              (psbt-input-final-script-witness input)))))))
+        (when (psbt-input-taproot-key-sig input)
+          (set! parts
+                (append parts
+                        (list (psbt-keyval #x13 #u8()
+                                           (psbt-input-taproot-key-sig input))))))
         parts))
 
     (define (serialize-psbt-map keyvals)
@@ -994,36 +1022,62 @@
                (let ((parsed (parse-txout value 0)))
                  (unless (= (cadr parsed) (bytevector-length value))
                    (error "psbt witness utxo: trailing bytes"))
-                 (psbt-input witness-utxo: (car parsed)
+                 (psbt-input non-witness-utxo: (psbt-input-non-witness-utxo input)
+                             witness-utxo: (car parsed)
                              partial-sigs: (psbt-input-partial-sigs input)
                              sighash-type: (psbt-input-sighash-type input)
                              final-script-sig: (psbt-input-final-script-sig input)
-                             final-script-witness: (psbt-input-final-script-witness input))))
+                             final-script-witness: (psbt-input-final-script-witness input)
+                             taproot-key-sig: (psbt-input-taproot-key-sig input))))
               ((= key-type #x02)
-               (psbt-input witness-utxo: (psbt-input-witness-utxo input)
+               (psbt-input non-witness-utxo: (psbt-input-non-witness-utxo input)
+                           witness-utxo: (psbt-input-witness-utxo input)
                            partial-sigs: (append (psbt-input-partial-sigs input)
                                                  (list (cons key-data value)))
                            sighash-type: (psbt-input-sighash-type input)
                            final-script-sig: (psbt-input-final-script-sig input)
-                           final-script-witness: (psbt-input-final-script-witness input)))
+                           final-script-witness: (psbt-input-final-script-witness input)
+                           taproot-key-sig: (psbt-input-taproot-key-sig input)))
               ((= key-type #x03)
-               (psbt-input witness-utxo: (psbt-input-witness-utxo input)
+               (psbt-input non-witness-utxo: (psbt-input-non-witness-utxo input)
+                           witness-utxo: (psbt-input-witness-utxo input)
                            partial-sigs: (psbt-input-partial-sigs input)
                            sighash-type: (read-u32-le value 0 "psbt sighash type")
                            final-script-sig: (psbt-input-final-script-sig input)
-                           final-script-witness: (psbt-input-final-script-witness input)))
+                           final-script-witness: (psbt-input-final-script-witness input)
+                           taproot-key-sig: (psbt-input-taproot-key-sig input)))
               ((= key-type #x07)
-               (psbt-input witness-utxo: (psbt-input-witness-utxo input)
+               (psbt-input non-witness-utxo: (psbt-input-non-witness-utxo input)
+                           witness-utxo: (psbt-input-witness-utxo input)
                            partial-sigs: (psbt-input-partial-sigs input)
                            sighash-type: (psbt-input-sighash-type input)
                            final-script-sig: value
-                           final-script-witness: (psbt-input-final-script-witness input)))
+                           final-script-witness: (psbt-input-final-script-witness input)
+                           taproot-key-sig: (psbt-input-taproot-key-sig input)))
               ((= key-type #x08)
-               (psbt-input witness-utxo: (psbt-input-witness-utxo input)
+               (psbt-input non-witness-utxo: (psbt-input-non-witness-utxo input)
+                           witness-utxo: (psbt-input-witness-utxo input)
                            partial-sigs: (psbt-input-partial-sigs input)
                            sighash-type: (psbt-input-sighash-type input)
                            final-script-sig: (psbt-input-final-script-sig input)
-                           final-script-witness: (parse-serialized-witness value)))
+                           final-script-witness: (parse-serialized-witness value)
+                           taproot-key-sig: (psbt-input-taproot-key-sig input)))
+              ((= key-type #x00)
+               (psbt-input non-witness-utxo: (transaction-parse value)
+                           witness-utxo: (psbt-input-witness-utxo input)
+                           partial-sigs: (psbt-input-partial-sigs input)
+                           sighash-type: (psbt-input-sighash-type input)
+                           final-script-sig: (psbt-input-final-script-sig input)
+                           final-script-witness: (psbt-input-final-script-witness input)
+                           taproot-key-sig: (psbt-input-taproot-key-sig input)))
+              ((= key-type #x13)
+               (psbt-input non-witness-utxo: (psbt-input-non-witness-utxo input)
+                           witness-utxo: (psbt-input-witness-utxo input)
+                           partial-sigs: (psbt-input-partial-sigs input)
+                           sighash-type: (psbt-input-sighash-type input)
+                           final-script-sig: (psbt-input-final-script-sig input)
+                           final-script-witness: (psbt-input-final-script-witness input)
+                           taproot-key-sig: value))
               (else input))))
 
     (define (parse-psbt-input entries)
@@ -1082,6 +1136,77 @@
                                  "psbt input")
             outputs: (psbt-outputs p)))
 
+    (define (psbt-input-sighash-or-default input default)
+      (if (psbt-input-sighash-type input)
+          (psbt-input-sighash-type input)
+          default))
+
+    (define (psbt-prevout-from-non-witness-utxo p input-index input who)
+      (let ((prev-tx (psbt-input-non-witness-utxo input)))
+        (unless prev-tx
+          (error (string-append who ": missing non-witness UTXO")))
+        (let* ((unsigned-input (nth-item (transaction-inputs (psbt-unsigned-tx p))
+                                         input-index
+                                         who))
+               (op (txin-previous-output unsigned-input)))
+          (unless (equal? (transaction-txid prev-tx) (outpoint-txid op))
+            (error (string-append who ": non-witness UTXO txid mismatch")))
+          (nth-item (transaction-outputs prev-tx)
+                    (outpoint-index op)
+                    who))))
+
+    (define (psbt-input-prevout p input-index who)
+      (let* ((input (nth-item (psbt-inputs p) input-index who))
+             (witness-utxo (psbt-input-witness-utxo input)))
+        (if witness-utxo
+            witness-utxo
+            (psbt-prevout-from-non-witness-utxo p input-index input who))))
+
+    (define (psbt-prevouts p who)
+      (let loop ((i 0)
+                 (inputs (psbt-inputs p))
+                 (out '()))
+        (if (null? inputs)
+            (reverse out)
+            (loop (+ i 1)
+                  (cdr inputs)
+                  (cons (psbt-input-prevout p i who) out)))))
+
+    ;;; Add a legacy P2PKH partial signature to a PSBT input.
+    ;;;
+    ;;; The input must contain the previous transaction as a non-witness UTXO.
+    (define (psbt-sign-p2pkh-input p input-index private-key)
+      (: psbt? integer? bytevector? -> psbt?)
+      (validate-psbt p)
+      (let* ((input (nth-item (psbt-inputs p) input-index "psbt-sign-p2pkh-input"))
+             (utxo (psbt-prevout-from-non-witness-utxo
+                     p input-index input "psbt-sign-p2pkh-input"))
+             (pubkey (private-key->public-key private-key))
+             (pubkey-hash (hash160 pubkey))
+             (expected-script (script-p2pkh pubkey-hash)))
+        (unless (equal? expected-script (txout-script-pubkey utxo))
+          (error "psbt-sign-p2pkh-input: non-witness UTXO is not P2PKH for key"))
+        (let* ((sighash-type (psbt-input-sighash-or-default input sighash-all))
+               (msghash (transaction-sighash-legacy
+                          (psbt-unsigned-tx p)
+                          input-index
+                          expected-script
+                          sighash-type))
+               (der (secp256k1-ecdsa-signature-serialize-der
+                      (secp256k1-ecdsa-sign private-key msghash)))
+               (sig (append-sighash-byte der sighash-type))
+               (signed-input
+                 (psbt-input
+                   non-witness-utxo: (psbt-input-non-witness-utxo input)
+                   witness-utxo: (psbt-input-witness-utxo input)
+                   partial-sigs: (append (psbt-input-partial-sigs input)
+                                         (list (cons pubkey sig)))
+                   sighash-type: sighash-type
+                   final-script-sig: (psbt-input-final-script-sig input)
+                   final-script-witness: (psbt-input-final-script-witness input)
+                   taproot-key-sig: (psbt-input-taproot-key-sig input))))
+          (psbt-update-input p input-index signed-input))))
+
     ;;; Add a P2WPKH partial signature to a PSBT input.
     ;;;
     ;;; The input must contain a witness UTXO.
@@ -1097,9 +1222,7 @@
                (expected-script (script-p2wpkh pubkey-hash)))
           (unless (equal? expected-script (txout-script-pubkey utxo))
             (error "psbt-sign-p2wpkh-input: witness UTXO is not P2WPKH for key"))
-          (let* ((sighash-type (if (psbt-input-sighash-type input)
-                                   (psbt-input-sighash-type input)
-                                   sighash-all))
+          (let* ((sighash-type (psbt-input-sighash-or-default input sighash-all))
                  (script-code (script-p2pkh pubkey-hash))
                  (msghash (transaction-sighash-segwit-v0
                             (psbt-unsigned-tx p)
@@ -1112,13 +1235,67 @@
                  (sig (append-sighash-byte der sighash-type))
                  (signed-input
                    (psbt-input
+                     non-witness-utxo: (psbt-input-non-witness-utxo input)
                      witness-utxo: utxo
                      partial-sigs: (append (psbt-input-partial-sigs input)
                                            (list (cons pubkey sig)))
                      sighash-type: sighash-type
                      final-script-sig: (psbt-input-final-script-sig input)
-                     final-script-witness: (psbt-input-final-script-witness input))))
+                     final-script-witness: (psbt-input-final-script-witness input)
+                     taproot-key-sig: (psbt-input-taproot-key-sig input))))
             (psbt-update-input p input-index signed-input)))))
+
+    ;;; Add a Taproot key-path signature to a PSBT input.
+    (define (psbt-sign-p2tr-keypath-input p input-index private-key)
+      (: psbt? integer? bytevector? -> psbt?)
+      (validate-psbt p)
+      (let* ((input (nth-item (psbt-inputs p) input-index "psbt-sign-p2tr-keypath-input"))
+             (prevouts (psbt-prevouts p "psbt-sign-p2tr-keypath-input"))
+             (utxo (nth-item prevouts input-index "psbt-sign-p2tr-keypath-input"))
+             (sighash-type (psbt-input-sighash-or-default input sighash-default))
+             (tweaked-keypair (taproot-tweaked-keypair private-key))
+             (output-xonly (secp256k1-keypair-xonly-pub tweaked-keypair))
+             (expected-script (script-p2tr output-xonly)))
+        (unless (equal? expected-script (txout-script-pubkey utxo))
+          (error "psbt-sign-p2tr-keypath-input: UTXO is not BIP86 P2TR for key"))
+        (let* ((msghash (transaction-sighash-taproot-keypath
+                          (psbt-unsigned-tx p)
+                          input-index
+                          prevouts
+                          sighash-type))
+               (sig (taproot-keypath-signature tweaked-keypair msghash sighash-type))
+               (signed-input
+                 (psbt-input
+                   non-witness-utxo: (psbt-input-non-witness-utxo input)
+                   witness-utxo: (psbt-input-witness-utxo input)
+                   partial-sigs: (psbt-input-partial-sigs input)
+                   sighash-type: sighash-type
+                   final-script-sig: (psbt-input-final-script-sig input)
+                   final-script-witness: (psbt-input-final-script-witness input)
+                   taproot-key-sig: sig)))
+          (psbt-update-input p input-index signed-input))))
+
+    ;;; Finalize a signed P2PKH PSBT input.
+    (define (psbt-finalize-p2pkh-input p input-index)
+      (: psbt? integer? -> psbt?)
+      (validate-psbt p)
+      (let* ((input (nth-item (psbt-inputs p) input-index "psbt-finalize-p2pkh-input"))
+             (partial-sigs (psbt-input-partial-sigs input)))
+        (when (null? partial-sigs)
+          (error "psbt-finalize-p2pkh-input: missing partial signature"))
+        (let* ((entry (car partial-sigs))
+               (final-input
+                 (psbt-input
+                   non-witness-utxo: (psbt-input-non-witness-utxo input)
+                   witness-utxo: (psbt-input-witness-utxo input)
+                   partial-sigs: partial-sigs
+                   sighash-type: (psbt-input-sighash-type input)
+                   final-script-sig: (script-append
+                                       (script-push-data (cdr entry))
+                                       (script-push-data (car entry)))
+                   final-script-witness: '()
+                   taproot-key-sig: (psbt-input-taproot-key-sig input))))
+          (psbt-update-input p input-index final-input))))
 
     ;;; Finalize a signed P2WPKH PSBT input.
     (define (psbt-finalize-p2wpkh-input p input-index)
@@ -1131,11 +1308,32 @@
         (let* ((entry (car partial-sigs))
                (final-input
                  (psbt-input
+                   non-witness-utxo: (psbt-input-non-witness-utxo input)
                    witness-utxo: (psbt-input-witness-utxo input)
                    partial-sigs: partial-sigs
                    sighash-type: (psbt-input-sighash-type input)
                    final-script-sig: #u8()
-                   final-script-witness: (list (cdr entry) (car entry)))))
+                   final-script-witness: (list (cdr entry) (car entry))
+                   taproot-key-sig: (psbt-input-taproot-key-sig input))))
+          (psbt-update-input p input-index final-input))))
+
+    ;;; Finalize a signed Taproot key-path PSBT input.
+    (define (psbt-finalize-p2tr-keypath-input p input-index)
+      (: psbt? integer? -> psbt?)
+      (validate-psbt p)
+      (let* ((input (nth-item (psbt-inputs p) input-index "psbt-finalize-p2tr-keypath-input"))
+             (sig (psbt-input-taproot-key-sig input)))
+        (unless sig
+          (error "psbt-finalize-p2tr-keypath-input: missing Taproot key signature"))
+        (let ((final-input
+                (psbt-input
+                  non-witness-utxo: (psbt-input-non-witness-utxo input)
+                  witness-utxo: (psbt-input-witness-utxo input)
+                  partial-sigs: (psbt-input-partial-sigs input)
+                  sighash-type: (psbt-input-sighash-type input)
+                  final-script-sig: #u8()
+                  final-script-witness: (list sig)
+                  taproot-key-sig: sig)))
           (psbt-update-input p input-index final-input))))
 
     ;;; Extract the final transaction from a fully-finalized PSBT.
@@ -1153,7 +1351,8 @@
               lock-time: (transaction-lock-time (psbt-unsigned-tx p)))
             (let ((psbt-in (car psbt-ins))
                   (txin0 (car txins)))
-              (when (null? (psbt-input-final-script-witness psbt-in))
+              (when (and (= 0 (bytevector-length (psbt-input-final-script-sig psbt-in)))
+                         (null? (psbt-input-final-script-witness psbt-in)))
                 (error "psbt-extract-transaction: input is not finalized"))
               (loop
                 (cdr txins)

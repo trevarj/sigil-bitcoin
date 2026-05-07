@@ -1379,6 +1379,13 @@
     "summary": "Test if a value is a `psbt-input` struct."
   },
   {
+    "name": "psbt-input-non-witness-utxo",
+    "kind": "procedure",
+    "module": "(sigil bitcoin tx)",
+    "url": "api/sigil/bitcoin/tx.html#psbt-input-non-witness-utxo",
+    "summary": "Get the `non-witness-utxo` field of a `psbt-input` struct."
+  },
+  {
     "name": "psbt-input-witness-utxo",
     "kind": "procedure",
     "module": "(sigil bitcoin tx)",
@@ -1412,6 +1419,13 @@
     "module": "(sigil bitcoin tx)",
     "url": "api/sigil/bitcoin/tx.html#psbt-input-final-script-witness",
     "summary": "Get the `final-script-witness` field of a `psbt-input` struct."
+  },
+  {
+    "name": "psbt-input-taproot-key-sig",
+    "kind": "procedure",
+    "module": "(sigil bitcoin tx)",
+    "url": "api/sigil/bitcoin/tx.html#psbt-input-taproot-key-sig",
+    "summary": "Get the `taproot-key-sig` field of a `psbt-input` struct."
   },
   {
     "name": "psbt-output",
@@ -1582,6 +1596,13 @@
     "summary": "Parse PSBT v0 bytes into a PSBT record."
   },
   {
+    "name": "psbt-sign-p2pkh-input",
+    "kind": "procedure",
+    "module": "(sigil bitcoin tx)",
+    "url": "api/sigil/bitcoin/tx.html#psbt-sign-p2pkh-input",
+    "summary": "Add a legacy P2PKH partial signature to a PSBT input."
+  },
+  {
     "name": "psbt-sign-p2wpkh-input",
     "kind": "procedure",
     "module": "(sigil bitcoin tx)",
@@ -1589,11 +1610,32 @@
     "summary": "Add a P2WPKH partial signature to a PSBT input."
   },
   {
+    "name": "psbt-sign-p2tr-keypath-input",
+    "kind": "procedure",
+    "module": "(sigil bitcoin tx)",
+    "url": "api/sigil/bitcoin/tx.html#psbt-sign-p2tr-keypath-input",
+    "summary": "Add a Taproot key-path signature to a PSBT input."
+  },
+  {
+    "name": "psbt-finalize-p2pkh-input",
+    "kind": "procedure",
+    "module": "(sigil bitcoin tx)",
+    "url": "api/sigil/bitcoin/tx.html#psbt-finalize-p2pkh-input",
+    "summary": "Finalize a signed P2PKH PSBT input."
+  },
+  {
     "name": "psbt-finalize-p2wpkh-input",
     "kind": "procedure",
     "module": "(sigil bitcoin tx)",
     "url": "api/sigil/bitcoin/tx.html#psbt-finalize-p2wpkh-input",
     "summary": "Finalize a signed P2WPKH PSBT input."
+  },
+  {
+    "name": "psbt-finalize-p2tr-keypath-input",
+    "kind": "procedure",
+    "module": "(sigil bitcoin tx)",
+    "url": "api/sigil/bitcoin/tx.html#psbt-finalize-p2tr-keypath-input",
+    "summary": "Finalize a signed Taproot key-path PSBT input."
   },
   {
     "name": "psbt-extract-transaction",

@@ -24,7 +24,7 @@ Use this page as a quick map from package to responsibility.
 
 ## Transactions and PSBT
 
-`(sigil bitcoin tx)` owns transaction records, serialization, parsing, txids, sighashes, P2PKH/P2WPKH/P2TR key-path signing, and PSBT v0 operations.
+`(sigil bitcoin tx)` owns transaction records, serialization, parsing, txids, sighashes, P2PKH/P2WPKH/P2TR key-path signing, and PSBT v0 operations including non-witness UTXOs and Taproot key signatures.
 
 ## Miniscript
 
