@@ -1211,6 +1211,13 @@
     "summary": "(sigil bitcoin tx) — Bitcoin transaction structs and serialization"
   },
   {
+    "name": "sighash-default",
+    "kind": "variable",
+    "module": "(sigil bitcoin tx)",
+    "url": "api/sigil/bitcoin/tx.html#sighash-default",
+    "summary": "Standard Taproot `SIGHASH_DEFAULT` flag."
+  },
+  {
     "name": "sighash-all",
     "kind": "variable",
     "module": "(sigil bitcoin tx)",
@@ -1524,6 +1531,13 @@
     "module": "(sigil bitcoin tx)",
     "url": "api/sigil/bitcoin/tx.html#transaction-sighash-segwit-v0",
     "summary": "Compute a BIP143 SegWit v0 signature hash for one input."
+  },
+  {
+    "name": "transaction-sighash-taproot-keypath",
+    "kind": "procedure",
+    "module": "(sigil bitcoin tx)",
+    "url": "api/sigil/bitcoin/tx.html#transaction-sighash-taproot-keypath",
+    "summary": "Compute a BIP341 Taproot key-path signature hash."
   },
   {
     "name": "transaction-sign-p2wpkh-input",

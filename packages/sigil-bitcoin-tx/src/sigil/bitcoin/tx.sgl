@@ -3,11 +3,13 @@
 (define-library (sigil bitcoin tx)
   (import (sigil struct)
           (sigil math)
+          (sigil crypto)
           (sigil secp256k1)
           (sigil bitcoin primitives)
           (sigil bitcoin script)
           (sigil bitcoin keys))
   (export
+    sighash-default
     sighash-all
     outpoint outpoint?
     outpoint-txid outpoint-index
@@ -35,6 +37,7 @@
     transaction-wtxid
     transaction-sighash-legacy
     transaction-sighash-segwit-v0
+    transaction-sighash-taproot-keypath
     transaction-sign-p2wpkh-input
     psbt-create
     psbt-serialize
@@ -43,6 +46,9 @@
     psbt-finalize-p2wpkh-input
     psbt-extract-transaction)
   (begin
+
+    ;;; Standard Taproot `SIGHASH_DEFAULT` flag.
+    (define sighash-default 0)
 
     ;;; Standard Bitcoin `SIGHASH_ALL` flag.
     (define sighash-all 1)
@@ -319,6 +325,15 @@
         (apply bytevector-append
                (cons (compact-size-encode (length items)) parts))))
 
+    (define (serialize-items items serializer)
+      (let ((parts '()))
+        (do ((xs items (cdr xs)))
+            ((null? xs))
+          (set! parts (append parts (list (serializer (car xs))))))
+        (if (null? parts)
+            #u8()
+            (apply bytevector-append parts))))
+
     (define (serialize-witness witness)
       (validate-witness witness)
       (let ((parts '()))
@@ -576,6 +591,25 @@
         (error (string-append who ": only SIGHASH_ALL is supported")))
       sighash-type)
 
+    (define (require-taproot-sighash who sighash-type)
+      (unless (or (= sighash-type sighash-default)
+                  (= sighash-type sighash-all))
+        (error (string-append who ": only SIGHASH_DEFAULT and SIGHASH_ALL are supported")))
+      sighash-type)
+
+    (define (prevout-script-bytes output)
+      (validate-txout output)
+      (bytes-with-length (txout-script-pubkey output)))
+
+    (define (validate-prevouts tx prevouts who)
+      (unless (list? prevouts)
+        (error (string-append who ": expected prevout list")))
+      (unless (= (length (transaction-inputs tx)) (length prevouts))
+        (error (string-append who ": prevout count mismatch")))
+      (do ((xs prevouts (cdr xs)))
+          ((null? xs) prevouts)
+        (validate-txout (car xs))))
+
     ;;; Compute a legacy pre-SegWit signature hash for one input.
     ;;;
     ;;; Currently supports `SIGHASH_ALL`.
@@ -634,6 +668,62 @@
                    (u32-le (transaction-lock-time tx))
                    (u32-le sighash-type))))
           (hash256 preimage))))
+
+    ;;; Compute a BIP341 Taproot key-path signature hash.
+    ;;;
+    ;;; Supports key-path spends without annex or script-path extension for
+    ;;; `SIGHASH_DEFAULT` and `SIGHASH_ALL`.
+    (define (transaction-sighash-taproot-keypath tx input-index prevouts . maybe-sighash-type)
+      (: transaction? integer? list? integer? ... -> bytevector?)
+      (let ((sighash-type (if (null? maybe-sighash-type)
+                              sighash-default
+                              (car maybe-sighash-type))))
+        (validate-transaction tx)
+        (require-taproot-sighash "transaction-sighash-taproot-keypath" sighash-type)
+        (validate-prevouts tx prevouts "transaction-sighash-taproot-keypath")
+        (let ((input (nth-item (transaction-inputs tx)
+                               input-index
+                               "transaction-sighash-taproot-keypath")))
+          (let* ((sha-prevouts
+                   (sha256-bytes
+                     (serialize-items
+                       (transaction-inputs tx)
+                       (lambda (txin)
+                         (serialize-outpoint (txin-previous-output txin))))))
+                 (sha-amounts
+                   (sha256-bytes
+                     (serialize-items
+                       prevouts
+                       (lambda (prevout)
+                         (u64-le (txout-value prevout))))))
+                 (sha-scriptpubkeys
+                   (sha256-bytes
+                     (serialize-items prevouts prevout-script-bytes)))
+                 (sha-sequences
+                   (sha256-bytes
+                     (serialize-items
+                       (transaction-inputs tx)
+                       (lambda (txin)
+                         (u32-le (txin-sequence txin))))))
+                 (sha-outputs
+                   (sha256-bytes
+                     (serialize-items (transaction-outputs tx) serialize-txout)))
+                 (sigmsg
+                   (bytevector-append
+                     (make-bytevector 1 sighash-type)
+                     (u32-le (transaction-version tx))
+                     (u32-le (transaction-lock-time tx))
+                     sha-prevouts
+                     sha-amounts
+                     sha-scriptpubkeys
+                     sha-sequences
+                     sha-outputs
+                     #u8(0)
+                     (u32-le input-index))))
+            ;; Reference `input` so out-of-range indexes fail before hashing.
+            (txin-sequence input)
+            (tagged-hash "TapSighash"
+                         (bytevector-append #u8(0) sigmsg))))))
 
     ;;; Sign one P2WPKH input and return a transaction with witness data.
     (define (transaction-sign-p2wpkh-input tx input-index prevout-value private-key . maybe-sighash-type)

@@ -33,6 +33,9 @@
 (define %p2wpkh-utxo
   (txout value: 1000 script-pubkey: %p2wpkh-script))
 
+(define %p2tr-utxo
+  (txout value: 1000 script-pubkey: (script-p2tr %one)))
+
 (define %legacy-tx
   (transaction
     version: 1
@@ -259,6 +262,43 @@
       (equal?
         (transaction-sighash-segwit-v0 %witness-tx 0 %p2pkh-script 1000)
         (transaction-sighash-segwit-v0 %witness-tx 0 %p2pkh-script 1001)))))
+
+(test-group "taproot sighash"
+
+  (test "taproot key-path SIGHASH_DEFAULT returns 32-byte digest"
+    (let ((digest (transaction-sighash-taproot-keypath
+                    %witness-tx 0 (list %p2tr-utxo) sighash-default)))
+      (assert-equal 32 (bytevector-length digest))))
+
+  (test "taproot key-path SIGHASH_DEFAULT and ALL encode different hash types"
+    (assert-false
+      (equal?
+        (transaction-sighash-taproot-keypath %witness-tx 0 (list %p2tr-utxo) sighash-default)
+        (transaction-sighash-taproot-keypath %witness-tx 0 (list %p2tr-utxo) sighash-all))))
+
+  (test "taproot key-path sighash commits to prevout amount and script"
+    (let* ((base (transaction-sighash-taproot-keypath
+                   %witness-tx 0 (list %p2tr-utxo)))
+           (different-amount
+             (txout value: 1001 script-pubkey: (txout-script-pubkey %p2tr-utxo)))
+           (different-script
+             (txout value: 1000 script-pubkey: (script-p2tr (make-bytevector 32 0)))))
+      (assert-false
+        (equal?
+          base
+          (transaction-sighash-taproot-keypath %witness-tx 0 (list different-amount))))
+      (assert-false
+        (equal?
+          base
+          (transaction-sighash-taproot-keypath %witness-tx 0 (list different-script))))))
+
+  (test "taproot key-path sighash rejects prevout count mismatch"
+    (assert-error
+      (transaction-sighash-taproot-keypath %witness-tx 0 '())))
+
+  (test "taproot key-path sighash rejects unsupported hash type"
+    (assert-error
+      (transaction-sighash-taproot-keypath %witness-tx 0 (list %p2tr-utxo) #x02))))
 
 (if %native-secp256k1?
   (test-group "P2WPKH signing"
