@@ -29,10 +29,10 @@ Layer 3 — Transactions (sigil-bitcoin-tx)
 ├── Signing (ECDSA + Schnorr)
 └── Sighash computation (legacy + BIP 143 + BIP 341)
 
-Layer 4 — Script (sigil-bitcoin-script)
+Layer 4 — Script (sigil-bitcoin-script, sigil-bitcoin-miniscript)
 ├── Script evaluation engine
 ├── Standard scripts (P2PKH, P2SH, P2WSH, P2TR)
-├── Miniscript
+├── Miniscript parser, type checker, and script compiler
 └── Output descriptors
 
 Layer 5 — Blocks & Consensus (sigil-bitcoin-consensus)
@@ -150,8 +150,9 @@ or pure Sigil code. No changes to the Sigil VM or compiler are required.
 - 3c. sigil-bitcoin-keys (WIF, BIP32, BIP39, addresses)
 - 3d. sigil-bitcoin-tx (transaction, PSBT, signing, sighash)
 - 3e. sigil-bitcoin-script (script engine, standard scripts)
-- 3f. sigil-bitcoin-consensus (blocks, merkle, PoW)
-- 3g. sigil-bitcoin-p2p (messages, handshake)
+- 3f. sigil-bitcoin-miniscript (Miniscript AST, parser, type checker, script compiler, descriptors)
+- 3g. sigil-bitcoin-consensus (blocks, merkle, PoW)
+- 3h. sigil-bitcoin-p2p (messages, handshake)
 
 ## Verification
 
@@ -204,3 +205,4 @@ or pure Sigil code. No changes to the Sigil VM or compiler are required.
 - [ ] Add transaction parsing for compactSize, outpoints, inputs, outputs, witness stacks, and full transactions.
 - [ ] Add sighash preimage helpers for legacy, BIP143, and BIP341.
 - [ ] Add transaction signing only after script and sighash APIs are stable.
+- [ ] Add `sigil-bitcoin-miniscript` after raw script and tx signing stabilize, covering fragment ASTs, parsing, type checking, script compilation, and descriptor integration.
