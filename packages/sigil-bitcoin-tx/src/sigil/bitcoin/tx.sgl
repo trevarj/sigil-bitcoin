@@ -3,8 +3,12 @@
 (define-library (sigil bitcoin tx)
   (import (sigil struct)
           (sigil math)
-          (sigil bitcoin primitives))
+          (sigil secp256k1)
+          (sigil bitcoin primitives)
+          (sigil bitcoin script)
+          (sigil bitcoin keys))
   (export
+    sighash-all
     outpoint outpoint?
     outpoint-txid outpoint-index
     txin txin?
@@ -21,8 +25,13 @@
     transaction-parse
     transaction-base-serialize
     transaction-txid
-    transaction-wtxid)
+    transaction-wtxid
+    transaction-sighash-legacy
+    transaction-sighash-segwit-v0
+    transaction-sign-p2wpkh-input)
   (begin
+
+    (define sighash-all 1)
 
     (define %u32-max #xffffffff)
     (define %u64-max #xffffffffffffffff)
@@ -432,4 +441,156 @@
 
     (define (transaction-wtxid tx)
       (: transaction? -> bytevector?)
-      (hash256 (transaction-serialize tx #t)))))
+      (hash256 (transaction-serialize tx #t)))
+
+    (define (nth-item items index who)
+      (when (< index 0)
+        (error (string-append who ": index out of range")))
+      (let loop ((xs items) (i 0))
+        (cond ((null? xs)
+               (error (string-append who ": index out of range")))
+              ((= i index)
+               (car xs))
+              (else
+               (loop (cdr xs) (+ i 1))))))
+
+    (define (replace-nth items index value who)
+      (when (< index 0)
+        (error (string-append who ": index out of range")))
+      (let loop ((xs items) (i 0) (out '()))
+        (cond ((null? xs)
+               (error (string-append who ": index out of range")))
+              ((= i index)
+               (append (reverse out) (cons value (cdr xs))))
+              (else
+               (loop (cdr xs) (+ i 1) (cons (car xs) out))))))
+
+    (define (blank-input-script input)
+      (txin previous-output: (txin-previous-output input)
+            script-sig: #u8()
+            sequence: (txin-sequence input)
+            witness: '()))
+
+    (define (input-with-script input script)
+      (txin previous-output: (txin-previous-output input)
+            script-sig: script
+            sequence: (txin-sequence input)
+            witness: '()))
+
+    (define (input-with-witness input witness)
+      (txin previous-output: (txin-previous-output input)
+            script-sig: (txin-script-sig input)
+            sequence: (txin-sequence input)
+            witness: witness))
+
+    (define (append-sighash-byte sig sighash-type)
+      (bytevector-append sig (make-bytevector 1 sighash-type)))
+
+    (define (strip-input-witnesses tx)
+      (transaction
+        version: (transaction-version tx)
+        inputs: (map blank-input-script (transaction-inputs tx))
+        outputs: (transaction-outputs tx)
+        lock-time: (transaction-lock-time tx)))
+
+    (define (serialize-prevouts inputs)
+      (apply bytevector-append
+             (map (lambda (input)
+                    (serialize-outpoint (txin-previous-output input)))
+                  inputs)))
+
+    (define (serialize-sequences inputs)
+      (apply bytevector-append
+             (map (lambda (input) (u32-le (txin-sequence input))) inputs)))
+
+    (define (serialize-outputs outputs)
+      (apply bytevector-append (map serialize-txout outputs)))
+
+    (define (require-sighash-all who sighash-type)
+      (unless (= sighash-type sighash-all)
+        (error (string-append who ": only SIGHASH_ALL is supported")))
+      sighash-type)
+
+    (define (transaction-sighash-legacy tx input-index script-code . maybe-sighash-type)
+      (: transaction? integer? bytevector? integer? ... -> bytevector?)
+      (let ((sighash-type (if (null? maybe-sighash-type)
+                              sighash-all
+                              (car maybe-sighash-type))))
+        (require-sighash-all "transaction-sighash-legacy" sighash-type)
+        (validate-transaction tx)
+        (require-bytevector "transaction-sighash-legacy script-code" script-code)
+        (let* ((blanked (strip-input-witnesses tx))
+               (target (input-with-script
+                         (nth-item (transaction-inputs blanked)
+                                   input-index
+                                   "transaction-sighash-legacy")
+                         script-code))
+               (inputs (replace-nth (transaction-inputs blanked)
+                                    input-index
+                                    target
+                                    "transaction-sighash-legacy"))
+               (signing-tx (transaction
+                             version: (transaction-version blanked)
+                             inputs: inputs
+                             outputs: (transaction-outputs blanked)
+                             lock-time: (transaction-lock-time blanked))))
+          (hash256
+            (bytevector-append
+              (transaction-base-serialize signing-tx)
+              (u32-le sighash-type))))))
+
+    (define (transaction-sighash-segwit-v0 tx input-index script-code value . maybe-sighash-type)
+      (: transaction? integer? bytevector? integer? integer? ... -> bytevector?)
+      (let ((sighash-type (if (null? maybe-sighash-type)
+                              sighash-all
+                              (car maybe-sighash-type))))
+        (require-sighash-all "transaction-sighash-segwit-v0" sighash-type)
+        (validate-transaction tx)
+        (require-bytevector "transaction-sighash-segwit-v0 script-code" script-code)
+        (require-uint "transaction-sighash-segwit-v0 value" value %u64-max)
+        (let* ((inputs (transaction-inputs tx))
+               (input (nth-item inputs input-index "transaction-sighash-segwit-v0"))
+               (preimage
+                 (bytevector-append
+                   (u32-le (transaction-version tx))
+                   (hash256 (serialize-prevouts inputs))
+                   (hash256 (serialize-sequences inputs))
+                   (serialize-outpoint (txin-previous-output input))
+                   (bytes-with-length script-code)
+                   (u64-le value)
+                   (u32-le (txin-sequence input))
+                   (hash256 (serialize-outputs (transaction-outputs tx)))
+                   (u32-le (transaction-lock-time tx))
+                   (u32-le sighash-type))))
+          (hash256 preimage))))
+
+    (define (transaction-sign-p2wpkh-input tx input-index prevout-value private-key . maybe-sighash-type)
+      (: transaction? integer? integer? bytevector? integer? ... -> transaction?)
+      (let* ((sighash-type (if (null? maybe-sighash-type)
+                               sighash-all
+                               (car maybe-sighash-type)))
+             (pubkey (private-key->public-key private-key))
+             (pubkey-hash (hash160 pubkey))
+             (script-code (script-p2pkh pubkey-hash))
+             (msghash (transaction-sighash-segwit-v0
+                        tx input-index script-code prevout-value sighash-type))
+             (der (secp256k1-ecdsa-signature-serialize-der
+                    (secp256k1-ecdsa-sign private-key msghash)))
+             (sig (append-sighash-byte der sighash-type))
+             (input (nth-item (transaction-inputs tx)
+                              input-index
+                              "transaction-sign-p2wpkh-input"))
+             (signed-input (input-with-witness
+                             (txin previous-output: (txin-previous-output input)
+                                   script-sig: #u8()
+                                   sequence: (txin-sequence input)
+                                   witness: '())
+                             (list sig pubkey))))
+        (transaction
+          version: (transaction-version tx)
+          inputs: (replace-nth (transaction-inputs tx)
+                               input-index
+                               signed-input
+                               "transaction-sign-p2wpkh-input")
+          outputs: (transaction-outputs tx)
+          lock-time: (transaction-lock-time tx))))))

@@ -1,8 +1,17 @@
 (import (sigil test)
+        (sigil secp256k1)
         (sigil bitcoin script)
         (sigil bitcoin tx))
 
+(define %native-secp256k1? (procedure? secp256k1-seckey-verify?))
+
 (define %zero-txid (make-bytevector 32 0))
+
+(define %one
+  #u8(#x00 #x00 #x00 #x00 #x00 #x00 #x00 #x00
+      #x00 #x00 #x00 #x00 #x00 #x00 #x00 #x00
+      #x00 #x00 #x00 #x00 #x00 #x00 #x00 #x00
+      #x00 #x00 #x00 #x00 #x00 #x00 #x00 #x01))
 
 (define %ascending-txid
   #u8(#x00 #x01 #x02 #x03 #x04 #x05 #x06 #x07
@@ -194,6 +203,47 @@
   (test "txid and wtxid differ when witness is present"
     (assert-false (equal? (transaction-txid %witness-tx)
                           (transaction-wtxid %witness-tx)))))
+
+(test-group "sighash"
+  (test "legacy SIGHASH_ALL returns 32-byte digest"
+    (let ((digest (transaction-sighash-legacy
+                    %legacy-tx 0 %coinbase-script sighash-all)))
+      (assert-equal 32 (bytevector-length digest))))
+
+  (test "segwit v0 SIGHASH_ALL returns 32-byte digest"
+    (let ((digest (transaction-sighash-segwit-v0
+                    %witness-tx 0 %p2pkh-script 1000 sighash-all)))
+      (assert-equal 32 (bytevector-length digest))))
+
+  (test "segwit v0 sighash commits to amount"
+    (assert-false
+      (equal?
+        (transaction-sighash-segwit-v0 %witness-tx 0 %p2pkh-script 1000)
+        (transaction-sighash-segwit-v0 %witness-tx 0 %p2pkh-script 1001)))))
+
+(if %native-secp256k1?
+  (test-group "P2WPKH signing"
+    (test "adds a DER signature and pubkey witness"
+      (let* ((signed (transaction-sign-p2wpkh-input %witness-tx 0 1000 %one))
+             (input (car (transaction-inputs signed)))
+             (witness (txin-witness input))
+             (sig+type (car witness))
+             (sig (bytevector-copy sig+type 0 (- (bytevector-length sig+type) 1)))
+             (pubkey (cadr witness))
+             (script-code (script-p2pkh %pubkey-hash))
+             (msghash (transaction-sighash-segwit-v0
+                        %witness-tx 0 script-code 1000)))
+        (assert-equal 2 (length witness))
+        (assert-equal sighash-all
+                      (bytevector-u8-ref sig+type (- (bytevector-length sig+type) 1)))
+        (assert-true
+          (secp256k1-ecdsa-verify
+            (secp256k1-ecdsa-signature-parse-der sig)
+            msghash
+            pubkey)))))
+  (test-group "P2WPKH signing"
+    (test-skip "native secp256k1 module is not linked in direct workspace runner"
+      #t)))
 
 (test-group "transaction validation"
   (test "rejects malformed compactSize"

@@ -19,3 +19,9 @@ cd "$ROOT/packages/sigil-bitcoin-keys"
 guix shell -m ../../manifest.scm -- \
   sigil test test/test-keys.sgl \
     --redirects ../../dev-redirects.sgl --no-color
+
+printf '\n==> sigil-bitcoin-tx native harness\n'
+cd "$ROOT/packages/sigil-bitcoin-tx"
+guix shell -m ../../manifest.scm -- \
+  sigil test test/test-tx.sgl \
+    --redirects ../../dev-redirects.sgl --no-color
