@@ -15,7 +15,8 @@
     "../sigil-crypto"
     ;; Bitcoin packages
     "packages/sigil-secp256k1"
-    "packages/sigil-bitcoin-primitives")
+    "packages/sigil-bitcoin-primitives"
+    "packages/sigil-bitcoin-encoding")
 
   configs: (list
     (config
@@ -24,4 +25,3 @@
       debug?: #t
       optimize: 0
       bundle?: #f)))
-

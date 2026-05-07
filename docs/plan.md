@@ -8,7 +8,7 @@ upstream contribution to sigil/sigil-crypto for missing primitives.
 ```
 Layer 0 — Primitives (extend sigil-crypto)
 ├── bignums (mbedTLS mpi exposure)
-├── secp256k1 (FFI to libsecp256k1)
+├── secp256k1 (native package linked to libsecp256k1)
 ├── RIPEMD-160, HMAC-SHA512 (extend crypto.c)
 └── HASH160, HASH256, tagged hashes (pure Sigil combinators)
 
@@ -59,7 +59,7 @@ Layer 6 — Networking (sigil-bitcoin-p2p)
 
 | Gap | Solution | Effort |
 |-----|----------|--------|
-| secp256k1 curve | FFI to libsecp256k1 0.7.1 (available in Guix) | Medium |
+| secp256k1 curve | Native package linked to libsecp256k1 0.7.1 (available in Guix) | Done |
 | Big integers (bignums) | Expose mbedTLS mpi in sigil-crypto (already compiled, unreachable) | Medium |
 | RIPEMD-160 | Add `MBEDTLS_RIPEMD160_C` to mbedTLS config + native binding | Low |
 | HMAC-SHA512 | Add native binding to sigil-crypto (~15 lines C) | Trivial |
@@ -67,11 +67,36 @@ Layer 6 — Networking (sigil-bitcoin-p2p)
 ## What Already Works in Pure Sigil Today
 
 - SHA-256d (two `sha256-bytes` calls)
+- RIPEMD-160 fallback in `sigil-bitcoin-primitives` for HASH160
 - Hex encoding (trivial byte-to-hex)
 - VarInt (switch on u8 prefix)
 - Bech32/Bech32m (polynomial-over-GF32, no bigints needed)
 - Transaction serialization (`(sigil io)` bytevector ports)
 - Base64/Base64url (in sigil-crypto)
+
+## Current Status
+
+- Phase 0 is complete.
+- `sigil-bitcoin-primitives` passes HASH160, HASH256, and BIP-340 tagged-hash vectors.
+- `sigil-bitcoin-encoding` passes hex, Base58, Base58Check, Bech32, Bech32m, SegWit v0, and SegWit v1 vectors.
+- `sigil-secp256k1` now uses a native C module linked against `libsecp256k1` instead of runtime `(sigil ffi)` dynamic loading.
+- `sigil-secp256k1` package harness tests pass all ECDSA, DER, tweak, keypair, and Schnorr assertions.
+- `hash160` currently uses a pure Sigil RIPEMD-160 fallback. The local `sigil-crypto` source and build metadata expose `ripemd160`, but the test runtime still does not bind that native symbol.
+- Root workspace tests pass under the direct runner. The secp test file records a skip marker there because multi-package workspace tests do not currently build a native harness.
+
+Known-good root verification command:
+
+```sh
+guix shell -m manifest.scm -- sigil test --redirects ./dev-redirects.sgl --no-color
+```
+
+Known-good secp256k1 harness verification command:
+
+```sh
+cd packages/sigil-secp256k1
+guix shell -m ../../manifest.scm -- sigil test test/test-secp256k1.sgl \
+  --redirects ../../dev-redirects.sgl --no-color
+```
 
 ## What Needs NO Compiler Changes
 
@@ -91,10 +116,10 @@ or pure Sigil code. No changes to the Sigil VM or compiler are required.
 - 1b. HMAC-SHA512: native binding in crypto.c
 - 1c. Bignums: expose mbedTLS mpi (add, sub, mul, div, mod, inv, cmp, shift)
 
-### Phase 2: sigil-secp256k1 FFI Bindings
+### Phase 2: sigil-secp256k1 Native Bindings
 
-- Pure Sigil package using (sigil ffi) to libsecp256k1.so
-- Zero-copy via bytevector->pointer
+- Native Sigil package linked to libsecp256k1
+- Bytevector API with native C validation and serialization
 - ECDSA sign/verify, Schnorr sign/verify, pubkey operations
 
 ### Phase 3: sigil-bitcoin Libraries
@@ -118,3 +143,31 @@ or pure Sigil code. No changes to the Sigil VM or compiler are required.
 1. PR to sigil/sigil-crypto with RIPEMD-160 + HMAC-SHA512 + mpi exposure
 2. Propose sigil-bitcoin as official project under sigil/ org
 3. Submit individual packages incrementally (encoding first, then keys, then tx)
+
+## Task Board
+
+### Done
+
+- [x] Scaffold `sigil-bitcoin-primitives`.
+- [x] Scaffold `sigil-bitcoin-encoding`.
+- [x] Add HASH160, HASH256, and BIP-340 tagged-hash tests.
+- [x] Add hex, Base58, Base58Check, Bech32, Bech32m, and SegWit address tests.
+- [x] Fix Bech32 charset length bug (`a7l`, not `a7wl`).
+- [x] Add exact BIP173/BIP350 SegWit encode assertions.
+- [x] Add pure Sigil RIPEMD-160 fallback for HASH160 while native binding visibility is unresolved.
+- [x] Replace `sigil-secp256k1` dynamic FFI with a native C module.
+- [x] Add native harness dependencies and redirects for `sigil-secp256k1`.
+- [x] Gate secp256k1 tests under the direct workspace runner while keeping full assertions in the native harness.
+
+### Next
+
+- [ ] Investigate why `ripemd160` appears in `sigil-crypto` metadata but is unbound in the `sigil-bitcoin` test runtime.
+- [ ] Add a root-level helper task or script that runs direct workspace tests plus the `sigil-secp256k1` native harness.
+- [ ] Replace absolute local Sigil redirects in `dev-redirects.sgl` with a portable workspace-local path when the Sigil checkout layout is finalized.
+- [ ] Add invalid-input coverage for `sigil-secp256k1` length/type checks and parse failures.
+- [ ] Consider returning serialized 32-byte x-only public keys in a future API, while preserving current 64-byte internal-key compatibility or adding a clearly named variant.
+- [ ] Expand Bech32/Bech32m coverage with the full BIP173/BIP350 valid and invalid vector sets.
+- [ ] Add `sigil-bitcoin-keys` skeleton with network constants, WIF encode/decode, and P2PKH/P2SH address derivation.
+- [ ] Add P2WPKH/P2WSH/P2TR address derivation after the keys package has stable public-key types.
+- [ ] Add BIP32 child-key derivation once HMAC-SHA512 visibility is verified in the same runtime path as tests.
+- [ ] Add package-level verification commands or tasks that run only currently supported packages by default.

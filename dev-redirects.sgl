@@ -4,6 +4,18 @@
 (redirects
   repos: (list
     (for-repo
+      url: "codeberg:sigil/sigil"
+      use: (from-path dir: "/home/trev/.sigil/deps/codeberg-sigil-sigil-7db1bfd330550f7b473a38513c99eda5be7b3411"))
+    (for-repo
+      url: "codeberg:sigil/sigil-ansi"
+      use: (from-path dir: "/home/trev/.sigil/deps/codeberg-sigil-sigil-ansi-ffee474670cfecc41bce437a173bf4c7830464bf"))
+    (for-repo
+      url: "codeberg:sigil/sigil-json"
+      use: (from-path dir: "/home/trev/.sigil/deps/codeberg-sigil-sigil-json-811b63925399a663e4b7dd25fb0813d59d33f557"))
+    (for-repo
+      url: "codeberg:sigil/sigil-version"
+      use: (from-path dir: "/home/trev/.sigil/deps/codeberg-sigil-sigil-version-f3a59bf7d0da81ad5206df5b2719e0a27b5b5904"))
+    (for-repo
       url: "codeberg:sigil/sigil-crypto"
       use: (from-path dir: "../sigil-crypto"))
     ))
