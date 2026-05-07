@@ -109,6 +109,12 @@ guix shell -m ../../manifest.scm -- sigil test test/test-keys.sgl \
   --redirects ../../dev-redirects.sgl --no-color
 ```
 
+Known-good full local verification command:
+
+```sh
+./scripts/test-all.sh
+```
+
 ## What Needs NO Compiler Changes
 
 Every gap is solvable through extending sigil-crypto's C bindings, FFI to C libraries,
@@ -179,7 +185,7 @@ or pure Sigil code. No changes to the Sigil VM or compiler are required.
 ### Next
 
 - [ ] Investigate why `ripemd160` appears in `sigil-crypto` metadata but is unbound in the `sigil-bitcoin` test runtime.
-- [ ] Add a root-level helper task or script that runs direct workspace tests plus the `sigil-secp256k1` native harness.
+- [x] Add a root-level helper script that runs direct workspace tests plus native package harnesses.
 - [ ] Replace absolute local Sigil redirects in `dev-redirects.sgl` with a portable workspace-local path when the Sigil checkout layout is finalized.
 - [ ] Add invalid-input coverage for `sigil-secp256k1` length/type checks and parse failures.
 - [ ] Consider returning serialized 32-byte x-only public keys in a future API, while preserving current 64-byte internal-key compatibility or adding a clearly named variant.
@@ -190,4 +196,3 @@ or pure Sigil code. No changes to the Sigil VM or compiler are required.
 - [ ] Add `sigil-bitcoin-script` skeleton with script byte constructors for standard templates.
 - [ ] Add `sigil-bitcoin-tx` skeleton with transaction structs, varint support, and legacy/SegWit serialization tests.
 - [ ] Add transaction signing only after script and sighash APIs are stable.
-- [ ] Add package-level verification commands or tasks that run only currently supported packages by default.
