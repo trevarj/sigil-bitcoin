@@ -46,6 +46,10 @@
     descriptor-kind descriptor-args descriptor-data
     descriptor-parse
     descriptor->string
+    descriptor-checksum
+    descriptor-add-checksum
+    descriptor-checksum-valid?
+    descriptor-strip-checksum
     descriptor-script-pubkey
     wallet-policy wallet-policy?
     wallet-policy-template wallet-policy-keys
@@ -75,6 +79,11 @@
       (args list?)
       (data any?))
 
+    ;;; BIP390 MuSig key expression placeholder.
+    (define-struct musig-key
+      (keys list?)
+      (suffix string?))
+
     ;;; BIP388 wallet policy with descriptor template and key list.
     (define-struct wallet-policy
       (template descriptor?)
@@ -102,6 +111,25 @@
     (define (string-ends-with? s c)
       (and (> (string-length s) 0)
            (char=? c (string-ref s (- (string-length s) 1)))))
+
+    (define (string-index-char s c)
+      (let loop ((i 0))
+        (cond ((>= i (string-length s)) #f)
+              ((char=? c (string-ref s i)) i)
+              (else (loop (+ i 1))))))
+
+    (define (string-contains-char? s c)
+      (and (string-index-char s c) #t))
+
+    (define (string-contains-substring? s needle)
+      (let ((nlen (string-length needle)))
+        (cond ((= 0 nlen) #t)
+              ((> nlen (string-length s)) #f)
+              (else
+               (let loop ((i 0))
+                 (cond ((> (+ i nlen) (string-length s)) #f)
+                       ((string=? needle (substring s i (+ i nlen))) #t)
+                       (else (loop (+ i 1)))))))))
 
     (define (function-inner who prefix s)
       (unless (and (string-prefix? prefix s)
@@ -204,15 +232,84 @@
       (and (symbolic-key? key)
            (valid-multipath-key? key)))
 
+    (define (matching-close-index s open-index)
+      (let loop ((i open-index)
+                 (depth 0))
+        (cond ((>= i (string-length s))
+               #f)
+              ((char=? #\( (string-ref s i))
+               (loop (+ i 1) (+ depth 1)))
+              ((char=? #\) (string-ref s i))
+               (if (= depth 1)
+                   i
+                   (loop (+ i 1) (- depth 1))))
+              (else
+               (loop (+ i 1) depth)))))
+
+    (define (key-expression-ranged? key)
+      (and (string? key)
+           (or (string-contains-substring? key "/*")
+               (string-contains-substring? key "/<"))))
+
+    (define (xpub-key-expression? key)
+      (and (string? key)
+           (let* ((start (if (and (> (string-length key) 0)
+                                  (char=? #\[ (string-ref key 0)))
+                             (let ((close (string-index-char key #\])))
+                               (if close (+ close 1) (string-length key)))
+                             0))
+                  (rest (substring key start (string-length key))))
+             (string-prefix? "xpub" rest))))
+
+    (define (valid-musig-suffix? suffix)
+      (or (string=? suffix "")
+          (and (string-prefix? "/" suffix)
+               (not (string-contains-char? suffix #\h))
+               (not (string-contains-char? suffix #\'))
+               (valid-multipath-key? (string-append "xpub" suffix)))))
+
+    (define (parse-musig-key-expression s)
+      (let ((close (matching-close-index s 5)))
+        (unless close
+          (error "miniscript: malformed musig key expression"))
+        (let* ((inner (substring s 6 close))
+               (suffix (substring s (+ close 1) (string-length s)))
+               (args (split-top-level-commas inner)))
+          (unless (>= (length args) 2)
+            (error "miniscript: musig requires at least two keys"))
+          (unless (valid-musig-suffix? suffix)
+            (error "miniscript: invalid musig derivation suffix"))
+          (let ((keys (let loop ((xs args)
+                                 (out '()))
+                        (if (null? xs)
+                            (reverse out)
+                            (let ((key (parse-key-expression (car xs))))
+                              (when (musig-key? key)
+                                (error "miniscript: nested musig is not allowed"))
+                              (loop (cdr xs) (cons key out)))))))
+            (when (not (string=? suffix ""))
+              (do ((xs keys (cdr xs)))
+                  ((null? xs))
+                (when (key-expression-ranged? (car xs))
+                  (error "miniscript: ranged musig cannot contain ranged participant keys"))
+                (unless (or (and (string? (car xs))
+                                 (placeholder-key? (car xs)))
+                            (xpub-key-expression? (car xs)))
+                  (error "miniscript: ranged musig requires xpub participant keys"))))
+            (musig-key keys: keys suffix: suffix)))))
+
     (define (valid-key-expression? key)
       (or (bytevector? key)
+          (musig-key? key)
           (and (string? key)
                (or (compressed-pubkey-hex? key)
                    (placeholder-key? key)
                    (valid-symbolic-key-expression? key)))))
 
     (define (parse-key-expression s)
-      (cond ((compressed-pubkey-hex? s)
+      (cond ((string-prefix? "musig(" s)
+             (parse-musig-key-expression s))
+            ((compressed-pubkey-hex? s)
              (hex-decode s))
             ((or (placeholder-key? s) (symbolic-key? s))
              (if (or (placeholder-key? s) (valid-symbolic-key-expression? s))
@@ -229,6 +326,8 @@
     (define (key->string key)
       (cond ((bytevector? key)
              (hex-encode key))
+            ((musig-key? key)
+             (musig-key->string key))
             ((string? key)
              key)
             (else
@@ -241,6 +340,12 @@
              (hex-decode key))
             (else
              (error (string-append who ": expected concrete compressed public key")))))
+
+    (define (parse-non-musig-key-expression who s)
+      (let ((key (parse-key-expression s)))
+        (when (musig-key? key)
+          (error (string-append who ": musig key expression is only supported in Taproot descriptors")))
+        key))
 
     (define (require-key who key)
       (unless (valid-key-expression? key)
@@ -708,6 +813,13 @@
               (loop (cdr xs) (cons (key->string (car xs)) out))))
         ","))
 
+    (define (musig-key->string key)
+      (string-append
+        "musig("
+        (key-list->string (musig-key-keys key))
+        ")"
+        (musig-key-suffix key)))
+
     (define (fragment-list->string fragments)
       (join-strings
         (let loop ((xs fragments)
@@ -956,7 +1068,29 @@
     (define (descriptor-sh inner)
       (descriptor kind: 'sh args: (list inner) data: #f))
 
+    (define (key-expression-musig? key)
+      (musig-key? key))
+
+    (define (fragment-contains-musig? fragment)
+      (or (key-expression-musig? (miniscript-fragment-data fragment))
+          (let loop ((xs (miniscript-fragment-args fragment)))
+            (cond ((null? xs) #f)
+                  ((fragment-contains-musig? (car xs)) #t)
+                  (else (loop (cdr xs)))))))
+
+    (define (descriptor-contains-musig? desc)
+      (let ((kind (descriptor-kind desc)))
+        (cond ((or (eq? kind 'pkh) (eq? kind 'wpkh))
+               (key-expression-musig? (descriptor-data desc)))
+              ((eq? kind 'wsh)
+               (fragment-contains-musig? (car (descriptor-args desc))))
+              ((eq? kind 'sh)
+               (descriptor-contains-musig? (car (descriptor-args desc))))
+              (else #f))))
+
     (define (descriptor-wsh fragment)
+      (when (fragment-contains-musig? fragment)
+        (error "descriptor-wsh: musig key expression is only supported in Taproot descriptors"))
       (descriptor kind: 'wsh args: (list fragment) data: #f))
 
     (define (descriptor-tr key . scripts)
@@ -1005,11 +1139,128 @@
             (else
              (error "descriptor->string: unsupported Taproot script tree"))))
 
+    (define %descriptor-input-charset
+      (string-append
+        "0123456789()[],'/*abcdefgh@:$%{}"
+        "IJKLMNOPQRSTUVWXYZ&+-.;<=>?!^_|~"
+        "ijklmnopqrstuvwxyzABCDEFGH`#\"\\ "))
+
+    (define %descriptor-checksum-charset "qpzry9x8gf2tvdw0s3jn54khce6mua7l")
+
+    (define %descriptor-checksum-generator
+      (vector #xf5dee51989 #xa9fdca3312 #x1bab10e32d #x3706b1677a #x644d626ffd))
+
+    (define (descriptor-charset-index charset c)
+      (string-index-char charset c))
+
+    (define (descriptor-string-in-charset? charset s)
+      (let ((ok #t))
+        (do ((i 0 (+ i 1)))
+            ((>= i (string-length s)) ok)
+          (unless (descriptor-charset-index charset (string-ref s i))
+            (set! ok #f)))))
+
+    (define (descriptor-polymod symbols)
+      (let ((chk 1))
+        (do ((xs symbols (cdr xs)))
+            ((null? xs) chk)
+          (let* ((value (car xs))
+                 (top (arithmetic-shift chk -35))
+                 (chk5 (bitwise-xor
+                         (arithmetic-shift (bitwise-and chk #x7ffffffff) 5)
+                         value)))
+            (set! chk chk5)
+            (do ((i 0 (+ i 1)))
+                ((>= i 5))
+              (when (not (zero? (bitwise-and top (arithmetic-shift 1 i))))
+                (set! chk (bitwise-xor chk (vector-ref %descriptor-checksum-generator i)))))))))
+
+    (define (descriptor-expand s)
+      (let ((groups '())
+            (symbols '()))
+        (do ((i 0 (+ i 1)))
+            ((>= i (string-length s))
+             (begin
+               (cond ((= 1 (length groups))
+                      (set! symbols (append symbols (list (car groups)))))
+                     ((= 2 (length groups))
+                      (set! symbols
+                        (append symbols (list (+ (* (car groups) 3) (cadr groups)))))))
+               symbols))
+          (let ((v (descriptor-charset-index %descriptor-input-charset (string-ref s i))))
+            (unless v
+              (error "descriptor-checksum: invalid descriptor character"))
+            (set! symbols (append symbols (list (bitwise-and v 31))))
+            (set! groups (append groups (list (arithmetic-shift v -5))))
+            (when (= 3 (length groups))
+              (set! symbols
+                (append symbols
+                        (list (+ (* (car groups) 9)
+                                 (* (cadr groups) 3)
+                                 (caddr groups)))))
+              (set! groups '()))))))
+
+    (define (descriptor-checksum-values checksum)
+      (let loop ((i 0)
+                 (out '()))
+        (if (>= i (string-length checksum))
+            (reverse out)
+            (let ((v (descriptor-charset-index %descriptor-checksum-charset (string-ref checksum i))))
+              (unless v
+                (error "descriptor-checksum: invalid checksum character"))
+              (loop (+ i 1) (cons v out))))))
+
+    ;;; Compute the BIP380 8-character descriptor checksum.
+    (define (descriptor-checksum descriptor-text)
+      (: string? -> string?)
+      (when (string-contains-char? descriptor-text #\#)
+        (error "descriptor-checksum: descriptor already contains a checksum separator"))
+      (let* ((symbols (append (descriptor-expand descriptor-text)
+                              '(0 0 0 0 0 0 0 0)))
+             (sum (bitwise-xor (descriptor-polymod symbols) 1))
+             (out (make-string 8 #\q)))
+        (do ((i 0 (+ i 1)))
+            ((>= i 8) out)
+          (let ((v (bitwise-and (arithmetic-shift sum (* -5 (- 7 i))) 31)))
+            (string-set! out i (string-ref %descriptor-checksum-charset v))))))
+
+    ;;; Append a BIP380 checksum to a descriptor string.
+    (define (descriptor-add-checksum descriptor-text)
+      (: string? -> string?)
+      (string-append descriptor-text "#" (descriptor-checksum descriptor-text)))
+
+    ;;; Return true when a descriptor contains a valid BIP380 checksum.
+    (define (descriptor-checksum-valid? descriptor-text)
+      (: string? -> boolean?)
+      (let ((len (string-length descriptor-text)))
+        (and (>= len 9)
+             (char=? #\# (string-ref descriptor-text (- len 9)))
+             (let ((checksum (substring descriptor-text (- len 8) len)))
+               (let ((payload (substring descriptor-text 0 (- len 9))))
+                 (and (descriptor-string-in-charset? %descriptor-input-charset payload)
+                      (descriptor-string-in-charset? %descriptor-checksum-charset checksum)
+                      (= 1
+                         (descriptor-polymod
+                           (append
+                             (descriptor-expand payload)
+                             (descriptor-checksum-values checksum))))))))))
+
+    ;;; Remove and validate a checksum when one is present.
+    (define (descriptor-strip-checksum descriptor-text)
+      (: string? -> string?)
+      (let ((separator (string-index-char descriptor-text #\#)))
+        (if separator
+            (begin
+              (unless (descriptor-checksum-valid? descriptor-text)
+                (error "descriptor-parse: invalid descriptor checksum"))
+              (substring descriptor-text 0 (- (string-length descriptor-text) 9)))
+            descriptor-text)))
+
     (define (parse-descriptor-inner s)
       (cond ((string-prefix? "pkh(" s)
-             (descriptor-pkh (parse-key-expression (function-inner "pkh" "pkh(" s))))
+             (descriptor-pkh (parse-non-musig-key-expression "pkh" (function-inner "pkh" "pkh(" s))))
             ((string-prefix? "wpkh(" s)
-             (descriptor-wpkh (parse-key-expression (function-inner "wpkh" "wpkh(" s))))
+             (descriptor-wpkh (parse-non-musig-key-expression "wpkh" (function-inner "wpkh" "wpkh(" s))))
             ((string-prefix? "sh(" s)
              (descriptor-sh (parse-descriptor-inner (function-inner "sh" "sh(" s))))
             ((string-prefix? "wsh(" s)
@@ -1029,7 +1280,7 @@
     ;;; Parse an output descriptor into a descriptor AST.
     (define (descriptor-parse s)
       (: string? -> descriptor?)
-      (parse-descriptor-inner (strip-whitespace s)))
+      (parse-descriptor-inner (descriptor-strip-checksum (strip-whitespace s))))
 
     ;;; Render a descriptor AST to a canonical descriptor string.
     (define (descriptor->string desc)
@@ -1128,7 +1379,16 @@
             (string-append
               key-info
               (if (string=? suffix "/**") "/<0;1>/*" suffix)))
-          (key->string key)))
+          (if (musig-key? key)
+              (musig-key->string-with-keys key keys)
+              (key->string key))))
+
+    (define (musig-key->string-with-keys key keys)
+      (string-append
+        "musig("
+        (key-list->string-with-keys (musig-key-keys key) keys)
+        ")"
+        (musig-key-suffix key)))
 
     (define (key-list->string-with-keys keys policy-keys)
       (join-strings

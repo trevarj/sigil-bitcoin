@@ -10,6 +10,6 @@ The packages are layered so applications can import only the pieces they need:
 - `(sigil bitcoin keys)` provides WIF, addresses, BIP32 extended keys, and BIP39 mnemonics.
 - `(sigil bitcoin script)` provides script byte constructors and standard scriptPubKey templates.
 - `(sigil bitcoin tx)` provides transaction structs, wire serialization, txids, P2PKH/P2WPKH/P2TR signing, and PSBT v0 parsing, metadata preservation, signing, and finalization helpers.
-- `(sigil bitcoin miniscript)` provides Miniscript fragments, type metadata, hash-lock and branch combinators, descriptor parsing with BIP389 multipath keys and Taproot script trees, descriptor scriptPubKeys, and BIP388 wallet policy expansion.
+- `(sigil bitcoin miniscript)` provides Miniscript fragments, type metadata, hash-lock and branch combinators, descriptor parsing with checksums, BIP389 multipath keys, Taproot script trees, BIP390 `musig(...)` placeholders, descriptor scriptPubKeys, and BIP388 wallet policy expansion.
 
 The generated API reference is built from the same JSON files produced by `sigil build`.

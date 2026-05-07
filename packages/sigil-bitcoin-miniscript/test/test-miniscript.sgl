@@ -5,6 +5,9 @@
 (define %generator-pub
   (hex-decode "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"))
 
+(define %generator-pub-text
+  "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798")
+
 (define %pk-k-text
   "pk_k(0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798)")
 
@@ -242,6 +245,35 @@
           %pk-text ",{older(10),after(500)}})")
         (descriptor->string desc))))
 
+  (test "computes and validates descriptor checksums"
+    (assert-equal "89f8spxm" (descriptor-checksum "raw(deadbeef)"))
+    (assert-equal "raw(deadbeef)#89f8spxm"
+                  (descriptor-add-checksum "raw(deadbeef)"))
+    (assert-true (descriptor-checksum-valid? "raw(deadbeef)#89f8spxm"))
+    (assert-false (descriptor-checksum-valid? "raw(deedbeef)#89f8spxm"))
+    (assert-false (descriptor-checksum-valid? "raw(\t)#qqqqqqqq"))
+    (let* ((body (string-append "wpkh(" %pk-text ")"))
+           (with-checksum (descriptor-add-checksum body)))
+      (assert-equal body (descriptor->string (descriptor-parse with-checksum)))
+      (assert-error (descriptor-parse
+                      (string-append body "#qqqqqqqq")))))
+
+  (test "parses BIP390 musig key placeholders"
+    (let ((desc (descriptor-parse
+                  (string-append
+                    "tr(musig(" %generator-pub-text "," %second-pub-text "))"))))
+      (assert-equal
+        (string-append "tr(musig(" %generator-pub-text "," %second-pub-text "))")
+        (descriptor->string desc)))
+    (let ((desc (descriptor-parse "tr(musig(xpubA,xpubB)/0/*)")))
+      (assert-equal "tr(musig(xpubA,xpubB)/0/*)" (descriptor->string desc)))
+    (assert-error
+      (descriptor-parse
+        (string-append "wpkh(musig(" %generator-pub-text "," %second-pub-text "))")))
+    (assert-error
+      (descriptor-parse
+        (string-append "wsh(pk(musig(" %generator-pub-text "," %second-pub-text ")))"))))
+
   (test "compiles wpkh descriptor scriptPubKey"
     (assert-equal
       "0014751e76e8199196d454941c45d1b3a323f1433bd6"
@@ -288,6 +320,17 @@
           "tr(" %bip388-xpub "/<0;1>/*,{"
           "pk(" %bip388-xpub-2 "/<0;1>/*),"
           "older(12960)})")
+        (wallet-policy-descriptor policy))))
+
+  (test "expands musig key placeholders"
+    (let ((policy (wallet-policy-from-template
+                    "tr(musig(@0/**,@1/**))"
+                    (list %bip388-xpub %bip388-xpub-2))))
+      (assert-equal
+        (string-append
+          "tr(musig("
+          %bip388-xpub "/<0;1>/*,"
+          %bip388-xpub-2 "/<0;1>/*))")
         (wallet-policy-descriptor policy))))
 
   (test "rejects missing key info"

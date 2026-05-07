@@ -686,6 +686,34 @@
     "summary": "Get the `data` field of a `descriptor` struct."
   },
   {
+    "name": "musig-key",
+    "kind": "procedure",
+    "module": "(sigil bitcoin miniscript)",
+    "url": "api/sigil/bitcoin/miniscript.html#musig-key",
+    "summary": "BIP390 MuSig key expression placeholder."
+  },
+  {
+    "name": "musig-key?",
+    "kind": "procedure",
+    "module": "(sigil bitcoin miniscript)",
+    "url": "api/sigil/bitcoin/miniscript.html#musig-key?",
+    "summary": "Test if a value is a `musig-key` struct."
+  },
+  {
+    "name": "musig-key-keys",
+    "kind": "procedure",
+    "module": "(sigil bitcoin miniscript)",
+    "url": "api/sigil/bitcoin/miniscript.html#musig-key-keys",
+    "summary": "Get the `keys` field of a `musig-key` struct."
+  },
+  {
+    "name": "musig-key-suffix",
+    "kind": "procedure",
+    "module": "(sigil bitcoin miniscript)",
+    "url": "api/sigil/bitcoin/miniscript.html#musig-key-suffix",
+    "summary": "Get the `suffix` field of a `musig-key` struct."
+  },
+  {
     "name": "wallet-policy",
     "kind": "procedure",
     "module": "(sigil bitcoin miniscript)",
@@ -894,6 +922,34 @@
     "module": "(sigil bitcoin miniscript)",
     "url": "api/sigil/bitcoin/miniscript.html#miniscript-compile",
     "summary": "Compile a supported Miniscript fragment into script bytes."
+  },
+  {
+    "name": "descriptor-checksum",
+    "kind": "procedure",
+    "module": "(sigil bitcoin miniscript)",
+    "url": "api/sigil/bitcoin/miniscript.html#descriptor-checksum",
+    "summary": "Compute the BIP380 8-character descriptor checksum."
+  },
+  {
+    "name": "descriptor-add-checksum",
+    "kind": "procedure",
+    "module": "(sigil bitcoin miniscript)",
+    "url": "api/sigil/bitcoin/miniscript.html#descriptor-add-checksum",
+    "summary": "Append a BIP380 checksum to a descriptor string."
+  },
+  {
+    "name": "descriptor-checksum-valid?",
+    "kind": "procedure",
+    "module": "(sigil bitcoin miniscript)",
+    "url": "api/sigil/bitcoin/miniscript.html#descriptor-checksum-valid?",
+    "summary": "Return true when a descriptor contains a valid BIP380 checksum."
+  },
+  {
+    "name": "descriptor-strip-checksum",
+    "kind": "procedure",
+    "module": "(sigil bitcoin miniscript)",
+    "url": "api/sigil/bitcoin/miniscript.html#descriptor-strip-checksum",
+    "summary": "Remove and validate a checksum when one is present."
   },
   {
     "name": "descriptor-parse",
