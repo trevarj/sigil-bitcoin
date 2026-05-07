@@ -211,7 +211,45 @@
       (test "hardened public derivation errors"
         (let* ((master (bip32-master-key %bip32-seed-1 bitcoin-mainnet))
                (xpub (extended-private-key->public-key master)))
-          (assert-error (bip32-public-child xpub #x80000000)))))
+          (assert-error (bip32-public-child xpub #x80000000))))
+
+      (test "account path helpers use mainnet and testnet coin types"
+        (assert-equal "m/44'/0'/0'" (bip44-account-path bitcoin-mainnet 0))
+        (assert-equal "m/49'/1'/2'" (bip49-account-path bitcoin-testnet 2))
+        (assert-equal "m/84'/0'/3'" (bip84-account-path bitcoin-mainnet 3))
+        (assert-equal "m/86'/1'/4'" (bip86-account-path bitcoin-testnet 4)))
+
+      (test "account key helpers derive expected depth and child numbers"
+        (let* ((master (bip32-master-key %bip32-seed-1 bitcoin-mainnet))
+               (account (bip84-account-key master 0))
+               (external (bip32-chain-key account #f))
+               (change (bip32-chain-key account #t))
+               (addr (bip32-address-key account #f 7)))
+          (assert-equal 3 (extended-private-key-depth account))
+          (assert-equal (+ #x80000000 0)
+                        (extended-private-key-child-number account))
+          (assert-equal 0 (extended-private-key-child-number external))
+          (assert-equal 1 (extended-private-key-child-number change))
+          (assert-equal 5 (extended-private-key-depth addr))
+          (assert-equal 7 (extended-private-key-child-number addr))))
+
+      (test "public account derivation matches private for address keys"
+        (let* ((master (bip32-master-key %bip32-seed-1 bitcoin-mainnet))
+               (private-account (bip84-account-key master 0))
+               (public-account (extended-private-key->public-key private-account))
+               (private-address (bip32-address-key private-account #f 5))
+               (public-address (bip32-address-key public-account #f 5)))
+          (assert-equal
+            (bip32-xpub->string (extended-private-key->public-key private-address))
+            (bip32-xpub->string public-address))))
+
+      (test "account helpers reject invalid hardened-range inputs"
+        (let ((master (bip32-master-key %bip32-seed-1 bitcoin-mainnet)))
+          (assert-error (bip32-hardened-index #x80000000))
+          (assert-error (bip32-account-path 44 bitcoin-mainnet #x80000000))
+          (assert-error (bip32-address-key (bip84-account-key master 0)
+                                           #f
+                                           #x80000000)))))
 
     (test-group "BIP39"
       (test "entropy to mnemonic"

@@ -3,7 +3,7 @@
 The current stack can already build a simple SegWit v0 wallet flow.
 
 - Generate or import BIP39 mnemonic entropy with `(sigil bitcoin keys)`.
-- Derive BIP32 private and public keys.
+- Derive BIP32 private and public keys, including BIP44/49/84/86 account and address keys.
 - Convert public keys into P2WPKH addresses.
 - Construct unsigned transactions with `(sigil bitcoin tx)`.
 - Create a PSBT from the unsigned transaction.

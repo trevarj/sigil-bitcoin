@@ -34,6 +34,13 @@
     bip32-derive-path extended-private-key->public-key
     bip32-xprv->string bip32-xpub->string
     string->bip32-xprv string->bip32-xpub
+    bip32-hardened-index bip32-account-path
+    bip44-account-path bip49-account-path
+    bip84-account-path bip86-account-path
+    bip32-account-key bip44-account-key
+    bip49-account-key bip84-account-key
+    bip86-account-key bip32-chain-key
+    bip32-address-key
     bip39-entropy->mnemonic bip39-mnemonic->entropy
     bip39-mnemonic->seed)
   (begin
@@ -138,6 +145,30 @@
             ((and (not private?) (= version (bitcoin-network-xpub bitcoin-mainnet))) bitcoin-mainnet)
             ((and (not private?) (= version (bitcoin-network-xpub bitcoin-testnet))) bitcoin-testnet)
             (else #f)))
+
+    (define (network-coin-type network)
+      (cond ((eq? 'mainnet (bitcoin-network-name network)) 0)
+            ((eq? 'testnet (bitcoin-network-name network)) 1)
+            (else
+             (error "network-coin-type: unsupported network"))))
+
+    (define (extended-key-network key)
+      (cond ((extended-private-key? key) (extended-private-key-network key))
+            ((extended-public-key? key) (extended-public-key-network key))
+            (else
+             (error "extended-key-network: expected extended key"))))
+
+    (define (require-child-index who n)
+      (unless (and (integer? n) (>= n 0) (< n %hardened-offset))
+        (error (string-append who ": expected child index in [0, 2^31)")))
+      n)
+
+    (define (account-path purpose coin-type account)
+      (string-append
+        "m/"
+        (number->string purpose) "'/"
+        (number->string coin-type) "'/"
+        (number->string account) "'"))
 
     ;;; Encode a 32-byte private key as Wallet Import Format.
     ;;;
@@ -368,6 +399,89 @@
                         (else
                          (error "bip32-derive-path: expected extended key")))
                   (cdr rest)))))))
+
+    ;;; Convert a non-hardened child index into a hardened BIP32 index.
+    (define (bip32-hardened-index index)
+      (: integer? -> integer?)
+      (+ %hardened-offset
+         (require-child-index "bip32-hardened-index" index)))
+
+    ;;; Build a BIP43 account path `m/purpose'/coin_type'/account'`.
+    (define (bip32-account-path purpose network account)
+      (: integer? bitcoin-network? integer? -> string?)
+      (require-child-index "bip32-account-path purpose" purpose)
+      (require-child-index "bip32-account-path account" account)
+      (account-path purpose (network-coin-type network) account))
+
+    ;;; BIP44 legacy P2PKH account path.
+    (define (bip44-account-path network account)
+      (: bitcoin-network? integer? -> string?)
+      (bip32-account-path 44 network account))
+
+    ;;; BIP49 nested SegWit account path.
+    (define (bip49-account-path network account)
+      (: bitcoin-network? integer? -> string?)
+      (bip32-account-path 49 network account))
+
+    ;;; BIP84 native SegWit account path.
+    (define (bip84-account-path network account)
+      (: bitcoin-network? integer? -> string?)
+      (bip32-account-path 84 network account))
+
+    ;;; BIP86 Taproot key-path account path.
+    (define (bip86-account-path network account)
+      (: bitcoin-network? integer? -> string?)
+      (bip32-account-path 86 network account))
+
+    ;;; Derive an account-level extended key for a BIP43 purpose.
+    (define (bip32-account-key root purpose account)
+      (: any? integer? integer? -> any?)
+      (bip32-derive-path
+        root
+        (bip32-account-path purpose (extended-key-network root) account)))
+
+    ;;; Derive a BIP44 account key from a master extended key.
+    (define (bip44-account-key root account)
+      (: any? integer? -> any?)
+      (bip32-account-key root 44 account))
+
+    ;;; Derive a BIP49 account key from a master extended key.
+    (define (bip49-account-key root account)
+      (: any? integer? -> any?)
+      (bip32-account-key root 49 account))
+
+    ;;; Derive a BIP84 account key from a master extended key.
+    (define (bip84-account-key root account)
+      (: any? integer? -> any?)
+      (bip32-account-key root 84 account))
+
+    ;;; Derive a BIP86 account key from a master extended key.
+    (define (bip86-account-key root account)
+      (: any? integer? -> any?)
+      (bip32-account-key root 86 account))
+
+    ;;; Derive an external (`#f`) or change (`#t`) chain from an account key.
+    (define (bip32-chain-key account-key change?)
+      (: any? boolean? -> any?)
+      (let ((chain (if change? 1 0)))
+        (cond ((extended-private-key? account-key)
+               (bip32-private-child account-key chain))
+              ((extended-public-key? account-key)
+               (bip32-public-child account-key chain))
+              (else
+               (error "bip32-chain-key: expected extended key")))))
+
+    ;;; Derive an address key at `/change/index` from an account key.
+    (define (bip32-address-key account-key change? index)
+      (: any? boolean? integer? -> any?)
+      (let ((child (require-child-index "bip32-address-key" index))
+            (chain-key (bip32-chain-key account-key change?)))
+        (cond ((extended-private-key? chain-key)
+               (bip32-private-child chain-key child))
+              ((extended-public-key? chain-key)
+               (bip32-public-child chain-key child))
+              (else
+               (error "bip32-address-key: expected extended key")))))
 
     (define (xkey-payload version depth parent-fingerprint child-number chain-code key-data)
       (let ((payload (make-bytevector 78 0)))

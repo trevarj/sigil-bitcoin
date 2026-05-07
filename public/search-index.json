@@ -406,6 +406,97 @@
     "summary": "Derive a BIP32 path such as `m/84'/0'/0'/0/0`."
   },
   {
+    "name": "bip32-hardened-index",
+    "kind": "procedure",
+    "module": "(sigil bitcoin keys)",
+    "url": "api/sigil/bitcoin/keys.html#bip32-hardened-index",
+    "summary": "Convert a non-hardened child index into a hardened BIP32 index."
+  },
+  {
+    "name": "bip32-account-path",
+    "kind": "procedure",
+    "module": "(sigil bitcoin keys)",
+    "url": "api/sigil/bitcoin/keys.html#bip32-account-path",
+    "summary": "Build a BIP43 account path `m/purpose'/coin_type'/account'`."
+  },
+  {
+    "name": "bip44-account-path",
+    "kind": "procedure",
+    "module": "(sigil bitcoin keys)",
+    "url": "api/sigil/bitcoin/keys.html#bip44-account-path",
+    "summary": "BIP44 legacy P2PKH account path."
+  },
+  {
+    "name": "bip49-account-path",
+    "kind": "procedure",
+    "module": "(sigil bitcoin keys)",
+    "url": "api/sigil/bitcoin/keys.html#bip49-account-path",
+    "summary": "BIP49 nested SegWit account path."
+  },
+  {
+    "name": "bip84-account-path",
+    "kind": "procedure",
+    "module": "(sigil bitcoin keys)",
+    "url": "api/sigil/bitcoin/keys.html#bip84-account-path",
+    "summary": "BIP84 native SegWit account path."
+  },
+  {
+    "name": "bip86-account-path",
+    "kind": "procedure",
+    "module": "(sigil bitcoin keys)",
+    "url": "api/sigil/bitcoin/keys.html#bip86-account-path",
+    "summary": "BIP86 Taproot key-path account path."
+  },
+  {
+    "name": "bip32-account-key",
+    "kind": "procedure",
+    "module": "(sigil bitcoin keys)",
+    "url": "api/sigil/bitcoin/keys.html#bip32-account-key",
+    "summary": "Derive an account-level extended key for a BIP43 purpose."
+  },
+  {
+    "name": "bip44-account-key",
+    "kind": "procedure",
+    "module": "(sigil bitcoin keys)",
+    "url": "api/sigil/bitcoin/keys.html#bip44-account-key",
+    "summary": "Derive a BIP44 account key from a master extended key."
+  },
+  {
+    "name": "bip49-account-key",
+    "kind": "procedure",
+    "module": "(sigil bitcoin keys)",
+    "url": "api/sigil/bitcoin/keys.html#bip49-account-key",
+    "summary": "Derive a BIP49 account key from a master extended key."
+  },
+  {
+    "name": "bip84-account-key",
+    "kind": "procedure",
+    "module": "(sigil bitcoin keys)",
+    "url": "api/sigil/bitcoin/keys.html#bip84-account-key",
+    "summary": "Derive a BIP84 account key from a master extended key."
+  },
+  {
+    "name": "bip86-account-key",
+    "kind": "procedure",
+    "module": "(sigil bitcoin keys)",
+    "url": "api/sigil/bitcoin/keys.html#bip86-account-key",
+    "summary": "Derive a BIP86 account key from a master extended key."
+  },
+  {
+    "name": "bip32-chain-key",
+    "kind": "procedure",
+    "module": "(sigil bitcoin keys)",
+    "url": "api/sigil/bitcoin/keys.html#bip32-chain-key",
+    "summary": "Derive an external (`#f`) or change (`#t`) chain from an account key."
+  },
+  {
+    "name": "bip32-address-key",
+    "kind": "procedure",
+    "module": "(sigil bitcoin keys)",
+    "url": "api/sigil/bitcoin/keys.html#bip32-address-key",
+    "summary": "Derive an address key at `/change/index` from an account key."
+  },
+  {
     "name": "bip32-xprv->string",
     "kind": "procedure",
     "module": "(sigil bitcoin keys)",
