@@ -375,7 +375,14 @@ static Value keypair_xonly_pub_value(SigilVM *vm, const secp256k1_keypair *keypa
         return SIGIL_UNDEFINED;
     }
 
-    return make_bv(vm, xonly.data, sizeof(xonly.data));
+    unsigned char out[32];
+    if (secp256k1_xonly_pubkey_serialize(secp_ctx, out, &xonly) != 1) {
+        sigil__vm_error(vm, SIGIL_ERR_RUNTIME,
+                        "secp256k1-keypair-xonly-pub: serialize failed");
+        return SIGIL_UNDEFINED;
+    }
+
+    return make_bv(vm, out, sizeof(out));
 }
 
 static Value native_keypair_xonly_pub(SigilVM *vm, int argc, Value *args)
@@ -454,14 +461,16 @@ static Value native_schnorrsig_verify(SigilVM *vm, int argc, Value *args)
         !read_bv_exact(vm, args[1], 32,
                        "secp256k1-schnorrsig-verify: expected 32-byte message",
                        &msg) ||
-        !read_bv_exact(vm, args[2], 64,
-                       "secp256k1-schnorrsig-verify: expected 64-byte xonly pubkey",
+        !read_bv_exact(vm, args[2], 32,
+                       "secp256k1-schnorrsig-verify: expected 32-byte xonly pubkey",
                        &xonly_data)) {
         return SIGIL_UNDEFINED;
     }
 
     secp256k1_xonly_pubkey xonly;
-    memcpy(xonly.data, xonly_data, sizeof(xonly.data));
+    if (secp256k1_xonly_pubkey_parse(secp_ctx, &xonly, xonly_data) != 1) {
+        return SIGIL_FALSE;
+    }
 
     return sigil_bool(secp256k1_schnorrsig_verify(
         secp_ctx, sig, msg, 32, &xonly) == 1);
@@ -518,11 +527,11 @@ void sigil__init_sigil_secp256k1_module(SigilVM *vm)
                         "Extract a compressed public key from a keypair");
     REGISTER_AND_EXPORT("secp256k1-keypair-xonly-pub",
                         native_keypair_xonly_pub, SIGIL_ARITY_EXACT(1),
-                        "Extract an x-only public key from a keypair");
+                        "Extract a 32-byte x-only public key from a keypair");
     REGISTER_AND_EXPORT("secp256k1-keypair-xonly-pub-with-parity",
                         native_keypair_xonly_pub_with_parity,
                         SIGIL_ARITY_EXACT(1),
-                        "Extract an x-only public key and parity from a keypair");
+                        "Extract a 32-byte x-only public key and parity from a keypair");
 
     sigil_end_module(vm);
 }

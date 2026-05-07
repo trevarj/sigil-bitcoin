@@ -59,7 +59,7 @@
     (define-native (secp256k1-schnorrsig-sign32 keypair msg)
       (: bytevector? bytevector? -> bytevector?))
 
-    ;;; Verify a 64-byte Schnorr signature with a 64-byte x-only pubkey.
+    ;;; Verify a 64-byte Schnorr signature with a 32-byte x-only pubkey.
     (define-native (secp256k1-schnorrsig-verify sig msg xonly-pubkey)
       (: bytevector? bytevector? bytevector? -> boolean?))
 
@@ -71,10 +71,10 @@
     (define-native (secp256k1-keypair-pub keypair)
       (: bytevector? -> bytevector?))
 
-    ;;; Extract the internal 64-byte x-only public key from a keypair.
+    ;;; Extract the serialized 32-byte x-only public key from a keypair.
     (define-native (secp256k1-keypair-xonly-pub keypair)
       (: bytevector? -> bytevector?))
 
-    ;;; Extract the internal x-only public key and parity from a keypair.
+    ;;; Extract the serialized 32-byte x-only public key and parity from a keypair.
     (define-native (secp256k1-keypair-xonly-pub-with-parity keypair)
       (: bytevector? -> pair?))))

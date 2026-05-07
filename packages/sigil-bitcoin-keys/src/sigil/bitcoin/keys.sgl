@@ -190,7 +190,7 @@
              (bytevector-copy (secp256k1-pubkey-parse key) 0 32))
             (else
              (let ((kp (secp256k1-keypair-create (require-private-key key))))
-               (bytevector-copy (secp256k1-keypair-xonly-pub kp) 0 32)))))
+               (secp256k1-keypair-xonly-pub kp)))))
 
     (define (public-key->p2pkh-address key network)
       (: bytevector? bitcoin-network? -> string?)

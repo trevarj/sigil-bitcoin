@@ -91,14 +91,14 @@
     (let* ((kp (secp256k1-keypair-create (random-bytes 32)))
            (pk (secp256k1-keypair-pub kp)))
       (assert-equal 33 (bytevector-length pk))))
-  (test "xonly-pub returns 64-byte key"
+  (test "xonly-pub returns serialized 32-byte key"
     (let* ((kp (secp256k1-keypair-create (random-bytes 32)))
            (xonly (secp256k1-keypair-xonly-pub kp)))
-      (assert-equal 64 (bytevector-length xonly))))
+      (assert-equal 32 (bytevector-length xonly))))
   (test "xonly-pub-with-parity returns cons"
     (let* ((kp (secp256k1-keypair-create (random-bytes 32)))
            (result (secp256k1-keypair-xonly-pub-with-parity kp)))
-      (assert-equal 64 (bytevector-length (car result)))
+      (assert-equal 32 (bytevector-length (car result)))
       (assert-true (or (= 0 (cdr result)) (= 1 (cdr result)))))))
 
 (test-group "schnorrsig"
@@ -187,7 +187,7 @@
       (assert-error
         (secp256k1-schnorrsig-verify sig (make-bytevector 31 1) xonly))
       (assert-error
-        (secp256k1-schnorrsig-verify sig msg (make-bytevector 63 1)))))))
+        (secp256k1-schnorrsig-verify sig msg (make-bytevector 31 1)))))))
   (test-group "sigil-secp256k1"
     (test-skip "native module is not linked in direct workspace runner"
       #t)))
