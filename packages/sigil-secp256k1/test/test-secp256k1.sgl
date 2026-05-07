@@ -111,7 +111,74 @@
            (good (sha256-bytes "good"))
            (bad  (sha256-bytes "bad"))
            (sig (secp256k1-schnorrsig-sign32 kp good)))
-      (assert-false (secp256k1-schnorrsig-verify sig bad xonly))))))
+      (assert-false (secp256k1-schnorrsig-verify sig bad xonly)))))
+
+(test-group "invalid inputs"
+  (test "seckey-verify? rejects non-bytevector and wrong length"
+    (assert-false (secp256k1-seckey-verify? "not a key"))
+    (assert-false (secp256k1-seckey-verify? (make-bytevector 31 1)))
+    (assert-false (secp256k1-seckey-verify? (make-bytevector 32 0))))
+
+  (test "pubkey-create errors for wrong length and invalid scalar"
+    (assert-error (secp256k1-pubkey-create (make-bytevector 31 1)))
+    (assert-error (secp256k1-pubkey-create (make-bytevector 32 0))))
+
+  (test "pubkey-parse rejects invalid types, lengths, and encodings"
+    (assert-error (secp256k1-pubkey-parse "not a pubkey"))
+    (assert-false (secp256k1-pubkey-parse (make-bytevector 32 2)))
+    (assert-false (secp256k1-pubkey-parse (make-bytevector 33 0))))
+
+  (test "tweak-add errors for bad key or tweak length"
+    (let ((pk (secp256k1-pubkey-create (random-bytes 32))))
+      (assert-error
+        (secp256k1-pubkey-tweak-add (make-bytevector 33 0)
+                                    (make-bytevector 32 1)))
+      (assert-error
+        (secp256k1-pubkey-tweak-add pk (make-bytevector 31 1)))
+      (assert-error
+        (secp256k1-seckey-tweak-add (make-bytevector 31 1)
+                                    (make-bytevector 32 1)))
+      (assert-error
+        (secp256k1-seckey-tweak-add (random-bytes 32)
+                                    (make-bytevector 31 1)))))
+
+  (test "ecdsa rejects invalid input lengths and DER"
+    (let* ((sk (random-bytes 32))
+           (pk (secp256k1-pubkey-create sk))
+           (msg (sha256-bytes "invalid ecdsa"))
+           (sig (secp256k1-ecdsa-sign sk msg)))
+      (assert-error (secp256k1-ecdsa-sign (make-bytevector 31 1) msg))
+      (assert-error (secp256k1-ecdsa-sign sk (make-bytevector 31 1)))
+      (assert-error (secp256k1-ecdsa-verify (make-bytevector 63 1) msg pk))
+      (assert-error (secp256k1-ecdsa-verify sig (make-bytevector 31 1) pk))
+      (assert-error
+        (secp256k1-ecdsa-verify sig msg (make-bytevector 33 0)))
+      (assert-error
+        (secp256k1-ecdsa-signature-parse-der (make-bytevector 4 0)))
+      (assert-error
+        (secp256k1-ecdsa-signature-serialize-der (make-bytevector 63 1)))))
+
+  (test "keypair and schnorr functions reject invalid lengths"
+    (let* ((kp (secp256k1-keypair-create (random-bytes 32)))
+           (msg (sha256-bytes "invalid schnorr"))
+           (sig (secp256k1-schnorrsig-sign32 kp msg))
+           (xonly (secp256k1-keypair-xonly-pub kp)))
+      (assert-error (secp256k1-keypair-create (make-bytevector 31 1)))
+      (assert-error (secp256k1-keypair-create (make-bytevector 32 0)))
+      (assert-error (secp256k1-keypair-pub (make-bytevector 95 1)))
+      (assert-error (secp256k1-keypair-xonly-pub (make-bytevector 95 1)))
+      (assert-error
+        (secp256k1-keypair-xonly-pub-with-parity (make-bytevector 95 1)))
+      (assert-error
+        (secp256k1-schnorrsig-sign32 (make-bytevector 95 1) msg))
+      (assert-error
+        (secp256k1-schnorrsig-sign32 kp (make-bytevector 31 1)))
+      (assert-error
+        (secp256k1-schnorrsig-verify (make-bytevector 63 1) msg xonly))
+      (assert-error
+        (secp256k1-schnorrsig-verify sig (make-bytevector 31 1) xonly))
+      (assert-error
+        (secp256k1-schnorrsig-verify sig msg (make-bytevector 63 1)))))))
   (test-group "sigil-secp256k1"
     (test-skip "native module is not linked in direct workspace runner"
       #t)))

@@ -83,9 +83,10 @@ Layer 6 — Networking (sigil-bitcoin-p2p)
 - `sigil-secp256k1` package harness tests pass all ECDSA, DER, tweak, keypair, and Schnorr assertions.
 - `sigil-bitcoin-keys` provides network structs, WIF, public-key predicates, P2PKH/P2SH/P2WPKH/P2WSH/P2TR address helpers, BIP32 extended-key structs and derivation, and BIP39 English mnemonic helpers.
 - `sigil-bitcoin-keys` package harness tests pass WIF, address, BIP32 vector 1, and BIP39 vector 1 assertions.
-- `hash160` currently uses a pure Sigil RIPEMD-160 fallback. The local `sigil-crypto` source and build metadata expose `ripemd160`, but the test runtime still does not bind that native symbol.
+- `hash160` currently uses a pure Sigil RIPEMD-160 fallback. The local `sigil-crypto` source and build metadata expose `ripemd160`; package-native harnesses that depend on the sibling checkout bind it correctly, but the root direct runner imports the host/bundled crypto module and leaves newer native bindings unbound.
 - Root workspace tests pass under the direct runner. The secp and keys test files record skip markers there because multi-package workspace tests do not currently build a native harness.
 - `sigil-crypto` now exposes `pbkdf2-sha512`, used by BIP39 seed derivation.
+- The `sigil-secp256k1` package harness covers invalid input lengths, type errors, public-key parse failures, invalid DER, and invalid key material.
 
 Known-good root verification command:
 
@@ -184,10 +185,10 @@ or pure Sigil code. No changes to the Sigil VM or compiler are required.
 
 ### Next
 
-- [ ] Investigate why `ripemd160` appears in `sigil-crypto` metadata but is unbound in the `sigil-bitcoin` test runtime.
+- [x] Investigate why `ripemd160` appears in `sigil-crypto` metadata but is unbound in the root direct test runtime.
 - [x] Add a root-level helper script that runs direct workspace tests plus native package harnesses.
 - [ ] Replace absolute local Sigil redirects in `dev-redirects.sgl` with a portable workspace-local path when the Sigil checkout layout is finalized.
-- [ ] Add invalid-input coverage for `sigil-secp256k1` length/type checks and parse failures.
+- [x] Add invalid-input coverage for `sigil-secp256k1` length/type checks and parse failures.
 - [ ] Consider returning serialized 32-byte x-only public keys in a future API, while preserving current 64-byte internal-key compatibility or adding a clearly named variant.
 - [ ] Expand Bech32/Bech32m coverage with the full BIP173/BIP350 valid and invalid vector sets.
 - [ ] Expand `sigil-bitcoin-keys` with BIP32 vectors 2 and 3, invalid extended-key checksum/version coverage, and public-derivation parity checks.
