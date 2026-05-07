@@ -15,8 +15,10 @@
     transaction-version transaction-inputs transaction-outputs
     transaction-lock-time
     compact-size-encode
+    compact-size-decode
     transaction-has-witness?
     transaction-serialize
+    transaction-parse
     transaction-base-serialize
     transaction-txid
     transaction-wtxid)
@@ -71,6 +73,17 @@
             ((>= i len) out)
           (bytevector-u8-set! out i (bytevector-u8-ref bytes (- len 1 i))))))
 
+    (define (ensure-available who bytes offset count)
+      (require-bytevector who bytes)
+      (when (or (< offset 0)
+                (< count 0)
+                (> (+ offset count) (bytevector-length bytes)))
+        (error (string-append who ": truncated input"))))
+
+    (define (read-byte bytes offset who)
+      (ensure-available who bytes offset 1)
+      (bytevector-u8-ref bytes offset))
+
     (define (u16-le n)
       (require-uint "u16-le" n #xffff)
       (let ((out (make-bytevector 2 0)))
@@ -95,6 +108,26 @@
             ((>= i 8) out)
           (bytevector-u8-set! out i (remainder v 256)))))
 
+    (define (read-u16-le bytes offset who)
+      (ensure-available who bytes offset 2)
+      (+ (bytevector-u8-ref bytes offset)
+         (arithmetic-shift (bytevector-u8-ref bytes (+ offset 1)) 8)))
+
+    (define (read-u32-le bytes offset who)
+      (ensure-available who bytes offset 4)
+      (+ (bytevector-u8-ref bytes offset)
+         (arithmetic-shift (bytevector-u8-ref bytes (+ offset 1)) 8)
+         (arithmetic-shift (bytevector-u8-ref bytes (+ offset 2)) 16)
+         (arithmetic-shift (bytevector-u8-ref bytes (+ offset 3)) 24)))
+
+    (define (read-u64-le bytes offset who)
+      (ensure-available who bytes offset 8)
+      (let ((n 0))
+        (do ((i 7 (- i 1)))
+            ((< i 0) n)
+          (set! n (+ (arithmetic-shift n 8)
+                     (bytevector-u8-ref bytes (+ offset i)))))))
+
     (define (compact-size-encode n)
       (: integer? -> bytevector?)
       (require-uint "compact-size-encode" n %u64-max)
@@ -107,11 +140,49 @@
             (else
              (bytevector-append #u8(#xff) (u64-le n)))))
 
+    (define (compact-size-decode-at bytes offset)
+      (let ((tag (read-byte bytes offset "compact-size-decode")))
+        (cond ((< tag #xfd)
+               (list tag (+ offset 1)))
+              ((= tag #xfd)
+               (let ((n (read-u16-le bytes (+ offset 1) "compact-size-decode")))
+                 (when (< n #xfd)
+                   (error "compact-size-decode: non-canonical u16 encoding"))
+                 (list n (+ offset 3))))
+              ((= tag #xfe)
+               (let ((n (read-u32-le bytes (+ offset 1) "compact-size-decode")))
+                 (when (<= n #xffff)
+                   (error "compact-size-decode: non-canonical u32 encoding"))
+                 (list n (+ offset 5))))
+              (else
+               (let ((n (read-u64-le bytes (+ offset 1) "compact-size-decode")))
+                 (when (<= n %u32-max)
+                   (error "compact-size-decode: non-canonical u64 encoding"))
+                 (list n (+ offset 9)))))))
+
+    (define (compact-size-decode bytes)
+      (: bytevector? -> integer?)
+      (let ((result (compact-size-decode-at bytes 0)))
+        (unless (= (cadr result) (bytevector-length bytes))
+          (error "compact-size-decode: trailing bytes"))
+        (car result)))
+
     (define (bytes-with-length bytes)
       (require-bytevector "bytes-with-length" bytes)
       (bytevector-append
         (compact-size-encode (bytevector-length bytes))
         bytes))
+
+    (define (read-bytes bytes offset count who)
+      (ensure-available who bytes offset count)
+      (bytevector-copy bytes offset (+ offset count)))
+
+    (define (read-length-prefixed-bytes bytes offset who)
+      (let* ((len-result (compact-size-decode-at bytes offset))
+             (len (car len-result))
+             (payload-offset (cadr len-result))
+             (payload (read-bytes bytes payload-offset len who)))
+        (list payload (+ payload-offset len))))
 
     (define (validate-outpoint op)
       (unless (outpoint? op)
@@ -198,6 +269,95 @@
         (apply bytevector-append
                (cons (compact-size-encode (length witness)) parts))))
 
+    (define (parse-outpoint bytes offset)
+      (let ((wire-txid (read-bytes bytes offset 32 "outpoint"))
+            (index (read-u32-le bytes (+ offset 32) "outpoint")))
+        (list
+          (outpoint txid: (reverse-bytevector wire-txid)
+                    index: index)
+          (+ offset 36))))
+
+    (define (parse-txin bytes offset)
+      (let* ((op-result (parse-outpoint bytes offset))
+             (op (car op-result))
+             (script-result (read-length-prefixed-bytes
+                              bytes (cadr op-result) "txin script-sig"))
+             (script-sig (car script-result))
+             (sequence (read-u32-le bytes (cadr script-result) "txin sequence")))
+        (list
+          (txin previous-output: op
+                script-sig: script-sig
+                sequence: sequence
+                witness: '())
+          (+ (cadr script-result) 4))))
+
+    (define (parse-txout bytes offset)
+      (let* ((value (read-u64-le bytes offset "txout value"))
+             (script-result (read-length-prefixed-bytes
+                              bytes (+ offset 8) "txout script-pubkey")))
+        (list
+          (txout value: value
+                 script-pubkey: (car script-result))
+          (cadr script-result))))
+
+    (define (parse-vector bytes offset parser)
+      (let* ((count-result (compact-size-decode-at bytes offset))
+             (count (car count-result)))
+        (let loop ((i 0)
+                   (next (cadr count-result))
+                   (items '()))
+          (if (>= i count)
+              (list (reverse items) next)
+              (let ((parsed (parser bytes next)))
+                (loop (+ i 1)
+                      (cadr parsed)
+                      (cons (car parsed) items)))))))
+
+    (define (parse-witness bytes offset)
+      (let* ((count-result (compact-size-decode-at bytes offset))
+             (count (car count-result)))
+        (let loop ((i 0)
+                   (next (cadr count-result))
+                   (items '()))
+          (if (>= i count)
+              (list (reverse items) next)
+              (let ((item-result (read-length-prefixed-bytes
+                                   bytes next "txin witness item")))
+                (loop (+ i 1)
+                      (cadr item-result)
+                      (cons (car item-result) items)))))))
+
+    (define (attach-witnesses inputs witnesses)
+      (let loop ((ins inputs)
+                 (wits witnesses)
+                 (out '()))
+        (cond ((and (null? ins) (null? wits))
+               (reverse out))
+              ((or (null? ins) (null? wits))
+               (error "transaction-parse: witness/input count mismatch"))
+              (else
+               (let ((input (car ins)))
+                 (loop
+                   (cdr ins)
+                   (cdr wits)
+                   (cons
+                     (txin previous-output: (txin-previous-output input)
+                           script-sig: (txin-script-sig input)
+                           sequence: (txin-sequence input)
+                           witness: (car wits))
+                     out)))))))
+
+    (define (parse-witnesses bytes offset inputs)
+      (let loop ((ins inputs)
+                 (next offset)
+                 (witnesses '()))
+        (if (null? ins)
+            (list (attach-witnesses inputs (reverse witnesses)) next)
+            (let ((parsed (parse-witness bytes next)))
+              (loop (cdr ins)
+                    (cadr parsed)
+                    (cons (car parsed) witnesses))))))
+
     (define (transaction-has-witness? tx)
       (: transaction? -> boolean?)
       (validate-transaction tx)
@@ -234,6 +394,33 @@
                 (apply bytevector-append witnesses)
                 (u32-le (transaction-lock-time tx))))
             (bytevector-append base (u32-le (transaction-lock-time tx))))))
+
+    (define (transaction-parse bytes)
+      (: bytevector? -> transaction?)
+      (require-bytevector "transaction-parse" bytes)
+      (let* ((version (read-u32-le bytes 0 "transaction version"))
+             (marker (read-byte bytes 4 "transaction marker"))
+             (segwit? (and (= marker 0)
+                           (> (bytevector-length bytes) 5)
+                           (not (= 0 (read-byte bytes 5 "transaction flag")))))
+             (input-offset (if segwit? 6 4))
+             (inputs-result (parse-vector bytes input-offset parse-txin))
+             (outputs-result (parse-vector bytes (cadr inputs-result) parse-txout))
+             (inputs (car inputs-result))
+             (outputs (car outputs-result))
+             (after-outputs (cadr outputs-result))
+             (witness-result (if segwit?
+                                 (parse-witnesses bytes after-outputs inputs)
+                                 (list inputs after-outputs)))
+             (lock-offset (cadr witness-result))
+             (lock-time (read-u32-le bytes lock-offset "transaction lock-time"))
+             (end (+ lock-offset 4)))
+        (unless (= end (bytevector-length bytes))
+          (error "transaction-parse: trailing bytes"))
+        (transaction version: version
+                     inputs: (car witness-result)
+                     outputs: outputs
+                     lock-time: lock-time)))
 
     (define (transaction-base-serialize tx)
       (: transaction? -> bytevector?)

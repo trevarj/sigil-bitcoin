@@ -129,16 +129,23 @@
 
 (test-group "compactSize"
   (test "single byte range"
-    (assert-equal #u8(#xfc) (compact-size-encode #xfc)))
+    (assert-equal #u8(#xfc) (compact-size-encode #xfc))
+    (assert-equal #xfc (compact-size-decode #u8(#xfc))))
 
   (test "u16 range"
     (assert-equal #u8(#xfd #xfd #x00) (compact-size-encode #xfd))
-    (assert-equal #u8(#xfd #xff #xff) (compact-size-encode #xffff)))
+    (assert-equal #xfd (compact-size-decode #u8(#xfd #xfd #x00)))
+    (assert-equal #u8(#xfd #xff #xff) (compact-size-encode #xffff))
+    (assert-equal #xffff (compact-size-decode #u8(#xfd #xff #xff))))
 
   (test "u32 and u64 ranges"
     (assert-equal #u8(#xfe #x00 #x00 #x01 #x00) (compact-size-encode #x10000))
+    (assert-equal #x10000 (compact-size-decode #u8(#xfe #x00 #x00 #x01 #x00)))
     (assert-equal #u8(#xff #x00 #x00 #x00 #x00 #x01 #x00 #x00 #x00)
-                  (compact-size-encode #x100000000))))
+                  (compact-size-encode #x100000000))
+    (assert-equal #x100000000
+                  (compact-size-decode
+                    #u8(#xff #x00 #x00 #x00 #x00 #x01 #x00 #x00 #x00)))))
 
 (test-group "legacy transaction serialization"
   (test "serializes without witness marker"
@@ -147,6 +154,13 @@
   (test "base serialization matches default for no-witness transaction"
     (assert-equal (transaction-serialize %legacy-tx)
                   (transaction-base-serialize %legacy-tx)))
+
+  (test "parses and reserializes"
+    (let ((parsed (transaction-parse %legacy-serialized)))
+      (assert-equal %legacy-serialized (transaction-serialize parsed))
+      (assert-equal 1 (transaction-version parsed))
+      (assert-equal 1 (length (transaction-inputs parsed)))
+      (assert-equal 1 (length (transaction-outputs parsed)))))
 
   (test "txid and wtxid match for no-witness transaction"
     (assert-equal (transaction-txid %legacy-tx)
@@ -169,13 +183,28 @@
     (assert-equal %witness-base-serialized
                   (transaction-base-serialize %witness-tx)))
 
+  (test "parses and reserializes with witness stack"
+    (let* ((parsed (transaction-parse %witness-serialized))
+           (input (car (transaction-inputs parsed))))
+      (assert-equal %witness-serialized (transaction-serialize parsed))
+      (assert-true (transaction-has-witness? parsed))
+      (assert-equal 2 (length (txin-witness input)))
+      (assert-equal #u8(#x30 #x01) (car (txin-witness input)))))
+
   (test "txid and wtxid differ when witness is present"
     (assert-false (equal? (transaction-txid %witness-tx)
                           (transaction-wtxid %witness-tx)))))
 
 (test-group "transaction validation"
   (test "rejects malformed compactSize"
-    (assert-error (compact-size-encode -1)))
+    (assert-error (compact-size-encode -1))
+    (assert-error (compact-size-decode #u8(#xfd #xfc #x00)))
+    (assert-error (compact-size-decode #u8(#xfd #xfd))))
+
+  (test "rejects truncated or trailing transactions"
+    (assert-error (transaction-parse #u8(#x01 #x00 #x00)))
+    (assert-error
+      (transaction-parse (bytevector-append %legacy-serialized #u8(#x00)))))
 
   (test "rejects invalid outpoint txid length"
     (assert-error
