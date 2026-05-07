@@ -1,0 +1,165 @@
+;;; (sigil bitcoin script) — Bitcoin script byte constructors
+
+(define-library (sigil bitcoin script)
+  (import (sigil math))
+  (export
+    op-0 op-pushdata1 op-pushdata2 op-pushdata4
+    op-1 op-2 op-3 op-4 op-5 op-6 op-7 op-8
+    op-9 op-10 op-11 op-12 op-13 op-14 op-15 op-16
+    op-dup op-hash160 op-equal op-equalverify op-checksig
+    script-empty
+    script-op
+    script-append
+    script-push-data
+    script-witness-program
+    script-p2pkh
+    script-p2sh
+    script-p2wpkh
+    script-p2wsh
+    script-p2tr)
+  (begin
+
+    (define op-0 #x00)
+    (define op-pushdata1 #x4c)
+    (define op-pushdata2 #x4d)
+    (define op-pushdata4 #x4e)
+    (define op-1 #x51)
+    (define op-2 #x52)
+    (define op-3 #x53)
+    (define op-4 #x54)
+    (define op-5 #x55)
+    (define op-6 #x56)
+    (define op-7 #x57)
+    (define op-8 #x58)
+    (define op-9 #x59)
+    (define op-10 #x5a)
+    (define op-11 #x5b)
+    (define op-12 #x5c)
+    (define op-13 #x5d)
+    (define op-14 #x5e)
+    (define op-15 #x5f)
+    (define op-16 #x60)
+    (define op-dup #x76)
+    (define op-hash160 #xa9)
+    (define op-equal #x87)
+    (define op-equalverify #x88)
+    (define op-checksig #xac)
+
+    (define script-empty #u8())
+
+    (define (require-bytevector who bytes)
+      (unless (bytevector? bytes)
+        (error (string-append who ": expected bytevector")))
+      bytes)
+
+    (define (require-bytevector-length who bytes len)
+      (require-bytevector who bytes)
+      (unless (= len (bytevector-length bytes))
+        (error (string-append who ": expected "
+                              (number->string len)
+                              "-byte bytevector")))
+      bytes)
+
+    (define (require-u8 who value)
+      (unless (and (integer? value) (<= 0 value 255))
+        (error (string-append who ": expected byte value")))
+      value)
+
+    (define (script-op opcode)
+      (: integer? -> bytevector?)
+      (make-bytevector 1 (require-u8 "script-op" opcode)))
+
+    (define (script-append . parts)
+      (: bytevector? ... -> bytevector?)
+      (let ((total 0))
+        (do ((xs parts (cdr xs)))
+            ((null? xs))
+          (require-bytevector "script-append" (car xs))
+          (set! total (+ total (bytevector-length (car xs)))))
+        (let ((out (make-bytevector total 0))
+              (offset 0))
+          (do ((xs parts (cdr xs)))
+              ((null? xs) out)
+            (let ((part (car xs)))
+              (bytevector-copy! out offset part)
+              (set! offset (+ offset (bytevector-length part))))))))
+
+    (define (le16-bytevector n)
+      (let ((out (make-bytevector 2 0)))
+        (bytevector-u8-set! out 0 (bitwise-and n #xff))
+        (bytevector-u8-set! out 1 (bitwise-and (arithmetic-shift n -8) #xff))
+        out))
+
+    (define (le32-bytevector n)
+      (let ((out (make-bytevector 4 0)))
+        (bytevector-u8-set! out 0 (bitwise-and n #xff))
+        (bytevector-u8-set! out 1 (bitwise-and (arithmetic-shift n -8) #xff))
+        (bytevector-u8-set! out 2 (bitwise-and (arithmetic-shift n -16) #xff))
+        (bytevector-u8-set! out 3 (bitwise-and (arithmetic-shift n -24) #xff))
+        out))
+
+    (define (script-push-data data)
+      (: bytevector? -> bytevector?)
+      (require-bytevector "script-push-data" data)
+      (let ((len (bytevector-length data)))
+        (cond ((<= len 75)
+               (script-append (script-op len) data))
+              ((<= len #xff)
+               (script-append (script-op op-pushdata1)
+                              (script-op len)
+                              data))
+              ((<= len #xffff)
+               (script-append (script-op op-pushdata2)
+                              (le16-bytevector len)
+                              data))
+              ((<= len #xffffffff)
+               (script-append (script-op op-pushdata4)
+                              (le32-bytevector len)
+                              data))
+              (else
+               (error "script-push-data: pushdata too large")))))
+
+    (define (script-witness-program version program)
+      (: integer? bytevector? -> bytevector?)
+      (require-bytevector "script-witness-program" program)
+      (when (or (< version 0) (> version 16))
+        (error "script-witness-program: witness version out of range"))
+      (when (or (< (bytevector-length program) 2)
+                (> (bytevector-length program) 40))
+        (error "script-witness-program: witness program length out of range"))
+      (script-append
+        (script-op (if (= version 0) op-0 (+ #x50 version)))
+        (script-push-data program)))
+
+    (define (script-p2pkh pubkey-hash)
+      (: bytevector? -> bytevector?)
+      (require-bytevector-length "script-p2pkh" pubkey-hash 20)
+      (script-append
+        (script-op op-dup)
+        (script-op op-hash160)
+        (script-push-data pubkey-hash)
+        (script-op op-equalverify)
+        (script-op op-checksig)))
+
+    (define (script-p2sh script-hash)
+      (: bytevector? -> bytevector?)
+      (require-bytevector-length "script-p2sh" script-hash 20)
+      (script-append
+        (script-op op-hash160)
+        (script-push-data script-hash)
+        (script-op op-equal)))
+
+    (define (script-p2wpkh pubkey-hash)
+      (: bytevector? -> bytevector?)
+      (require-bytevector-length "script-p2wpkh" pubkey-hash 20)
+      (script-witness-program 0 pubkey-hash))
+
+    (define (script-p2wsh script-hash)
+      (: bytevector? -> bytevector?)
+      (require-bytevector-length "script-p2wsh" script-hash 32)
+      (script-witness-program 0 script-hash))
+
+    (define (script-p2tr xonly-pubkey)
+      (: bytevector? -> bytevector?)
+      (require-bytevector-length "script-p2tr" xonly-pubkey 32)
+      (script-witness-program 1 xonly-pubkey))))

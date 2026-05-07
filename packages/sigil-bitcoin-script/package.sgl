@@ -1,0 +1,21 @@
+;;; sigil-bitcoin-script — Bitcoin script byte constructors
+;;;
+;;; Pure Sigil library providing script assembly helpers and standard templates.
+
+(package
+  name: "sigil-bitcoin-script"
+  version: "0.1.0"
+  sigil: "^0.16"
+  description: "Bitcoin script byte constructors and standard templates"
+  url: "https://codeberg.org/sigil/sigil-bitcoin"
+  license: "BSD-3-Clause"
+
+  dependencies: (list)
+
+  tasks: (list
+    (task
+      name: 'build
+      description: "Build sigil-bitcoin-script"
+      steps: (list
+        (compile-sigil-modules
+          sources: "src/**/*.sgl")))))
