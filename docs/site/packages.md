@@ -12,7 +12,7 @@ Use this page as a quick map from package to responsibility.
 
 ## secp256k1
 
-`(sigil secp256k1)` is the native libsecp256k1 binding. Higher layers use it for ECDSA, Schnorr, public key derivation, tweaks, and x-only keys.
+`(sigil secp256k1)` is the native libsecp256k1 binding. Higher layers use it for ECDSA, Schnorr, public key derivation, scalar tweaks, x-only keys, and Taproot key tweaks.
 
 ## Keys
 
@@ -24,7 +24,7 @@ Use this page as a quick map from package to responsibility.
 
 ## Transactions and PSBT
 
-`(sigil bitcoin tx)` owns transaction records, serialization, parsing, txids, sighashes, P2WPKH signing, and PSBT v0 operations.
+`(sigil bitcoin tx)` owns transaction records, serialization, parsing, txids, sighashes, P2PKH/P2WPKH/P2TR key-path signing, and PSBT v0 operations.
 
 ## Miniscript
 

@@ -1540,11 +1540,25 @@
     "summary": "Compute a BIP341 Taproot key-path signature hash."
   },
   {
+    "name": "transaction-sign-p2pkh-input",
+    "kind": "procedure",
+    "module": "(sigil bitcoin tx)",
+    "url": "api/sigil/bitcoin/tx.html#transaction-sign-p2pkh-input",
+    "summary": "Sign one legacy P2PKH input and return a transaction with scriptSig data."
+  },
+  {
     "name": "transaction-sign-p2wpkh-input",
     "kind": "procedure",
     "module": "(sigil bitcoin tx)",
     "url": "api/sigil/bitcoin/tx.html#transaction-sign-p2wpkh-input",
     "summary": "Sign one P2WPKH input and return a transaction with witness data."
+  },
+  {
+    "name": "transaction-sign-p2tr-keypath-input",
+    "kind": "procedure",
+    "module": "(sigil bitcoin tx)",
+    "url": "api/sigil/bitcoin/tx.html#transaction-sign-p2tr-keypath-input",
+    "summary": "Sign one Taproot key-path input and return a transaction with witness data."
   },
   {
     "name": "psbt-create",
@@ -1699,5 +1713,12 @@
     "module": "(sigil secp256k1)",
     "url": "api/sigil/secp256k1.html#secp256k1-keypair-xonly-pub-with-parity",
     "summary": "Extract the serialized 32-byte x-only public key and parity from a keypair."
+  },
+  {
+    "name": "secp256k1-keypair-xonly-tweak-add",
+    "kind": "procedure",
+    "module": "(sigil secp256k1)",
+    "url": "api/sigil/secp256k1.html#secp256k1-keypair-xonly-tweak-add",
+    "summary": "Add a 32-byte x-only tweak to a keypair, returning the tweaked keypair."
   }
 ]

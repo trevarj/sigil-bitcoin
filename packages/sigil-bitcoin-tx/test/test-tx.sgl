@@ -1,6 +1,7 @@
 (import (sigil test)
         (sigil secp256k1)
         (sigil bitcoin encoding)
+        (sigil bitcoin primitives)
         (sigil bitcoin script)
         (sigil bitcoin tx))
 
@@ -91,6 +92,31 @@
         witness: '()))
     outputs: (list %p2wpkh-utxo)
     lock-time: 0))
+
+(define %unsigned-p2pkh-tx
+  (transaction
+    version: 1
+    inputs: (list
+      (txin
+        previous-output: (outpoint txid: %ascending-txid index: 0)
+        script-sig: #u8()
+        sequence: #xfffffffe
+        witness: '()))
+    outputs: (list
+      (txout value: 1000 script-pubkey: %p2pkh-script))
+    lock-time: 0))
+
+(define (read-push script offset)
+  (let* ((len (bytevector-u8-ref script offset))
+         (start (+ offset 1))
+         (end (+ start len)))
+    (cons (bytevector-copy script start end) end)))
+
+(define (bip86-tweaked-keypair private-key)
+  (let* ((keypair (secp256k1-keypair-create private-key))
+         (internal-xonly (secp256k1-keypair-xonly-pub keypair))
+         (tweak (tagged-hash "TapTweak" internal-xonly)))
+    (secp256k1-keypair-xonly-tweak-add keypair tweak)))
 
 (define %witness-serialized
   #u8(#x02 #x00 #x00 #x00
@@ -301,7 +327,29 @@
       (transaction-sighash-taproot-keypath %witness-tx 0 (list %p2tr-utxo) #x02))))
 
 (if %native-secp256k1?
-  (test-group "P2WPKH signing"
+  (test-group "input signing"
+    (test "P2PKH adds a DER signature and pubkey scriptSig"
+      (let* ((signed (transaction-sign-p2pkh-input %unsigned-p2pkh-tx 0 %one))
+             (input (car (transaction-inputs signed)))
+             (script-sig (txin-script-sig input))
+             (sig-result (read-push script-sig 0))
+             (sig+type (car sig-result))
+             (pubkey-result (read-push script-sig (cdr sig-result)))
+             (pubkey (car pubkey-result))
+             (sig (bytevector-copy sig+type 0 (- (bytevector-length sig+type) 1)))
+             (script-code (script-p2pkh (hash160 pubkey)))
+             (msghash (transaction-sighash-legacy
+                        %unsigned-p2pkh-tx 0 script-code)))
+        (assert-equal '() (txin-witness input))
+        (assert-equal (bytevector-length script-sig) (cdr pubkey-result))
+        (assert-equal sighash-all
+                      (bytevector-u8-ref sig+type (- (bytevector-length sig+type) 1)))
+        (assert-true
+          (secp256k1-ecdsa-verify
+            (secp256k1-ecdsa-signature-parse-der sig)
+            msghash
+            pubkey))))
+
     (test "adds a DER signature and pubkey witness"
       (let* ((signed (transaction-sign-p2wpkh-input %witness-tx 0 1000 %one))
              (input (car (transaction-inputs signed)))
@@ -319,8 +367,43 @@
           (secp256k1-ecdsa-verify
             (secp256k1-ecdsa-signature-parse-der sig)
             msghash
-            pubkey)))))
-  (test-group "P2WPKH signing"
+            pubkey))))
+
+    (test "P2TR key-path adds a 64-byte Schnorr signature witness"
+      (let* ((tweaked (bip86-tweaked-keypair %one))
+             (xonly (secp256k1-keypair-xonly-pub tweaked))
+             (prevout (txout value: 1000 script-pubkey: (script-p2tr xonly)))
+             (signed (transaction-sign-p2tr-keypath-input
+                       %witness-tx 0 (list prevout) %one))
+             (input (car (transaction-inputs signed)))
+             (witness (txin-witness input))
+             (sig (car witness))
+             (msghash (transaction-sighash-taproot-keypath
+                        %witness-tx 0 (list prevout))))
+        (assert-equal #u8() (txin-script-sig input))
+        (assert-equal 1 (length witness))
+        (assert-equal 64 (bytevector-length sig))
+        (assert-true (secp256k1-schnorrsig-verify sig msghash xonly))))
+
+    (test "P2TR key-path appends non-default sighash type"
+      (let* ((tweaked (bip86-tweaked-keypair %one))
+             (xonly (secp256k1-keypair-xonly-pub tweaked))
+             (prevout (txout value: 1000 script-pubkey: (script-p2tr xonly)))
+             (signed (transaction-sign-p2tr-keypath-input
+                       %witness-tx 0 (list prevout) %one sighash-all))
+             (sig+type (car (txin-witness (car (transaction-inputs signed)))))
+             (sig (bytevector-copy sig+type 0 64))
+             (msghash (transaction-sighash-taproot-keypath
+                        %witness-tx 0 (list prevout) sighash-all)))
+        (assert-equal 65 (bytevector-length sig+type))
+        (assert-equal sighash-all (bytevector-u8-ref sig+type 64))
+        (assert-true (secp256k1-schnorrsig-verify sig msghash xonly))))
+
+    (test "P2TR key-path rejects the wrong prevout script"
+      (assert-error
+        (transaction-sign-p2tr-keypath-input
+          %witness-tx 0 (list %p2tr-utxo) %one))))
+  (test-group "input signing"
     (test-skip "native secp256k1 module is not linked in direct workspace runner"
       #t)))
 

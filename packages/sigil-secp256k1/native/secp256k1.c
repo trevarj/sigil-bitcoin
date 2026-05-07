@@ -421,6 +421,33 @@ static Value native_keypair_xonly_pub_with_parity(SigilVM *vm, int argc,
     return sigil_cons(vm, xonly, sigil_fixnum(parity));
 }
 
+static Value native_keypair_xonly_tweak_add(SigilVM *vm, int argc, Value *args)
+{
+    (void)argc;
+    if (!ensure_context(vm)) return SIGIL_UNDEFINED;
+
+    secp256k1_keypair keypair;
+    const unsigned char *tweak;
+    if (!read_keypair(
+            vm, args[0],
+            &keypair,
+            "secp256k1-keypair-xonly-tweak-add: expected 96-byte keypair") ||
+        !read_bv_exact(
+            vm, args[1], 32,
+            "secp256k1-keypair-xonly-tweak-add: expected 32-byte tweak",
+            &tweak)) {
+        return SIGIL_UNDEFINED;
+    }
+
+    if (secp256k1_keypair_xonly_tweak_add(secp_ctx, &keypair, tweak) != 1) {
+        sigil__vm_error(vm, SIGIL_ERR_RUNTIME,
+                        "secp256k1-keypair-xonly-tweak-add: tweak failed");
+        return SIGIL_UNDEFINED;
+    }
+
+    return make_bv(vm, keypair.data, sizeof(keypair.data));
+}
+
 static Value native_schnorrsig_sign32(SigilVM *vm, int argc, Value *args)
 {
     (void)argc;
@@ -532,6 +559,10 @@ void sigil__init_sigil_secp256k1_module(SigilVM *vm)
                         native_keypair_xonly_pub_with_parity,
                         SIGIL_ARITY_EXACT(1),
                         "Extract a 32-byte x-only public key and parity from a keypair");
+    REGISTER_AND_EXPORT("secp256k1-keypair-xonly-tweak-add",
+                        native_keypair_xonly_tweak_add,
+                        SIGIL_ARITY_EXACT(2),
+                        "Add an x-only tweak to a keypair");
 
     sigil_end_module(vm);
 }

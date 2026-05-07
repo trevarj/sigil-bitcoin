@@ -16,7 +16,8 @@
     secp256k1-keypair-create
     secp256k1-keypair-pub
     secp256k1-keypair-xonly-pub
-    secp256k1-keypair-xonly-pub-with-parity)
+    secp256k1-keypair-xonly-pub-with-parity
+    secp256k1-keypair-xonly-tweak-add)
 
   (begin
     ;;; Validate a 32-byte secp256k1 secret key.
@@ -77,4 +78,8 @@
 
     ;;; Extract the serialized 32-byte x-only public key and parity from a keypair.
     (define-native (secp256k1-keypair-xonly-pub-with-parity keypair)
-      (: bytevector? -> pair?))))
+      (: bytevector? -> pair?))
+
+    ;;; Add a 32-byte x-only tweak to a keypair, returning the tweaked keypair.
+    (define-native (secp256k1-keypair-xonly-tweak-add keypair tweak)
+      (: bytevector? bytevector? -> bytevector?))))

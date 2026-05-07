@@ -38,7 +38,9 @@
     transaction-sighash-legacy
     transaction-sighash-segwit-v0
     transaction-sighash-taproot-keypath
+    transaction-sign-p2pkh-input
     transaction-sign-p2wpkh-input
+    transaction-sign-p2tr-keypath-input
     psbt-create
     psbt-serialize
     psbt-parse
@@ -566,6 +568,22 @@
     (define (append-sighash-byte sig sighash-type)
       (bytevector-append sig (make-bytevector 1 sighash-type)))
 
+    (define (taproot-key-tweak internal-xonly-pubkey)
+      (require-bytevector-length "taproot-key-tweak" internal-xonly-pubkey 32)
+      (tagged-hash "TapTweak" internal-xonly-pubkey))
+
+    (define (taproot-tweaked-keypair private-key)
+      (let* ((keypair (secp256k1-keypair-create private-key))
+             (internal-xonly (secp256k1-keypair-xonly-pub keypair))
+             (tweak (taproot-key-tweak internal-xonly)))
+        (secp256k1-keypair-xonly-tweak-add keypair tweak)))
+
+    (define (taproot-keypath-signature keypair msghash sighash-type)
+      (let ((sig (secp256k1-schnorrsig-sign32 keypair msghash)))
+        (if (= sighash-type sighash-default)
+            sig
+            (append-sighash-byte sig sighash-type))))
+
     (define (strip-input-witnesses tx)
       (transaction
         version: (transaction-version tx)
@@ -725,6 +743,36 @@
             (tagged-hash "TapSighash"
                          (bytevector-append #u8(0) sigmsg))))))
 
+    ;;; Sign one legacy P2PKH input and return a transaction with scriptSig data.
+    (define (transaction-sign-p2pkh-input tx input-index private-key . maybe-sighash-type)
+      (: transaction? integer? bytevector? integer? ... -> transaction?)
+      (let* ((sighash-type (if (null? maybe-sighash-type)
+                               sighash-all
+                               (car maybe-sighash-type)))
+             (pubkey (private-key->public-key private-key))
+             (script-code (script-p2pkh (hash160 pubkey)))
+             (msghash (transaction-sighash-legacy
+                        tx input-index script-code sighash-type))
+             (der (secp256k1-ecdsa-signature-serialize-der
+                    (secp256k1-ecdsa-sign private-key msghash)))
+             (sig (append-sighash-byte der sighash-type))
+             (input (nth-item (transaction-inputs tx)
+                              input-index
+                              "transaction-sign-p2pkh-input"))
+             (signed-input (input-with-script
+                             input
+                             (script-append
+                               (script-push-data sig)
+                               (script-push-data pubkey)))))
+        (transaction
+          version: (transaction-version tx)
+          inputs: (replace-nth (transaction-inputs tx)
+                               input-index
+                               signed-input
+                               "transaction-sign-p2pkh-input")
+          outputs: (transaction-outputs tx)
+          lock-time: (transaction-lock-time tx))))
+
     ;;; Sign one P2WPKH input and return a transaction with witness data.
     (define (transaction-sign-p2wpkh-input tx input-index prevout-value private-key . maybe-sighash-type)
       (: transaction? integer? integer? bytevector? integer? ... -> transaction?)
@@ -754,6 +802,45 @@
                                input-index
                                signed-input
                                "transaction-sign-p2wpkh-input")
+          outputs: (transaction-outputs tx)
+          lock-time: (transaction-lock-time tx))))
+
+    ;;; Sign one Taproot key-path input and return a transaction with witness data.
+    ;;;
+    ;;; This signs BIP86-style key-path spends without script tree commitments.
+    (define (transaction-sign-p2tr-keypath-input tx input-index prevouts private-key . maybe-sighash-type)
+      (: transaction? integer? list? bytevector? integer? ... -> transaction?)
+      (let* ((sighash-type (if (null? maybe-sighash-type)
+                               sighash-default
+                               (car maybe-sighash-type)))
+             (tweaked-keypair (taproot-tweaked-keypair private-key))
+             (output-xonly (secp256k1-keypair-xonly-pub tweaked-keypair))
+             (expected-script (script-p2tr output-xonly))
+             (checked-prevouts (validate-prevouts
+                                 tx prevouts
+                                 "transaction-sign-p2tr-keypath-input"))
+             (prevout (nth-item checked-prevouts
+                                input-index
+                                "transaction-sign-p2tr-keypath-input"))
+             (msghash (transaction-sighash-taproot-keypath
+                        tx input-index checked-prevouts sighash-type))
+             (sig (taproot-keypath-signature tweaked-keypair msghash sighash-type))
+             (input (nth-item (transaction-inputs tx)
+                              input-index
+                              "transaction-sign-p2tr-keypath-input")))
+        (unless (equal? expected-script (txout-script-pubkey prevout))
+          (error "transaction-sign-p2tr-keypath-input: prevout is not BIP86 P2TR for key"))
+        (transaction
+          version: (transaction-version tx)
+          inputs: (replace-nth (transaction-inputs tx)
+                               input-index
+                               (input-with-witness
+                                 (txin previous-output: (txin-previous-output input)
+                                       script-sig: #u8()
+                                       sequence: (txin-sequence input)
+                                       witness: '())
+                                 (list sig))
+                               "transaction-sign-p2tr-keypath-input")
           outputs: (transaction-outputs tx)
           lock-time: (transaction-lock-time tx))))
 

@@ -99,7 +99,17 @@
     (let* ((kp (secp256k1-keypair-create (random-bytes 32)))
            (result (secp256k1-keypair-xonly-pub-with-parity kp)))
       (assert-equal 32 (bytevector-length (car result)))
-      (assert-true (or (= 0 (cdr result)) (= 1 (cdr result)))))))
+      (assert-true (or (= 0 (cdr result)) (= 1 (cdr result))))))
+  (test "xonly tweak returns a signable tweaked keypair"
+    (let* ((kp (secp256k1-keypair-create (random-bytes 32)))
+           (tweak (sha256-bytes "xonly tweak"))
+           (tweaked (secp256k1-keypair-xonly-tweak-add kp tweak))
+           (xonly (secp256k1-keypair-xonly-pub tweaked))
+           (msg (sha256-bytes "tweaked keypair"))
+           (sig (secp256k1-schnorrsig-sign32 tweaked msg)))
+      (assert-equal 96 (bytevector-length tweaked))
+      (assert-equal 32 (bytevector-length xonly))
+      (assert-true (secp256k1-schnorrsig-verify sig msg xonly)))))
 
 (test-group "schnorrsig"
   (test "sign32 returns 64-byte sig"
@@ -178,6 +188,11 @@
       (assert-error (secp256k1-keypair-xonly-pub (make-bytevector 95 1)))
       (assert-error
         (secp256k1-keypair-xonly-pub-with-parity (make-bytevector 95 1)))
+      (assert-error
+        (secp256k1-keypair-xonly-tweak-add (make-bytevector 95 1)
+                                           (make-bytevector 32 1)))
+      (assert-error
+        (secp256k1-keypair-xonly-tweak-add kp (make-bytevector 31 1)))
       (assert-error
         (secp256k1-schnorrsig-sign32 (make-bytevector 95 1) msg))
       (assert-error
