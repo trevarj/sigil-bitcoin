@@ -211,11 +211,15 @@
     ;; ── Tagged Hashes (BIP 340) ──────────────────────────────
 
     ;; Common BIP 340 tag strings
+    ;;; BIP340 tagged-hash tag for Schnorr challenge hashes.
     (define bip0340/challenge  "BIP0340/challenge")
+    ;;; BIP340 tagged-hash tag for auxiliary randomness.
     (define bip0340/aux        "BIP0340/aux")
+    ;;; BIP340 tagged-hash tag for nonce derivation.
     (define bip0340/nonce      "BIP0340/nonce")
 
     ;; BIP 341 / taproot tags
+    ;;; BIP341 tagged-hash tag for Taproot tweak data.
     (define taproot/elements   "TapRoot/elements")
 
     ;;; Compute a BIP-340 tagged hash.

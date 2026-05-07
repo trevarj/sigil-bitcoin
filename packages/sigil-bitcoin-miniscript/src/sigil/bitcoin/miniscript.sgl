@@ -38,16 +38,19 @@
     wallet-policy-descriptor)
   (begin
 
+    ;;; Miniscript fragment AST node.
     (define-struct miniscript-fragment
       (kind symbol?)
       (args list?)
       (data any?))
 
+    ;;; Output descriptor AST node.
     (define-struct descriptor
       (kind symbol?)
       (args list?)
       (data any?))
 
+    ;;; BIP388 wallet policy with descriptor template and key list.
     (define-struct wallet-policy
       (template descriptor?)
       (keys list?))
@@ -171,22 +174,27 @@
         (error (string-append who ": value out of range")))
       n)
 
+    ;;; Construct a `pk_k(key)` Miniscript fragment.
     (define (miniscript-pk-k key)
       (: any? -> miniscript-fragment?)
       (miniscript-fragment kind: 'pk-k args: '() data: (require-key "miniscript-pk-k" key)))
 
+    ;;; Construct a `pk_h(key)` Miniscript fragment.
     (define (miniscript-pk-h key)
       (: any? -> miniscript-fragment?)
       (miniscript-fragment kind: 'pk-h args: '() data: (require-key "miniscript-pk-h" key)))
 
+    ;;; Construct the `pk(key)` alias for `c:pk_k(key)`.
     (define (miniscript-pk key)
       (: any? -> miniscript-fragment?)
       (miniscript-fragment kind: 'pk args: '() data: (require-key "miniscript-pk" key)))
 
+    ;;; Construct an absolute locktime `after(n)` fragment.
     (define (miniscript-after locktime)
       (: integer? -> miniscript-fragment?)
       (miniscript-fragment kind: 'after args: '() data: (require-locktime "miniscript-after" locktime)))
 
+    ;;; Construct a relative locktime `older(n)` fragment.
     (define (miniscript-older sequence)
       (: integer? -> miniscript-fragment?)
       (miniscript-fragment kind: 'older args: '() data: (require-locktime "miniscript-older" sequence)))
@@ -197,6 +205,7 @@
         (unless (miniscript-fragment? (car xs))
           (error (string-append who ": expected miniscript fragment")))))
 
+    ;;; Construct a `multi(k, keys...)` multisig fragment.
     (define (miniscript-multi threshold keys)
       (: integer? list? -> miniscript-fragment?)
       (unless (and (integer? threshold) (> threshold 0) (<= threshold (length keys)) (<= (length keys) 16))
@@ -206,6 +215,7 @@
         (require-key "miniscript-multi" (car xs)))
       (miniscript-fragment kind: 'multi args: keys data: threshold))
 
+    ;;; Construct a `sortedmulti(k, keys...)` multisig fragment.
     (define (miniscript-sortedmulti threshold keys)
       (: integer? list? -> miniscript-fragment?)
       (unless (and (integer? threshold) (> threshold 0) (<= threshold (length keys)) (<= (length keys) 16))
@@ -215,18 +225,22 @@
         (require-key "miniscript-sortedmulti" (car xs)))
       (miniscript-fragment kind: 'sortedmulti args: keys data: threshold))
 
+    ;;; Construct an `and_v(left, right)` fragment.
     (define (miniscript-and-v left right)
       (: miniscript-fragment? miniscript-fragment? -> miniscript-fragment?)
       (miniscript-fragment kind: 'and-v args: (list left right) data: #f))
 
+    ;;; Construct an `and_b(left, right)` fragment.
     (define (miniscript-and-b left right)
       (: miniscript-fragment? miniscript-fragment? -> miniscript-fragment?)
       (miniscript-fragment kind: 'and-b args: (list left right) data: #f))
 
+    ;;; Construct an `or_d(left, right)` fragment.
     (define (miniscript-or-d left right)
       (: miniscript-fragment? miniscript-fragment? -> miniscript-fragment?)
       (miniscript-fragment kind: 'or-d args: (list left right) data: #f))
 
+    ;;; Construct a `thresh(k, fragments...)` fragment.
     (define (miniscript-thresh threshold fragments)
       (: integer? list? -> miniscript-fragment?)
       (unless (and (integer? threshold) (> threshold 0) (<= threshold (length fragments)))
@@ -234,6 +248,7 @@
       (require-fragments "miniscript-thresh" fragments)
       (miniscript-fragment kind: 'thresh args: fragments data: threshold))
 
+    ;;; Apply wrapper characters to a Miniscript fragment.
     (define (miniscript-wrapper wrappers fragment)
       (: string? miniscript-fragment? -> miniscript-fragment?)
       (unless (and (string? wrappers) (> (string-length wrappers) 0))
@@ -353,10 +368,12 @@
                   (else
                    (error "miniscript-parse: unsupported fragment"))))))
 
+    ;;; Parse a Miniscript expression into a fragment AST.
     (define (miniscript-parse s)
       (: string? -> miniscript-fragment?)
       (parse-fragment (strip-whitespace s)))
 
+    ;;; Return the coarse Miniscript base type for a fragment.
     (define (miniscript-type fragment)
       (: miniscript-fragment? -> symbol?)
       (unless (miniscript-fragment? fragment)
@@ -382,6 +399,7 @@
               (else
                (error "miniscript-type: unsupported fragment")))))
 
+    ;;; Validate a Miniscript fragment and return its coarse base type.
     (define (miniscript-type-check fragment)
       (: miniscript-fragment? -> boolean?)
       (and (miniscript-type fragment) #t))
@@ -416,6 +434,7 @@
               (loop (cdr xs) (cons (miniscript->string (car xs)) out))))
         ","))
 
+    ;;; Render a Miniscript fragment to its canonical string form.
     (define (miniscript->string fragment)
       (: miniscript-fragment? -> string?)
       (let ((kind (miniscript-fragment-kind fragment)))
@@ -517,6 +536,7 @@
             (else
              (error "miniscript-compile: unsupported wrapper"))))
 
+    ;;; Compile a supported Miniscript fragment into script bytes.
     (define (miniscript-compile fragment)
       (: miniscript-fragment? -> bytevector?)
       (miniscript-type-check fragment)
@@ -587,10 +607,12 @@
             (else
              (error "descriptor-parse: unsupported descriptor"))))
 
+    ;;; Parse an output descriptor into a descriptor AST.
     (define (descriptor-parse s)
       (: string? -> descriptor?)
       (parse-descriptor-inner (strip-whitespace s)))
 
+    ;;; Render a descriptor AST to a canonical descriptor string.
     (define (descriptor->string desc)
       (: descriptor? -> string?)
       (let ((kind (descriptor-kind desc)))
@@ -618,6 +640,10 @@
               (else
                (error "descriptor-redeem-script: unsupported nested descriptor")))))
 
+    ;;; Derive the scriptPubKey for a descriptor.
+    ;;;
+    ;;; Requires concrete public keys for descriptors that directly encode
+    ;;; address scripts.
     (define (descriptor-script-pubkey desc)
       (: descriptor? -> bytevector?)
       (let ((kind (descriptor-kind desc)))
@@ -759,12 +785,14 @@
               (else
                (error "wallet-policy: unsupported descriptor template")))))
 
+    ;;; Build a BIP388 wallet policy from descriptor template text and keys.
     (define (wallet-policy-from-template template keys)
       (: string? list? -> wallet-policy?)
       (unless (string-contains-placeholder? template)
         (error "wallet-policy: descriptor template must contain a key placeholder"))
       (wallet-policy template: (descriptor-parse template) keys: keys))
 
+    ;;; Expand a wallet policy into a concrete descriptor.
     (define (wallet-policy-descriptor policy)
       (: wallet-policy? -> string?)
       (descriptor->string-with-keys

@@ -1,0 +1,15 @@
+# Overview
+
+Sigil Bitcoin is a workspace of Bitcoin libraries for Sigil.
+
+The packages are layered so applications can import only the pieces they need:
+
+- `(sigil bitcoin primitives)` provides HASH160, HASH256, tagged hashes, and Taproot tag constants.
+- `(sigil bitcoin encoding)` provides hex, Base58Check, Bech32, Bech32m, and SegWit address codecs.
+- `(sigil secp256k1)` provides native libsecp256k1 bytevector bindings.
+- `(sigil bitcoin keys)` provides WIF, addresses, BIP32 extended keys, and BIP39 mnemonics.
+- `(sigil bitcoin script)` provides script byte constructors and standard scriptPubKey templates.
+- `(sigil bitcoin tx)` provides transaction structs, wire serialization, txids, SegWit v0 signing, and PSBT v0 helpers.
+- `(sigil bitcoin miniscript)` provides Miniscript fragments, descriptor parsing, descriptor scriptPubKeys, and BIP388 wallet policy expansion.
+
+The generated API reference is built from the same JSON files produced by `sigil build`.

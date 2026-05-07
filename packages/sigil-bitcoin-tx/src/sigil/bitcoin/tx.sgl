@@ -44,31 +44,37 @@
     psbt-extract-transaction)
   (begin
 
+    ;;; Standard Bitcoin `SIGHASH_ALL` flag.
     (define sighash-all 1)
 
     (define %u32-max #xffffffff)
     (define %u64-max #xffffffffffffffff)
 
+    ;;; Transaction outpoint identifying a previous output by txid and index.
     (define-struct outpoint
       (txid bytevector?)
       (index integer?))
 
+    ;;; Transaction input with previous output, scriptSig, sequence, and witness.
     (define-struct txin
       (previous-output outpoint?)
       (script-sig bytevector?)
       (sequence integer?)
       (witness list?))
 
+    ;;; Transaction output with satoshi value and scriptPubKey.
     (define-struct txout
       (value integer?)
       (script-pubkey bytevector?))
 
+    ;;; Bitcoin transaction record.
     (define-struct transaction
       (version integer?)
       (inputs list?)
       (outputs list?)
       (lock-time integer?))
 
+    ;;; PSBT input map subset supported by this package.
     (define-struct psbt-input
       (witness-utxo any?)
       (partial-sigs list?)
@@ -76,8 +82,10 @@
       (final-script-sig bytevector?)
       (final-script-witness list?))
 
+    ;;; PSBT output map placeholder.
     (define-struct psbt-output)
 
+    ;;; Partially Signed Bitcoin Transaction record.
     (define-struct psbt
       (unsigned-tx transaction?)
       (inputs list?)
@@ -164,6 +172,7 @@
           (set! n (+ (arithmetic-shift n 8)
                      (bytevector-u8-ref bytes (+ offset i)))))))
 
+    ;;; Encode a Bitcoin CompactSize unsigned integer.
     (define (compact-size-encode n)
       (: integer? -> bytevector?)
       (require-uint "compact-size-encode" n %u64-max)
@@ -196,6 +205,9 @@
                    (error "compact-size-decode: non-canonical u64 encoding"))
                  (list n (+ offset 9)))))))
 
+    ;;; Decode a CompactSize integer from a bytevector.
+    ;;;
+    ;;; Returns `(value . next-offset)`.
     (define (compact-size-decode bytes)
       (: bytevector? -> integer?)
       (let ((result (compact-size-decode-at bytes 0)))
@@ -411,6 +423,7 @@
                     (cadr parsed)
                     (cons (car parsed) witnesses))))))
 
+    ;;; Return true when any transaction input has witness stack items.
     (define (transaction-has-witness? tx)
       (: transaction? -> boolean?)
       (validate-transaction tx)
@@ -420,6 +433,10 @@
           (when (not (null? (txin-witness (car xs))))
             (set! has? #t)))))
 
+    ;;; Serialize a transaction to Bitcoin wire bytes.
+    ;;;
+    ;;; Includes witness data by default when present. Pass `#f` to omit
+    ;;; witnesses for txid/base serialization.
     (define (transaction-serialize tx . maybe-include-witness)
       (: transaction? boolean? ... -> bytevector?)
       (validate-transaction tx)
@@ -448,6 +465,7 @@
                 (u32-le (transaction-lock-time tx))))
             (bytevector-append base (u32-le (transaction-lock-time tx))))))
 
+    ;;; Parse Bitcoin wire bytes into a transaction record.
     (define (transaction-parse bytes)
       (: bytevector? -> transaction?)
       (require-bytevector "transaction-parse" bytes)
@@ -475,14 +493,17 @@
                      outputs: outputs
                      lock-time: lock-time)))
 
+    ;;; Serialize a transaction without SegWit marker, flag, or witnesses.
     (define (transaction-base-serialize tx)
       (: transaction? -> bytevector?)
       (transaction-serialize tx #f))
 
+    ;;; Return the transaction ID bytevector for a transaction.
     (define (transaction-txid tx)
       (: transaction? -> bytevector?)
       (hash256 (transaction-base-serialize tx)))
 
+    ;;; Return the witness transaction ID bytevector for a transaction.
     (define (transaction-wtxid tx)
       (: transaction? -> bytevector?)
       (hash256 (transaction-serialize tx #t)))
@@ -555,6 +576,9 @@
         (error (string-append who ": only SIGHASH_ALL is supported")))
       sighash-type)
 
+    ;;; Compute a legacy pre-SegWit signature hash for one input.
+    ;;;
+    ;;; Currently supports `SIGHASH_ALL`.
     (define (transaction-sighash-legacy tx input-index script-code . maybe-sighash-type)
       (: transaction? integer? bytevector? integer? ... -> bytevector?)
       (let ((sighash-type (if (null? maybe-sighash-type)
@@ -583,6 +607,9 @@
               (transaction-base-serialize signing-tx)
               (u32-le sighash-type))))))
 
+    ;;; Compute a BIP143 SegWit v0 signature hash for one input.
+    ;;;
+    ;;; Currently supports `SIGHASH_ALL`.
     (define (transaction-sighash-segwit-v0 tx input-index script-code value . maybe-sighash-type)
       (: transaction? integer? bytevector? integer? integer? ... -> bytevector?)
       (let ((sighash-type (if (null? maybe-sighash-type)
@@ -608,6 +635,7 @@
                    (u32-le sighash-type))))
           (hash256 preimage))))
 
+    ;;; Sign one P2WPKH input and return a transaction with witness data.
     (define (transaction-sign-p2wpkh-input tx input-index prevout-value private-key . maybe-sighash-type)
       (: transaction? integer? integer? bytevector? integer? ... -> transaction?)
       (let* ((sighash-type (if (null? maybe-sighash-type)
@@ -655,6 +683,7 @@
             (reverse out)
             (loop (+ i 1) (cons (maker) out)))))
 
+    ;;; Create an empty PSBT from an unsigned transaction.
     (define (psbt-create unsigned-tx)
       (: transaction? -> psbt?)
       (validate-transaction unsigned-tx)
@@ -732,6 +761,7 @@
     (define (serialize-psbt-map keyvals)
       (apply bytevector-append (append keyvals (list #u8(0)))))
 
+    ;;; Serialize a PSBT v0 record.
     (define (psbt-serialize p)
       (: psbt? -> bytevector?)
       (validate-psbt p)
@@ -843,6 +873,7 @@
                     (cadr parsed)
                     (cons (empty-psbt-output) outputs))))))
 
+    ;;; Parse PSBT v0 bytes into a PSBT record.
     (define (psbt-parse bytes)
       (: bytevector? -> psbt?)
       (require-bytevector "psbt-parse" bytes)
@@ -874,6 +905,9 @@
                                  "psbt input")
             outputs: (psbt-outputs p)))
 
+    ;;; Add a P2WPKH partial signature to a PSBT input.
+    ;;;
+    ;;; The input must contain a witness UTXO.
     (define (psbt-sign-p2wpkh-input p input-index private-key)
       (: psbt? integer? bytevector? -> psbt?)
       (validate-psbt p)
@@ -909,6 +943,7 @@
                      final-script-witness: (psbt-input-final-script-witness input))))
             (psbt-update-input p input-index signed-input)))))
 
+    ;;; Finalize a signed P2WPKH PSBT input.
     (define (psbt-finalize-p2wpkh-input p input-index)
       (: psbt? integer? -> psbt?)
       (validate-psbt p)
@@ -926,6 +961,7 @@
                    final-script-witness: (list (cdr entry) (car entry)))))
           (psbt-update-input p input-index final-input))))
 
+    ;;; Extract the final transaction from a fully-finalized PSBT.
     (define (psbt-extract-transaction p)
       (: psbt? -> transaction?)
       (validate-psbt p)

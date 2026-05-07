@@ -62,6 +62,7 @@
     (define op-checklocktimeverify #xb1)
     (define op-checksequenceverify #xb2)
 
+    ;;; Empty script bytevector.
     (define script-empty #u8())
 
     (define (require-bytevector who bytes)
@@ -82,10 +83,12 @@
         (error (string-append who ": expected byte value")))
       value)
 
+    ;;; Return a one-byte script containing the given opcode.
     (define (script-op opcode)
       (: integer? -> bytevector?)
       (make-bytevector 1 (require-u8 "script-op" opcode)))
 
+    ;;; Concatenate script bytevector fragments.
     (define (script-append . parts)
       (: bytevector? ... -> bytevector?)
       (let ((total 0))
@@ -115,6 +118,7 @@
         (bytevector-u8-set! out 3 (bitwise-and (arithmetic-shift n -24) #xff))
         out))
 
+    ;;; Encode a minimally-sized pushdata operation for a bytevector.
     (define (script-push-data data)
       (: bytevector? -> bytevector?)
       (require-bytevector "script-push-data" data)
@@ -136,6 +140,10 @@
               (else
                (error "script-push-data: pushdata too large")))))
 
+    ;;; Build a native witness program scriptPubKey.
+    ;;;
+    ;;; Version 0 is encoded as OP_0. Versions 1 through 16 use OP_1 through
+    ;;; OP_16 followed by the witness program push.
     (define (script-witness-program version program)
       (: integer? bytevector? -> bytevector?)
       (require-bytevector "script-witness-program" program)
@@ -148,6 +156,7 @@
         (script-op (if (= version 0) op-0 (+ #x50 version)))
         (script-push-data program)))
 
+    ;;; Build a standard P2PKH scriptPubKey from a 20-byte public key hash.
     (define (script-p2pkh pubkey-hash)
       (: bytevector? -> bytevector?)
       (require-bytevector-length "script-p2pkh" pubkey-hash 20)
@@ -158,6 +167,7 @@
         (script-op op-equalverify)
         (script-op op-checksig)))
 
+    ;;; Build a standard P2SH scriptPubKey from a 20-byte script hash.
     (define (script-p2sh script-hash)
       (: bytevector? -> bytevector?)
       (require-bytevector-length "script-p2sh" script-hash 20)
@@ -166,16 +176,19 @@
         (script-push-data script-hash)
         (script-op op-equal)))
 
+    ;;; Build a native P2WPKH scriptPubKey from a 20-byte public key hash.
     (define (script-p2wpkh pubkey-hash)
       (: bytevector? -> bytevector?)
       (require-bytevector-length "script-p2wpkh" pubkey-hash 20)
       (script-witness-program 0 pubkey-hash))
 
+    ;;; Build a native P2WSH scriptPubKey from a 32-byte witness script hash.
     (define (script-p2wsh script-hash)
       (: bytevector? -> bytevector?)
       (require-bytevector-length "script-p2wsh" script-hash 32)
       (script-witness-program 0 script-hash))
 
+    ;;; Build a native P2TR scriptPubKey from a 32-byte x-only public key.
     (define (script-p2tr xonly-pubkey)
       (: bytevector? -> bytevector?)
       (require-bytevector-length "script-p2tr" xonly-pubkey 32)

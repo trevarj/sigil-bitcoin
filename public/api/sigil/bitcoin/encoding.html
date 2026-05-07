@@ -1,0 +1,24 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>sigil bitcoin encoding - Sigil Bitcoin</title><link rel="stylesheet" href="../../../assets/style.css"><link rel="icon" href="../../../assets/sigil-bitcoin-logo.png"></head><body><aside class="sidebar"><a class="brand" href="../../../index.html"><img class="brand-logo" src="../../../assets/sigil-bitcoin-logo.png" alt="" width="40" height="40"><span>Sigil Bitcoin</span></a><label class="search"><span>Search</span><input id="search" type="search" placeholder="Function or module"></label><div id="search-results" class="search-results"></div><h2>Guides</h2><nav><a href="../../../guide/getting-started.html">Getting Started</a><a href="../../../guide/overview.html">Overview</a><a href="../../../guide/packages.html">Package Guide</a><a href="../../../guide/wallet-signing.html">Wallet Signing Capability Map</a></nav><h2>API Reference</h2><nav><a class="active" href="../../../api/sigil/bitcoin/encoding.html">sigil bitcoin encoding</a><a href="../../../api/sigil/bitcoin/keys.html">sigil bitcoin keys</a><a href="../../../api/sigil/bitcoin/miniscript.html">sigil bitcoin miniscript</a><a href="../../../api/sigil/bitcoin/primitives.html">sigil bitcoin primitives</a><a href="../../../api/sigil/bitcoin/script.html">sigil bitcoin script</a><a href="../../../api/sigil/bitcoin/tx.html">sigil bitcoin tx</a><a href="../../../api/sigil/secp256k1.html">sigil secp256k1</a></nav></aside><main class="content"><header class="module-header"><p class="eyebrow">sigil-bitcoin-encoding</p><h1>sigil bitcoin encoding</h1><p class="lead">(sigil bitcoin encoding) — Bitcoin address encoding formats</p></header><section class="module-summary"><strong>12</strong> public exports</section><section class="export" id="hex-encode"><div class="export-head"><h3>hex-encode</h3><span>procedure</span></div><p>Encode a bytevector as lowercase hexadecimal text.</p></section><section class="export" id="hex-decode"><div class="export-head"><h3>hex-decode</h3><span>procedure</span></div><p>Decode an even-length hexadecimal string into a bytevector.
+
+Raises an error for odd-length input or invalid hex characters.</p></section><section class="export" id="base58-encode"><div class="export-head"><h3>base58-encode</h3><span>procedure</span></div><p>Encode a bytevector with Bitcoin's Base58 alphabet.
+
+Leading zero bytes are preserved as leading `1` characters.</p></section><section class="export" id="base58-decode"><div class="export-head"><h3>base58-decode</h3><span>procedure</span></div><p>Decode a Bitcoin Base58 string into a bytevector.
+
+Raises an error if the string contains characters outside the
+Bitcoin Base58 alphabet.</p></section><section class="export" id="base58check-encode"><div class="export-head"><h3>base58check-encode</h3><span>procedure</span></div><p>Encode a Base58Check payload with a one-byte version prefix.
+
+The checksum is the first four bytes of HASH256(version || payload).</p></section><section class="export" id="base58check-decode"><div class="export-head"><h3>base58check-decode</h3><span>procedure</span></div><p>Decode a Base58Check string.
+
+Returns `(version . payload)` and raises an error on checksum failure.</p></section><section class="export" id="bech32-encode"><div class="export-head"><h3>bech32-encode</h3><span>procedure</span></div><p>Encode a Bech32 string using the BIP173 checksum constant.
+
+`hrp` is the human-readable part and `data` is a bytevector of
+5-bit values.</p></section><section class="export" id="bech32-decode"><div class="export-head"><h3>bech32-decode</h3><span>procedure</span></div><p>Decode a Bech32 string.
+
+Returns `(hrp . data)` where `data` excludes the six checksum values.</p></section><section class="export" id="bech32m-encode"><div class="export-head"><h3>bech32m-encode</h3><span>procedure</span></div><p>Encode a Bech32m string using the BIP350 checksum constant.</p></section><section class="export" id="bech32m-decode"><div class="export-head"><h3>bech32m-decode</h3><span>procedure</span></div><p>Decode a Bech32m string.
+
+Returns `(hrp . data)` where `data` excludes the six checksum values.</p></section><section class="export" id="segwit-encode"><div class="export-head"><h3>segwit-encode</h3><span>procedure</span></div><p>Encode a native SegWit address for a witness version and program.
+
+Version 0 uses Bech32. Versions 1 through 16 use Bech32m.</p></section><section class="export" id="segwit-decode"><div class="export-head"><h3>segwit-decode</h3><span>procedure</span></div><p>Decode a native SegWit address.
+
+Returns `(hrp version . program)` and validates the checksum variant
+required by the witness version.</p></section></main><script>window.SIGIL_DOCS_SEARCH="../../../search-index.json";</script><script src="../../../assets/search.js"></script></body></html>

@@ -1,0 +1,420 @@
+;;; Static documentation site generator for sigil-bitcoin.
+;;;
+;;; This consumes compiler-generated module JSON from build/dev/lib and emits a
+;;; standalone docs.rs-style site in public/.
+
+(import (sigil fs)
+        (sigil path)
+        (sigil string)
+        (sigil list)
+        (sigil json))
+
+(define %site-title "Sigil Bitcoin")
+(define %lib-globs
+  '("build/dev/lib/**/*.json"
+    "packages/*/build/dev/lib/**/*.json"))
+(define %docs-dir "docs/site")
+(define %logo-path "assets/sigil-bitcoin-logo.png")
+(define %out-dir "public")
+
+(define (println str)
+  (display str)
+  (newline))
+
+(define (safe-string value fallback)
+  (if (string? value) value fallback))
+
+(define (first-line str)
+  (let ((s (safe-string str "")))
+    (let ((pos (string-find s "\n")))
+      (if pos
+          (substring s 0 pos)
+          s))))
+
+(define (html-escape str)
+  (let loop ((i 0) (out ""))
+    (if (>= i (string-length str))
+        out
+        (let ((c (string-ref str i)))
+          (loop (+ i 1)
+                (string-append out
+                  (cond ((char=? c #\<) "&lt;")
+                        ((char=? c #\>) "&gt;")
+                        ((char=? c #\&) "&amp;")
+                        ((char=? c #\") "&quot;")
+                        (else (string c)))))))))
+
+(define (attr-escape str)
+  (html-escape str))
+
+(define (slugify str)
+  (let* ((s1 (string-replace str "(" ""))
+         (s2 (string-replace s1 ")" ""))
+         (s3 (string-replace s2 " " "/")))
+    s3))
+
+(define (module-display-name mod-name)
+  (string-replace (string-replace mod-name "(" "") ")" ""))
+
+(define (module-slug module)
+  (slugify (dict-ref module module: "")))
+
+(define (module-url module)
+  (string-append "api/" (module-slug module) ".html"))
+
+(define (public-export? export)
+  (not (string-starts-with? (dict-ref export name: "") "%")))
+
+(define (documented-exports module)
+  (filter public-export? (array->list (dict-ref module exports: #[]))))
+
+(define (count-char str ch)
+  (let loop ((i 0) (count 0))
+    (if (>= i (string-length str))
+        count
+        (loop (+ i 1)
+              (if (char=? (string-ref str i) ch)
+                  (+ count 1)
+                  count)))))
+
+(define (repeat-parent count)
+  (let loop ((n count) (out ""))
+    (if (<= n 0)
+        out
+        (loop (- n 1) (string-append out "../")))))
+
+(define (api-module-prefix module)
+  (repeat-parent (+ 1 (count-char (module-slug module) #\/))))
+
+(define (allowed-module? mod-name)
+  (or (string=? mod-name "(sigil bitcoin primitives)")
+      (string=? mod-name "(sigil bitcoin encoding)")
+      (string=? mod-name "(sigil bitcoin keys)")
+      (string=? mod-name "(sigil bitcoin script)")
+      (string=? mod-name "(sigil bitcoin tx)")
+      (string=? mod-name "(sigil bitcoin miniscript)")
+      (string=? mod-name "(sigil secp256k1)")))
+
+(define (read-module-json path)
+  (let ((data (json-decode (read-file-string path))))
+    (if (allowed-module? (dict-ref data module: ""))
+        data
+        #f)))
+
+(define (module-key module)
+  (dict-ref module module: ""))
+
+(define (replace-module modules module)
+  (cond ((null? modules) (list module))
+        ((string=? (module-key (car modules)) (module-key module))
+         (cons module (cdr modules)))
+        (else
+         (cons (car modules) (replace-module (cdr modules) module)))))
+
+(define (unique-modules modules)
+  (let loop ((remaining modules) (out '()))
+    (if (null? remaining)
+        out
+        (loop (cdr remaining) (replace-module out (car remaining))))))
+
+(define (load-json-paths)
+  (let loop ((patterns %lib-globs) (paths '()))
+    (if (null? patterns)
+        paths
+        (loop (cdr patterns) (append paths (glob (car patterns)))))))
+
+(define (load-modules)
+  (list-sort
+    (lambda (a b)
+      (string<? (dict-ref a module: "") (dict-ref b module: "")))
+    (unique-modules (filter-map read-module-json (load-json-paths)))))
+
+(define (guide-url path)
+  (string-append "guide/" (path-stem (path-basename path)) ".html"))
+
+(define (guide-title path)
+  (let ((lines (string-split (read-file-string path) "\n")))
+    (if (and (not (null? lines))
+             (string-starts-with? (car lines) "# "))
+        (substring (car lines) 2 (string-length (car lines)))
+        (path-stem (path-basename path)))))
+
+(define (load-guides)
+  (list-sort
+    (lambda (a b) (string<? (car a) (car b)))
+    (map (lambda (path) (cons path (guide-title path)))
+         (glob (path-join %docs-dir "*.md")))))
+
+(define (nav-html modules root active)
+  (let* ((api-items
+           (string-join
+             (map
+               (lambda (m)
+                 (let* ((name (module-display-name (dict-ref m module: "")))
+                        (url (string-append root (module-url m)))
+                        (class (if (string=? active (dict-ref m module: ""))
+                                   " class=\"active\""
+                                   "")))
+                   (string-append "<a" class " href=\"" url "\">"
+                                  (html-escape name) "</a>")))
+               modules)
+             ""))
+         (guide-items
+           (string-join
+             (map
+               (lambda (g)
+                 (string-append "<a href=\"" root (guide-url (car g)) "\">"
+                                (html-escape (cdr g)) "</a>"))
+               (load-guides))
+             "")))
+    (string-append
+      "<aside class=\"sidebar\">"
+      "<a class=\"brand\" href=\"" root "index.html\">"
+      "<img class=\"brand-logo\" src=\"" root %logo-path "\" alt=\"\" width=\"40\" height=\"40\">"
+      "<span>" %site-title "</span></a>"
+      "<label class=\"search\"><span>Search</span>"
+      "<input id=\"search\" type=\"search\" placeholder=\"Function or module\"></label>"
+      "<div id=\"search-results\" class=\"search-results\"></div>"
+      "<h2>Guides</h2><nav>" guide-items "</nav>"
+      "<h2>API Reference</h2><nav>" api-items "</nav>"
+      "</aside>")))
+
+(define (page-html title root active modules body)
+  (string-append
+    "<!doctype html><html lang=\"en\"><head>"
+    "<meta charset=\"utf-8\">"
+    "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+    "<title>" (html-escape title) " - " %site-title "</title>"
+    "<link rel=\"stylesheet\" href=\"" root "assets/style.css\">"
+    "<link rel=\"icon\" href=\"" root %logo-path "\">"
+    "</head><body>"
+    (nav-html modules root active)
+    "<main class=\"content\">"
+    body
+    "</main>"
+    "<script>window.SIGIL_DOCS_SEARCH=\"" root "search-index.json\";</script>"
+    "<script src=\"" root "assets/search.js\"></script>"
+    "</body></html>"))
+
+(define (export-description export)
+  (let ((desc (safe-string (dict-ref export description: #f) ""))
+        (name (dict-ref export name: "")))
+    (cond ((not (string=? desc "")) desc)
+          ((string-starts-with? name "op-") "Bitcoin Script opcode constant.")
+          (else ""))))
+
+(define (doc-or-placeholder desc)
+  (let ((s (safe-string desc "")))
+    (if (string=? s "")
+        "<p class=\"muted\">No docstring yet.</p>"
+        (string-append "<p>" (html-escape s) "</p>"))))
+
+(define (signature-html export)
+  (let ((sig (safe-string (dict-ref export signature: #f) "")))
+    (if (string=? sig "")
+        ""
+        (string-append "<pre class=\"signature\">" (html-escape sig) "</pre>"))))
+
+(define (export-card export)
+  (let* ((name (dict-ref export name: ""))
+         (kind (dict-ref export kind: "value"))
+         (desc (export-description export)))
+    (string-append
+      "<section class=\"export\" id=\"" (attr-escape name) "\">"
+      "<div class=\"export-head\"><h3>" (html-escape name) "</h3>"
+      "<span>" (html-escape kind) "</span></div>"
+      (signature-html export)
+      (doc-or-placeholder desc)
+      "</section>")))
+
+(define (module-page module modules)
+  (let* ((mod-name (dict-ref module module: ""))
+         (title (module-display-name mod-name))
+         (package (safe-string (dict-ref module package: #f) ""))
+         (description (safe-string (dict-ref module description: #f) ""))
+         (exports (documented-exports module))
+         (body
+           (string-append
+             "<header class=\"module-header\"><p class=\"eyebrow\">"
+             (html-escape package) "</p><h1>" (html-escape title) "</h1>"
+             "<p class=\"lead\">" (html-escape description) "</p></header>"
+             "<section class=\"module-summary\"><strong>"
+             (number->string (length exports))
+             "</strong> public exports</section>"
+             (string-join (map export-card exports) ""))))
+    (write-page (string-append %out-dir "/" (module-url module))
+                (page-html title (api-module-prefix module) mod-name modules body))))
+
+(define (api-index modules)
+  (let ((cards
+          (string-join
+            (map
+              (lambda (m)
+                (let ((name (module-display-name (dict-ref m module: "")))
+                      (desc (first-line (dict-ref m description: ""))))
+                  (string-append
+                    "<a class=\"module-card\" href=\"../" (module-url m) "\">"
+                    "<h2>" (html-escape name) "</h2>"
+                    "<p>" (html-escape desc) "</p>"
+                    "</a>")))
+              modules)
+            "")))
+    (write-page
+      (path-join %out-dir "api/index.html")
+      (page-html "API Reference" "../" "" modules
+        (string-append
+          "<header><h1>API Reference</h1>"
+          "<p class=\"lead\">Generated from Sigil module JSON in build/dev/lib and package build directories.</p></header>"
+          "<section class=\"module-grid\">" cards "</section>")))))
+
+(define (markdown-line line in-code in-list)
+  (cond
+    ((string-starts-with? line "```")
+     (if in-code
+         (list "</code></pre>" #f in-list)
+         (list "<pre class=\"code\"><code>" #t in-list)))
+    (in-code
+     (list (string-append (html-escape line) "\n") in-code in-list))
+    ((string-starts-with? line "# ")
+     (list (string-append "<h1>" (html-escape (substring line 2 (string-length line))) "</h1>")
+           in-code in-list))
+    ((string-starts-with? line "## ")
+     (list (string-append "<h2>" (html-escape (substring line 3 (string-length line))) "</h2>")
+           in-code in-list))
+    ((string-starts-with? line "### ")
+     (list (string-append "<h3>" (html-escape (substring line 4 (string-length line))) "</h3>")
+           in-code in-list))
+    ((string-starts-with? line "- ")
+     (list (string-append (if in-list "" "<ul>")
+                          "<li>" (html-escape (substring line 2 (string-length line))) "</li>")
+           in-code #t))
+    ((string-blank? line)
+     (list (if in-list "</ul>" "") in-code #f))
+    (else
+     (list (string-append (if in-list "</ul>" "")
+                          "<p>" (html-escape line) "</p>")
+           in-code #f))))
+
+(define (markdown->html markdown)
+  (let loop ((lines (string-split markdown "\n"))
+             (out "")
+             (in-code #f)
+             (in-list #f))
+    (if (null? lines)
+        (string-append out
+                       (if in-list "</ul>" "")
+                       (if in-code "</code></pre>" ""))
+        (let* ((result (markdown-line (car lines) in-code in-list))
+               (html (car result))
+               (next-code (cadr result))
+               (next-list (caddr result)))
+          (loop (cdr lines)
+                (string-append out html)
+                next-code
+                next-list)))))
+
+(define (guide-page guide modules)
+  (let* ((path (car guide))
+         (title (cdr guide))
+         (body (markdown->html (read-file-string path))))
+    (write-page (path-join %out-dir (guide-url path))
+                (page-html title "../" "" modules body))))
+
+(define (landing-page modules guides)
+  (let* ((module-cards
+           (string-join
+             (map
+               (lambda (m)
+                 (let ((name (module-display-name (dict-ref m module: "")))
+                       (desc (first-line (dict-ref m description: ""))))
+                   (string-append
+                     "<a class=\"module-card\" href=\"" (module-url m) "\">"
+                     "<h2>" (html-escape name) "</h2>"
+                     "<p>" (html-escape desc) "</p>"
+                     "</a>")))
+               modules)
+             ""))
+         (guide-cards
+           (string-join
+             (map
+               (lambda (g)
+                 (string-append "<a class=\"guide-card\" href=\"" (guide-url (car g)) "\">"
+                                (html-escape (cdr g)) "</a>"))
+               guides)
+             "")))
+    (write-page
+      (path-join %out-dir "index.html")
+      (page-html "Documentation" "" "" modules
+        (string-append
+          "<section class=\"hero\"><div class=\"hero-heading\">"
+          "<img class=\"hero-logo\" src=\"" %logo-path "\" alt=\"Sigil Bitcoin logo\" width=\"96\" height=\"96\">"
+          "<div><p class=\"eyebrow\">Bitcoin libraries for Sigil</p>"
+          "<h1>Sigil Bitcoin</h1>"
+          "<p class=\"lead\">API reference and package guides for keys, addresses, scripts, transactions, PSBTs, Miniscript, and secp256k1 bindings.</p></div>"
+          "</div>"
+          "</section>"
+          "<section><h2>Guides</h2><div class=\"guide-grid\">" guide-cards "</div></section>"
+          "<section><h2>API Modules</h2><div class=\"module-grid\">" module-cards "</div></section>")))))
+
+(define (search-entry module export)
+  (let ((mod-name (dict-ref module module: "")))
+    #{ name: (dict-ref export name: "")
+       kind: (dict-ref export kind: "value")
+       module: mod-name
+       url: (string-append (module-url module) "#"
+                           (dict-ref export name: ""))
+       summary: (first-line (export-description export)) }))
+
+(define (module-search-entry module)
+  (let ((mod-name (dict-ref module module: "")))
+    #{ name: (module-display-name mod-name)
+       kind: "module"
+       module: mod-name
+       url: (module-url module)
+       summary: (first-line (dict-ref module description: "")) }))
+
+(define (search-index modules)
+  (let ((entries '()))
+    (for-each
+      (lambda (module)
+        (set! entries (cons (module-search-entry module) entries))
+        (for-each
+          (lambda (export)
+            (set! entries (cons (search-entry module export) entries)))
+          (documented-exports module)))
+      modules)
+    (write-page (path-join %out-dir "search-index.json")
+                (json-encode (list->array (reverse entries)) indent: #t))))
+
+(define %style-css
+"*{box-sizing:border-box}body{margin:0;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,\"Segoe UI\",sans-serif;color:#17202a;background:#f7f8fa}.sidebar{position:fixed;inset:0 auto 0 0;width:280px;overflow:auto;background:#fff;border-right:1px solid #d8dee8;padding:24px}.brand{display:flex;align-items:center;gap:10px;font-size:20px;font-weight:700;color:#121820;text-decoration:none;margin-bottom:18px}.brand-logo{width:40px;height:40px;border-radius:8px;object-fit:cover;flex:0 0 auto}.search span{display:block;font-size:12px;text-transform:uppercase;color:#596579;margin-bottom:6px}.search input{width:100%;height:36px;border:1px solid #cfd6e2;border-radius:6px;padding:0 10px;background:#fff}.search-results{margin:10px 0 18px}.search-results a{display:block;padding:8px;border:1px solid #e2e7ef;border-radius:6px;margin-bottom:6px;color:#17202a;text-decoration:none}.sidebar h2{font-size:12px;text-transform:uppercase;color:#596579;margin:22px 0 8px}.sidebar nav a{display:block;color:#2d3748;text-decoration:none;padding:7px 8px;border-radius:6px;font-size:14px}.sidebar nav a:hover,.sidebar nav a.active{background:#eef3f8;color:#111827}.content{margin-left:280px;max-width:1120px;padding:40px 48px 80px}.hero,.module-header,header{border-bottom:1px solid #d8dee8;margin-bottom:28px;padding-bottom:28px}.hero-heading{display:flex;align-items:center;gap:22px}.hero-logo{width:96px;height:96px;border-radius:18px;object-fit:cover;flex:0 0 auto}.eyebrow{font-size:13px;text-transform:uppercase;letter-spacing:0;color:#596579;margin:0 0 8px}h1{font-size:42px;line-height:1.1;margin:0 0 14px}h2{font-size:24px;margin:28px 0 14px}h3{font-size:18px;margin:0}.lead{font-size:18px;line-height:1.6;color:#425066;max-width:780px}.module-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px}.module-card,.guide-card{display:block;background:#fff;border:1px solid #d8dee8;border-radius:8px;padding:18px;text-decoration:none;color:#17202a}.module-card:hover,.guide-card:hover{border-color:#7a8ca6}.module-card h2{font-size:18px;margin:0 0 8px}.module-card p{margin:0;color:#596579;line-height:1.5}.guide-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px}.module-summary{display:inline-flex;gap:8px;background:#eef3f8;border:1px solid #d8dee8;border-radius:6px;padding:10px 12px;margin-bottom:18px}.export{background:#fff;border:1px solid #d8dee8;border-radius:8px;padding:18px;margin:14px 0}.export-head{display:flex;align-items:center;justify-content:space-between;gap:12px}.export-head span{font-size:12px;text-transform:uppercase;color:#596579;background:#eef3f8;border-radius:999px;padding:4px 8px}.signature,.code{background:#101820;color:#edf2f7;border-radius:8px;padding:14px;overflow:auto}.muted{color:#7a8699}p,li{line-height:1.65}code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}@media(max-width:760px){.sidebar{position:static;width:auto;border-right:0;border-bottom:1px solid #d8dee8}.content{margin-left:0;padding:28px 20px}.hero-heading{align-items:flex-start}.hero-logo{width:72px;height:72px;border-radius:14px}h1{font-size:34px}}")
+
+(define %search-js
+"(function(){const input=document.getElementById('search');const box=document.getElementById('search-results');if(!input||!box)return;let index=[];fetch(window.SIGIL_DOCS_SEARCH).then(r=>r.json()).then(data=>{index=data}).catch(()=>{});input.addEventListener('input',()=>{const q=input.value.trim().toLowerCase();box.innerHTML='';if(q.length<2)return;index.filter(item=>(item.name+' '+item.module+' '+item.summary).toLowerCase().includes(q)).slice(0,8).forEach(item=>{const a=document.createElement('a');a.href=(window.SIGIL_DOCS_SEARCH.replace('search-index.json',''))+item.url;a.innerHTML='<strong>'+item.name+'</strong><br><span>'+item.module+'</span>';box.appendChild(a);});});})();")
+
+(define (write-page path content)
+  (ensure-directory (path-dirname path))
+  (write-file-string path content))
+
+(define (write-assets)
+  (write-page (path-join %out-dir "assets/style.css") %style-css)
+  (write-page (path-join %out-dir "assets/search.js") %search-js)
+  (copy-file (path-join %docs-dir %logo-path)
+             (path-join %out-dir %logo-path)))
+
+(define (build-site)
+  (let ((modules (load-modules))
+        (guides (load-guides)))
+    (when (null? modules)
+      (error "docs-site: no sigil-bitcoin module JSON found; run sigil build first"))
+    (write-assets)
+    (landing-page modules guides)
+    (api-index modules)
+    (for-each (lambda (m)
+                (module-page m modules))
+              modules)
+    (for-each (lambda (g) (guide-page g modules)) guides)
+    (search-index modules)
+    (println (string-append "Wrote " %out-dir " documentation site."))))
+
+(build-site)

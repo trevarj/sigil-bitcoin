@@ -38,6 +38,7 @@
     bip39-mnemonic->seed)
   (begin
 
+    ;;; Bitcoin network parameters used by key and address encoders.
     (define-struct bitcoin-network
       (name symbol?)
       (wif integer?)
@@ -47,6 +48,7 @@
       (xprv integer?)
       (xpub integer?))
 
+    ;;; Mainnet address and extended-key version constants.
     (define bitcoin-mainnet
       (bitcoin-network name: 'mainnet
                        wif: #x80
@@ -56,6 +58,7 @@
                        xprv: #x0488ade4
                        xpub: #x0488b21e))
 
+    ;;; Testnet address and extended-key version constants.
     (define bitcoin-testnet
       (bitcoin-network name: 'testnet
                        wif: #xef
@@ -65,6 +68,7 @@
                        xprv: #x04358394
                        xpub: #x043587cf))
 
+    ;;; BIP32 extended private key record.
     (define-struct extended-private-key
       (network bitcoin-network?)
       (depth integer?)
@@ -73,6 +77,7 @@
       (chain-code bytevector?)
       (private-key bytevector?))
 
+    ;;; BIP32 extended public key record.
     (define-struct extended-public-key
       (network bitcoin-network?)
       (depth integer?)
@@ -134,6 +139,10 @@
             ((and (not private?) (= version (bitcoin-network-xpub bitcoin-testnet))) bitcoin-testnet)
             (else #f)))
 
+    ;;; Encode a 32-byte private key as Wallet Import Format.
+    ;;;
+    ;;; `network` selects the WIF version byte. `compressed?` controls whether
+    ;;; the compressed-public-key marker is included in the payload.
     (define (private-key->wif key network compressed?)
       (: bytevector? bitcoin-network? boolean? -> string?)
       (require-private-key key)
@@ -142,6 +151,9 @@
                          key)))
         (base58check-encode (bitcoin-network-wif network) payload)))
 
+    ;;; Decode a Wallet Import Format string.
+    ;;;
+    ;;; Returns `(key network . compressed?)`.
     (define (wif->private-key wif)
       (: string? -> list?)
       (let* ((decoded (base58check-decode wif))
@@ -164,10 +176,12 @@
               (else
                (error "wif->private-key: invalid payload length")))))
 
+    ;;; Derive a compressed public key from a 32-byte secp256k1 private key.
     (define (private-key->public-key key)
       (: bytevector? -> bytevector?)
       (secp256k1-pubkey-create (require-private-key key)))
 
+    ;;; Return true when `key` is a valid compressed or uncompressed public key.
     (define (public-key? key)
       (: any? -> boolean?)
       (and (bytevector? key)
@@ -175,6 +189,7 @@
                (= 65 (bytevector-length key)))
            (bytevector? (secp256k1-pubkey-parse key))))
 
+    ;;; Return true when `key` is a valid 33-byte compressed public key.
     (define (compressed-public-key? key)
       (: any? -> boolean?)
       (and (public-key? key)
@@ -182,6 +197,7 @@
            (or (= #x02 (bytevector-u8-ref key 0))
                (= #x03 (bytevector-u8-ref key 0)))))
 
+    ;;; Convert a serialized public key into a 32-byte x-only public key.
     (define (x-only-public-key key)
       (: bytevector? -> bytevector?)
       (cond ((and (bytevector? key) (= 32 (bytevector-length key)))
@@ -192,35 +208,42 @@
              (let ((kp (secp256k1-keypair-create (require-private-key key))))
                (secp256k1-keypair-xonly-pub kp)))))
 
+    ;;; Derive a Base58Check P2PKH address from a serialized public key.
     (define (public-key->p2pkh-address key network)
       (: bytevector? bitcoin-network? -> string?)
       (unless (public-key? key)
         (error "public-key->p2pkh-address: invalid public key"))
       (base58check-encode (bitcoin-network-p2pkh network) (hash160 key)))
 
+    ;;; Encode a 20-byte script hash as a Base58Check P2SH address.
     (define (script-hash->p2sh-address script-hash network)
       (: bytevector? bitcoin-network? -> string?)
       (require-bytevector-length "script-hash->p2sh-address" script-hash 20)
       (base58check-encode (bitcoin-network-p2sh network) script-hash))
 
+    ;;; Derive a native SegWit P2WPKH address from a serialized public key.
     (define (public-key->p2wpkh-address key network)
       (: bytevector? bitcoin-network? -> string?)
       (unless (public-key? key)
         (error "public-key->p2wpkh-address: invalid public key"))
       (segwit-encode (bitcoin-network-bech32 network) 0 (hash160 key)))
 
+    ;;; Derive a native SegWit P2WSH address from a witness script.
     (define (script->p2wsh-address script network)
       (: bytevector? bitcoin-network? -> string?)
       (segwit-encode (bitcoin-network-bech32 network) 0 (hash256 script)))
 
+    ;;; Encode a 32-byte x-only public key as a native Taproot address.
     (define (x-only-public-key->p2tr-address xonly network)
       (: bytevector? bitcoin-network? -> string?)
       (segwit-encode (bitcoin-network-bech32 network) 1
                      (x-only-public-key xonly)))
 
+    ;;; Return the BIP32 4-byte key fingerprint for a serialized public key.
     (define (fingerprint key)
       (bytevector-copy (hash160 key) 0 4))
 
+    ;;; Neuter an extended private key into the matching extended public key.
     (define (extended-private-key->public-key xprv)
       (: extended-private-key? -> extended-public-key?)
       (extended-public-key
@@ -231,6 +254,7 @@
         chain-code: (bytevector-copy (extended-private-key-chain-code xprv))
         public-key: (private-key->public-key (extended-private-key-private-key xprv))))
 
+    ;;; Derive a BIP32 master extended private key from seed bytes.
     (define (bip32-master-key seed network)
       (: bytevector? bitcoin-network? -> extended-private-key?)
       (let* ((i (hmac-sha512-bytes "Bitcoin seed" seed))
@@ -245,6 +269,10 @@
           chain-code: ir
           private-key: il)))
 
+    ;;; Derive a BIP32 private child key.
+    ;;;
+    ;;; Hardened children use child numbers greater than or equal to
+    ;;; `#x80000000`.
     (define (bip32-private-child parent child-number)
       (: extended-private-key? integer? -> extended-private-key?)
       (when (or (< child-number 0) (> child-number #xffffffff))
@@ -271,6 +299,7 @@
           chain-code: ir
           private-key: child-key)))
 
+    ;;; Derive a non-hardened BIP32 public child key.
     (define (bip32-public-child parent child-number)
       (: extended-public-key? integer? -> extended-public-key?)
       (when (>= child-number %hardened-offset)
@@ -317,6 +346,9 @@
                 (else
                  (loop (+ i 1) start parts))))))
 
+    ;;; Derive a BIP32 path such as `m/84'/0'/0'/0/0`.
+    ;;;
+    ;;; The input key may be an extended private key or extended public key.
     (define (bip32-derive-path key path)
       (: any? string? -> any?)
       (let ((parts (split-path path)))
@@ -371,6 +403,7 @@
             (error "base58check-decode-bytes: checksum mismatch"))
           payload)))
 
+    ;;; Serialize a BIP32 extended private key as Base58Check text.
     (define (bip32-xprv->string key)
       (: extended-private-key? -> string?)
       (let* ((network (extended-private-key-network key))
@@ -384,6 +417,7 @@
                                            (extended-private-key-private-key key)))))
         (base58check-encode-bytes payload)))
 
+    ;;; Serialize a BIP32 extended public key as Base58Check text.
     (define (bip32-xpub->string key)
       (: extended-public-key? -> string?)
       (let* ((network (extended-public-key-network key))
@@ -396,6 +430,7 @@
                         (extended-public-key-public-key key))))
         (base58check-encode-bytes payload)))
 
+    ;;; Parse a Base58Check BIP32 extended private key.
     (define (string->bip32-xprv str)
       (: string? -> extended-private-key?)
       (let* ((payload (base58check-decode-bytes str)))
@@ -416,6 +451,7 @@
             chain-code: (bytevector-copy payload 13 45)
             private-key: (require-private-key (bytevector-copy key-data 1 33))))))
 
+    ;;; Parse a Base58Check BIP32 extended public key.
     (define (string->bip32-xpub str)
       (: string? -> extended-public-key?)
       (let* ((payload (base58check-decode-bytes str)))
@@ -473,6 +509,7 @@
                 (else
                  (loop (+ i 1) (if start start i) parts))))))
 
+    ;;; Convert BIP39 entropy bytes into an English mnemonic sentence.
     (define (bip39-entropy->mnemonic entropy)
       (: bytevector? -> string?)
       (let* ((ent-bytes (bytevector-length entropy))
@@ -496,6 +533,7 @@
                 (set! index (+ (* index 2) bit))))
             (set! words (cons (bip39-index->word index) words))))))
 
+    ;;; Convert a BIP39 English mnemonic sentence back to entropy bytes.
     (define (bip39-mnemonic->entropy mnemonic)
       (: string? -> bytevector?)
       (let* ((words (split-words mnemonic))
@@ -538,6 +576,7 @@
                 (error "bip39-mnemonic->entropy: checksum mismatch")))))
         entropy))
 
+    ;;; Derive a 64-byte BIP39 seed from a mnemonic and optional passphrase.
     (define (bip39-mnemonic->seed mnemonic . maybe-passphrase)
       (: string? string? ... -> bytevector?)
       (let ((passphrase (if (null? maybe-passphrase) "" (car maybe-passphrase))))

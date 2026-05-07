@@ -87,6 +87,7 @@ Layer 6 — Networking (sigil-bitcoin-p2p)
 - `sigil-bitcoin-script` provides script byte constructors, pushdata encoding, witness programs, and standard P2PKH/P2SH/P2WPKH/P2WSH/P2TR scriptPubKey templates.
 - `sigil-bitcoin-tx` provides transaction structs, compactSize encoding/decoding, legacy/SegWit parsing and serialization, txid/wtxid helpers, `SIGHASH_ALL` legacy/BIP143 hashes, P2WPKH signing, and basic PSBT v0 support.
 - `sigil-bitcoin-miniscript` provides fragment ASTs, parsing, canonical strings, partial script compilation, descriptor parsing/scriptPubKey compilation, and BIP388 wallet policy descriptor expansion.
+- `sigil-bitcoin` has a standalone documentation site generator that reads compiler JSON docs, emits a docs.rs-inspired static site to `public/`, and includes concise guide pages under `docs/site/`.
 - `hash160` currently uses a pure Sigil RIPEMD-160 fallback. The local `sigil-crypto` source and build metadata expose `ripemd160`; package-native harnesses that depend on the sibling checkout bind it correctly, but the root direct runner imports the host/bundled crypto module and leaves newer native bindings unbound.
 - Root workspace tests pass under the direct runner. The secp and keys test files record skip markers there because multi-package workspace tests do not currently build a native harness.
 - `sigil-crypto` now exposes `pbkdf2-sha512`, used by BIP39 seed derivation.
@@ -200,12 +201,13 @@ or pure Sigil code. No changes to the Sigil VM or compiler are required.
 - [x] Add PSBT global/input/output maps, serialization/parsing, witness UTXOs, partial signatures, P2WPKH finalization, and extraction.
 - [x] Add `sigil-bitcoin-miniscript` with initial AST, parser, type checker, and script compiler coverage.
 - [x] Correct `pk_k` semantics, add `pk`, `pk_h`, multisig, wrappers, threshold parsing, descriptors, and BIP388 wallet policy expansion.
+- [x] Add a standalone `sigil-bitcoin` docs site generator, guide pages, local build/serve scripts, and generated API search index.
 
 ### Next
 
 - [x] Investigate why `ripemd160` appears in `sigil-crypto` metadata but is unbound in the root direct test runtime.
 - [x] Add a root-level helper script that runs direct workspace tests plus native package harnesses.
-- [ ] Replace absolute local Sigil redirects in `dev-redirects.sgl` with a portable workspace-local path when the Sigil checkout layout is finalized.
+- [x] Replace absolute local Sigil redirects in `dev-redirects.sgl` with a portable workspace-local path when the Sigil checkout layout is finalized.
 - [x] Add invalid-input coverage for `sigil-secp256k1` length/type checks and parse failures.
 - [ ] Add account-level helpers for common paths after deciding whether descriptors or PSBT should own derivation-path policy.
 - [ ] Add transaction serialization round-trip tests for Bitcoin Core/rawtx fixtures.
@@ -216,3 +218,4 @@ or pure Sigil code. No changes to the Sigil VM or compiler are required.
 - [ ] Add Miniscript type metadata beyond the current coarse base type, including malleability and satisfaction properties needed for signing.
 - [ ] Add descriptor checksums, BIP389 multipath parsing, Taproot script trees, and BIP388 `musig(...)` placeholders.
 - [ ] Connect descriptors and wallet policies to PSBT by deriving scripts, key origins, change detection, and signing inputs.
+- [ ] Replace the repo-local docs generator with Press/`sigil-publish` once the site generation package is available in this workspace.

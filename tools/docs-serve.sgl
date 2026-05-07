@@ -1,0 +1,97 @@
+;;; Serve the generated sigil-bitcoin docs site with Sigil's HTTP server.
+
+(import (sigil fs)
+        (sigil path)
+        (sigil process)
+        (sigil socket)
+        (sigil string)
+        (sigil http))
+
+(define %public-dir "public")
+
+(define (env-string name fallback)
+  (let ((value (getenv name)))
+    (if (and value (not (string=? value "")))
+        value
+        fallback)))
+
+(define (env-number name fallback)
+  (let ((value (getenv name)))
+    (if value
+        (or (string->number value) fallback)
+        fallback)))
+
+(define (trim-leading-slashes str)
+  (let loop ((i 0))
+    (if (and (< i (string-length str))
+             (char=? (string-ref str i) #\/))
+        (loop (+ i 1))
+        (substring str i (string-length str)))))
+
+(define (safe-relative-path request-path)
+  (let* ((decoded (url-decode request-path))
+         (trimmed (trim-leading-slashes decoded))
+         (path (if (string=? trimmed "") "index.html" trimmed))
+         (normalized (path-normalize path)))
+    (if (or (string=? normalized "..")
+            (string-starts-with? normalized "../")
+            (string-starts-with? normalized "/"))
+        #f
+        normalized)))
+
+(define (with-index path)
+  (if (directory? path)
+      (path-join path "index.html")
+      path))
+
+(define (file-response path)
+  (http-response
+    status: HTTP-OK
+    headers: #{ content-type: (mime-type-for-file path) }
+    body: (read-file-bytes path)))
+
+(define (port-available? host port)
+  (let ((sock (tcp-listen port 128 host)))
+    (if sock
+        (begin
+          (socket-close sock)
+          #t)
+        #f)))
+
+(define (choose-port host preferred)
+  (let loop ((port preferred) (tries 0))
+    (cond ((port-available? host port) port)
+          ((>= tries 20)
+           (error "docs-serve: no available port near" preferred))
+          (else (loop (+ port 1) (+ tries 1))))))
+
+(define (static-response req)
+  (let ((method (http-request-method req)))
+    (if (not (or (eq? method 'GET) (eq? method 'HEAD)))
+        (http-response/error HTTP-METHOD-NOT-ALLOWED "Method Not Allowed")
+        (let ((rel (safe-relative-path (http-request-path req))))
+          (if (not rel)
+              (http-response/not-found)
+              (let ((file-path (with-index (path-join %public-dir rel))))
+                (if (and (file-exists? file-path)
+                         (not (directory? file-path)))
+                    (file-response file-path)
+                    (http-response/not-found))))))))
+
+(define (main)
+  (let ((host (env-string "SIGIL_DOCS_HOST" "127.0.0.1"))
+        (requested-port (env-number "SIGIL_DOCS_PORT" 8080)))
+    (unless (directory? %public-dir)
+      (error "docs-serve: public/ does not exist; run scripts/docs-build.sh first"))
+    (let ((port (choose-port host requested-port)))
+      (when (not (= port requested-port))
+        (display (string-append "Port " (number->string requested-port)
+                                " is unavailable; using "
+                                (number->string port) ".\n")))
+      (display (string-append "Serving sigil-bitcoin docs at http://"
+                              host ":"
+                              (number->string port)
+                              "/\n"))
+      (http-serve static-response host: host port: port))))
+
+(main)
