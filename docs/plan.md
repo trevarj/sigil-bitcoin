@@ -81,8 +81,11 @@ Layer 6 — Networking (sigil-bitcoin-p2p)
 - `sigil-bitcoin-encoding` passes hex, Base58, Base58Check, Bech32, Bech32m, SegWit v0, and SegWit v1 vectors.
 - `sigil-secp256k1` now uses a native C module linked against `libsecp256k1` instead of runtime `(sigil ffi)` dynamic loading.
 - `sigil-secp256k1` package harness tests pass all ECDSA, DER, tweak, keypair, and Schnorr assertions.
+- `sigil-bitcoin-keys` provides network structs, WIF, public-key predicates, P2PKH/P2SH/P2WPKH/P2WSH/P2TR address helpers, BIP32 extended-key structs and derivation, and BIP39 English mnemonic helpers.
+- `sigil-bitcoin-keys` package harness tests pass WIF, address, BIP32 vector 1, and BIP39 vector 1 assertions.
 - `hash160` currently uses a pure Sigil RIPEMD-160 fallback. The local `sigil-crypto` source and build metadata expose `ripemd160`, but the test runtime still does not bind that native symbol.
-- Root workspace tests pass under the direct runner. The secp test file records a skip marker there because multi-package workspace tests do not currently build a native harness.
+- Root workspace tests pass under the direct runner. The secp and keys test files record skip markers there because multi-package workspace tests do not currently build a native harness.
+- `sigil-crypto` now exposes `pbkdf2-sha512`, used by BIP39 seed derivation.
 
 Known-good root verification command:
 
@@ -95,6 +98,14 @@ Known-good secp256k1 harness verification command:
 ```sh
 cd packages/sigil-secp256k1
 guix shell -m ../../manifest.scm -- sigil test test/test-secp256k1.sgl \
+  --redirects ../../dev-redirects.sgl --no-color
+```
+
+Known-good keys harness verification command:
+
+```sh
+cd packages/sigil-bitcoin-keys
+guix shell -m ../../manifest.scm -- sigil test test/test-keys.sgl \
   --redirects ../../dev-redirects.sgl --no-color
 ```
 
@@ -158,6 +169,12 @@ or pure Sigil code. No changes to the Sigil VM or compiler are required.
 - [x] Replace `sigil-secp256k1` dynamic FFI with a native C module.
 - [x] Add native harness dependencies and redirects for `sigil-secp256k1`.
 - [x] Gate secp256k1 tests under the direct workspace runner while keeping full assertions in the native harness.
+- [x] Add `pbkdf2-sha512` to `sigil-crypto` for BIP39 seed derivation.
+- [x] Add `sigil-bitcoin-keys` with native-secp package harness.
+- [x] Add network structs, WIF encode/decode, and public-key predicates.
+- [x] Add P2PKH, P2SH, P2WPKH, P2WSH, and P2TR address helpers.
+- [x] Add BIP32 extended-key structs, xprv/xpub encode/decode, and private/public child derivation.
+- [x] Add generated BIP39 English wordlist data, entropy/mnemonic conversion, and seed derivation.
 
 ### Next
 
@@ -167,7 +184,10 @@ or pure Sigil code. No changes to the Sigil VM or compiler are required.
 - [ ] Add invalid-input coverage for `sigil-secp256k1` length/type checks and parse failures.
 - [ ] Consider returning serialized 32-byte x-only public keys in a future API, while preserving current 64-byte internal-key compatibility or adding a clearly named variant.
 - [ ] Expand Bech32/Bech32m coverage with the full BIP173/BIP350 valid and invalid vector sets.
-- [ ] Add `sigil-bitcoin-keys` skeleton with network constants, WIF encode/decode, and P2PKH/P2SH address derivation.
-- [ ] Add P2WPKH/P2WSH/P2TR address derivation after the keys package has stable public-key types.
-- [ ] Add BIP32 child-key derivation once HMAC-SHA512 visibility is verified in the same runtime path as tests.
+- [ ] Expand `sigil-bitcoin-keys` with BIP32 vectors 2 and 3, invalid extended-key checksum/version coverage, and public-derivation parity checks.
+- [ ] Add BIP39 vectors for 160/192/224/256-bit entropy and document the generated wordlist source.
+- [ ] Add account-level helpers for common paths after deciding whether descriptors or PSBT should own derivation-path policy.
+- [ ] Add `sigil-bitcoin-script` skeleton with script byte constructors for standard templates.
+- [ ] Add `sigil-bitcoin-tx` skeleton with transaction structs, varint support, and legacy/SegWit serialization tests.
+- [ ] Add transaction signing only after script and sighash APIs are stable.
 - [ ] Add package-level verification commands or tasks that run only currently supported packages by default.

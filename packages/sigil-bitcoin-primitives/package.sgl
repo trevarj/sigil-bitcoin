@@ -6,7 +6,7 @@
 (package
   name: "sigil-bitcoin-primitives"
   version: "0.1.0"
-  sigil: "^0.15"
+  sigil: "^0.16"
   description: "Bitcoin hash primitives: HASH160, HASH256, tagged hashes"
   url: "https://codeberg.org/sigil/sigil-bitcoin"
   license: "BSD-3-Clause"
@@ -21,4 +21,3 @@
       steps: (list
         (compile-sigil-modules
           sources: "src/**/*.sgl")))))
-

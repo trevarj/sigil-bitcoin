@@ -3,7 +3,7 @@
 (package
   name: "sigil-secp256k1"
   version: "0.1.0"
-  sigil: "^0.15"
+  sigil: "^0.16"
   description: "secp256k1 ECDSA + Schnorr native bindings"
   url: "https://codeberg.org/sigil/sigil-bitcoin"
   license: "BSD-3-Clause"

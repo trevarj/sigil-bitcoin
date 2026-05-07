@@ -1,0 +1,122 @@
+(import (sigil test)
+        (sigil crypto)
+        (sigil secp256k1)
+        (sigil bitcoin encoding)
+        (sigil bitcoin keys))
+
+(define %native-secp256k1? (procedure? secp256k1-seckey-verify?))
+
+(define %one
+  (hex-decode "0000000000000000000000000000000000000000000000000000000000000001"))
+
+(define %generator-pub
+  (hex-decode "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"))
+
+(define %bip39-entropy-1
+  (hex-decode "00000000000000000000000000000000"))
+
+(define %bip39-mnemonic-1
+  "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about")
+
+(define %bip39-seed-1
+  (hex-decode
+    "c55257c360c07c72029aebc1b53c05ed0362ada38ead3e3e9efa3708e53495531f09a6987599d18264c1e1c92f2cf141630c7a3c4ab7c81b2f001698e7463b04"))
+
+(define %bip32-seed-1
+  (hex-decode "000102030405060708090a0b0c0d0e0f"))
+
+(if %native-secp256k1?
+  (begin
+    (test-group "WIF"
+      (test "private key 1 encodes as compressed mainnet WIF"
+        (assert-equal "KwDiBf89QgGbjEhKnhXJuH7LrciVrZi3qYjgd9M7rFU73sVHnoWn"
+                      (private-key->wif %one bitcoin-mainnet #t)))
+
+      (test "compressed WIF decodes to key, network, and compression flag"
+        (let ((decoded (wif->private-key
+                         "KwDiBf89QgGbjEhKnhXJuH7LrciVrZi3qYjgd9M7rFU73sVHnoWn")))
+          (assert-equal %one (car decoded))
+          (assert-equal 'mainnet (bitcoin-network-name (cadr decoded)))
+          (assert-true (caddr decoded))))
+
+      (test "bad WIF checksum errors"
+        (assert-error
+          (wif->private-key
+            "KwDiBf89QgGbjEhKnhXJuH7LrciVrZi3qYjgd9M7rFU73sVHnoWo"))))
+
+    (test-group "public keys and addresses"
+      (test "private key 1 derives compressed generator public key"
+        (assert-equal %generator-pub (private-key->public-key %one)))
+
+      (test "public key predicates"
+        (assert-true (public-key? %generator-pub))
+        (assert-true (compressed-public-key? %generator-pub))
+        (assert-false (public-key? (make-bytevector 33 0))))
+
+      (test "P2PKH address for private key 1"
+        (assert-equal "1BgGZ9tcN4rm9KBzDn7KprQz87SZ26SAMH"
+                      (public-key->p2pkh-address %generator-pub bitcoin-mainnet)))
+
+      (test "P2TR address for generator x-only key"
+        (assert-equal
+          "bc1p0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7vqzk5jj0"
+          (x-only-public-key->p2tr-address
+            (hex-decode "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798")
+            bitcoin-mainnet))))
+
+    (test-group "BIP32"
+      (test "master key matches BIP32 vector 1"
+        (let* ((master (bip32-master-key %bip32-seed-1 bitcoin-mainnet))
+               (xpub (extended-private-key->public-key master)))
+          (assert-equal
+            "xprv9s21ZrQH143K3QTDL4LXw2F7HEK3wJUD2nW2nRk4stbPy6cq3jPPqjiChkVvvNKmPGJxWUtg6LnF5kejMRNNU3TGtRBeJgk33yuGBxrMPHi"
+            (bip32-xprv->string master))
+          (assert-equal
+            "xpub661MyMwAqRbcFtXgS5sYJABqqG9YLmC4Q1Rdap9gSE8NqtwybGhePY2gZ29ESFjqJoCu1Rupje8YtGqsefD265TMg7usUDFdp6W1EGMcet8"
+            (bip32-xpub->string xpub))))
+
+      (test "path m/0'/1 matches BIP32 vector 1"
+        (let* ((master (bip32-master-key %bip32-seed-1 bitcoin-mainnet))
+               (child (bip32-derive-path master "m/0'/1"))
+               (child-pub (extended-private-key->public-key child)))
+          (assert-equal
+            "xprv9wTYmMFdV23N2TdNG573QoEsfRrWKQgWeibmLntzniatZvR9BmLnvSxqu53Kw1UmYPxLgboyZQaXwTCg8MSY3H2EU4pWcQDnRnrVA1xe8fs"
+            (bip32-xprv->string child))
+          (assert-equal
+            "xpub6ASuArnXKPbfEwhqN6e3mwBcDTgzisQN1wXN9BJcM47sSikHjJf3UFHKkNAWbWMiGj7Wf5uMash7SyYq527Hqck2AxYysAA7xmALppuCkwQ"
+            (bip32-xpub->string child-pub))))
+
+      (test "xprv and xpub decode round-trip"
+        (let* ((master (bip32-master-key %bip32-seed-1 bitcoin-mainnet))
+               (xprv (bip32-xprv->string master))
+               (xpub (bip32-xpub->string (extended-private-key->public-key master))))
+          (assert-equal xprv (bip32-xprv->string (string->bip32-xprv xprv)))
+          (assert-equal xpub (bip32-xpub->string (string->bip32-xpub xpub)))))
+
+      (test "hardened public derivation errors"
+        (let* ((master (bip32-master-key %bip32-seed-1 bitcoin-mainnet))
+               (xpub (extended-private-key->public-key master)))
+          (assert-error (bip32-public-child xpub #x80000000)))))
+
+    (test-group "BIP39"
+      (test "entropy to mnemonic"
+        (assert-equal %bip39-mnemonic-1
+                      (bip39-entropy->mnemonic %bip39-entropy-1)))
+
+      (test "mnemonic to entropy"
+        (assert-equal %bip39-entropy-1
+                      (bip39-mnemonic->entropy %bip39-mnemonic-1)))
+
+      (test "mnemonic to seed with passphrase"
+        (assert-equal %bip39-seed-1
+                      (bip39-mnemonic->seed %bip39-mnemonic-1 "TREZOR")))
+
+      (test "bad checksum errors"
+        (assert-error
+          (bip39-mnemonic->entropy
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon")))))
+  (test-group "sigil-bitcoin-keys"
+    (test-skip "native secp256k1 module is not linked in direct workspace runner"
+      #t)))
+
+(run-tests)
