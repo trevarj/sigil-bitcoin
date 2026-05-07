@@ -22,6 +22,21 @@
   (hex-decode
     "c55257c360c07c72029aebc1b53c05ed0362ada38ead3e3e9efa3708e53495531f09a6987599d18264c1e1c92f2cf141630c7a3c4ab7c81b2f001698e7463b04"))
 
+(define %bip39-zero-entropy-vectors
+  (list
+    (list
+      (hex-decode "0000000000000000000000000000000000000000")
+      "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon address")
+    (list
+      (hex-decode "000000000000000000000000000000000000000000000000")
+      "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon agent")
+    (list
+      (hex-decode "00000000000000000000000000000000000000000000000000000000")
+      "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon admit")
+    (list
+      (hex-decode "0000000000000000000000000000000000000000000000000000000000000000")
+      "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art")))
+
 (define %bip32-seed-1
   (hex-decode "000102030405060708090a0b0c0d0e0f"))
 
@@ -210,6 +225,15 @@
       (test "mnemonic to seed with passphrase"
         (assert-equal %bip39-seed-1
                       (bip39-mnemonic->seed %bip39-mnemonic-1 "TREZOR")))
+
+      (test "zero entropy vectors cover 160/192/224/256-bit sizes"
+        (do ((xs %bip39-zero-entropy-vectors (cdr xs)))
+            ((null? xs))
+          (let* ((entry (car xs))
+                 (entropy (car entry))
+                 (mnemonic (cadr entry)))
+            (assert-equal mnemonic (bip39-entropy->mnemonic entropy))
+            (assert-equal entropy (bip39-mnemonic->entropy mnemonic)))))
 
       (test "bad checksum errors"
         (assert-error

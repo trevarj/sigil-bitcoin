@@ -1,4 +1,6 @@
 ;;; Generated BIP39 English wordlist.
+;;; Source: https://github.com/bitcoin/bips/blob/master/bip-0039/english.txt
+;;; Stored in four 512-word vectors to stay below Sigil vector literal limits.
 
 (define-library (sigil bitcoin bip39-words)
   (export %bip39-word-count bip39-english-word bip39-english-word-index)
