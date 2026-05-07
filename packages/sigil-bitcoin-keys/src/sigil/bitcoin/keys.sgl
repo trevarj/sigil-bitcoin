@@ -100,6 +100,12 @@
       (require-bytevector-length "fingerprint" bytes 4)
       (bytevector-copy bytes))
 
+    (define (zero4? bytes offset)
+      (and (= 0 (bytevector-u8-ref bytes offset))
+           (= 0 (bytevector-u8-ref bytes (+ offset 1)))
+           (= 0 (bytevector-u8-ref bytes (+ offset 2)))
+           (= 0 (bytevector-u8-ref bytes (+ offset 3)))))
+
     (define (u32->bytevector n)
       (let ((out (make-bytevector 4 0)))
         (when (or (< n 0) (> n #xffffffff))
@@ -341,6 +347,14 @@
         (bytevector-copy! payload 45 key-data)
         payload))
 
+    (define (validate-xkey-depth-fields who payload)
+      (let ((depth (bytevector-u8-ref payload 4)))
+        (when (and (= depth 0)
+                   (or (not (zero4? payload 5))
+                       (not (zero4? payload 9))))
+          (error (string-append who
+                                ": zero depth requires zero parent fingerprint and child number")))))
+
     (define (base58check-encode-bytes payload)
       (base58-encode
         (bytevector-append payload (bytevector-copy (hash256 payload) 0 4))))
@@ -386,6 +400,7 @@
       (: string? -> extended-private-key?)
       (let* ((payload (base58check-decode-bytes str)))
         (require-bytevector-length "string->bip32-xprv" payload 78)
+        (validate-xkey-depth-fields "string->bip32-xprv" payload)
         (let* ((version (bytevector->u32 payload 0))
                (network (valid-network-version version #t))
                (key-data (bytevector-copy payload 45 78)))
@@ -405,6 +420,7 @@
       (: string? -> extended-public-key?)
       (let* ((payload (base58check-decode-bytes str)))
         (require-bytevector-length "string->bip32-xpub" payload 78)
+        (validate-xkey-depth-fields "string->bip32-xpub" payload)
         (let* ((version (bytevector->u32 payload 0))
                (network (valid-network-version version #f))
                (pub (bytevector-copy payload 45 78)))

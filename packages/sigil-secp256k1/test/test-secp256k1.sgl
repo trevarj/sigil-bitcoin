@@ -72,7 +72,16 @@
            (sk2 (secp256k1-seckey-tweak-add sk tweak))
            (pk (secp256k1-pubkey-create sk2)))
       (assert-true (bytevector? sk2))
-      (assert-equal 33 (bytevector-length pk)))))
+      (assert-equal 33 (bytevector-length pk))))
+  (test "pubkey tweak returns compressed child public key"
+    (let* ((sk (random-bytes 32))
+           (tweak (random-bytes 32))
+           (sk2 (secp256k1-seckey-tweak-add sk tweak))
+           (pk (secp256k1-pubkey-create sk))
+           (expected (secp256k1-pubkey-create sk2))
+           (tweaked (secp256k1-pubkey-tweak-add pk tweak)))
+      (assert-equal 33 (bytevector-length tweaked))
+      (assert-equal expected tweaked))))
 
 (test-group "keypair"
   (test "create returns 96-byte keypair"

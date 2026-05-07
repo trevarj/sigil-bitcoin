@@ -80,9 +80,9 @@ Layer 6 — Networking (sigil-bitcoin-p2p)
 - `sigil-bitcoin-primitives` passes HASH160, HASH256, and BIP-340 tagged-hash vectors.
 - `sigil-bitcoin-encoding` passes hex, Base58, Base58Check, full BIP173/BIP350 Bech32/Bech32m checksum vectors, SegWit v0, and SegWit v1 vectors.
 - `sigil-secp256k1` now uses a native C module linked against `libsecp256k1` instead of runtime `(sigil ffi)` dynamic loading.
-- `sigil-secp256k1` package harness tests pass all ECDSA, DER, tweak, keypair, and Schnorr assertions.
+- `sigil-secp256k1` package harness tests pass all ECDSA, DER, tweak, keypair, Schnorr, and invalid-input assertions.
 - `sigil-bitcoin-keys` provides network structs, WIF, public-key predicates, P2PKH/P2SH/P2WPKH/P2WSH/P2TR address helpers, BIP32 extended-key structs and derivation, and BIP39 English mnemonic helpers.
-- `sigil-bitcoin-keys` package harness tests pass WIF, address, BIP32 vector 1, and BIP39 vector 1 assertions.
+- `sigil-bitcoin-keys` package harness tests pass WIF, address, BIP32 vectors 1/2/3, invalid extended-key, public-derivation parity, and BIP39 vector 1 assertions.
 - `hash160` currently uses a pure Sigil RIPEMD-160 fallback. The local `sigil-crypto` source and build metadata expose `ripemd160`; package-native harnesses that depend on the sibling checkout bind it correctly, but the root direct runner imports the host/bundled crypto module and leaves newer native bindings unbound.
 - Root workspace tests pass under the direct runner. The secp and keys test files record skip markers there because multi-package workspace tests do not currently build a native harness.
 - `sigil-crypto` now exposes `pbkdf2-sha512`, used by BIP39 seed derivation.
@@ -183,6 +183,7 @@ or pure Sigil code. No changes to the Sigil VM or compiler are required.
 - [x] Add P2PKH, P2SH, P2WPKH, P2WSH, and P2TR address helpers.
 - [x] Add BIP32 extended-key structs, xprv/xpub encode/decode, and private/public child derivation.
 - [x] Add generated BIP39 English wordlist data, entropy/mnemonic conversion, and seed derivation.
+- [x] Expand `sigil-bitcoin-keys` with BIP32 vectors 2 and 3, invalid extended-key coverage, and public-derivation parity checks.
 
 ### Next
 
@@ -191,7 +192,6 @@ or pure Sigil code. No changes to the Sigil VM or compiler are required.
 - [ ] Replace absolute local Sigil redirects in `dev-redirects.sgl` with a portable workspace-local path when the Sigil checkout layout is finalized.
 - [x] Add invalid-input coverage for `sigil-secp256k1` length/type checks and parse failures.
 - [ ] Consider returning serialized 32-byte x-only public keys in a future API, while preserving current 64-byte internal-key compatibility or adding a clearly named variant.
-- [ ] Expand `sigil-bitcoin-keys` with BIP32 vectors 2 and 3, invalid extended-key checksum/version coverage, and public-derivation parity checks.
 - [ ] Add BIP39 vectors for 160/192/224/256-bit entropy and document the generated wordlist source.
 - [ ] Add account-level helpers for common paths after deciding whether descriptors or PSBT should own derivation-path policy.
 - [ ] Add `sigil-bitcoin-script` skeleton with script byte constructors for standard templates.

@@ -167,7 +167,7 @@ static Value native_pubkey_tweak_add(SigilVM *vm, int argc, Value *args)
         return SIGIL_UNDEFINED;
     }
 
-    return make_bv(vm, pubkey.data, sizeof(pubkey.data));
+    return serialize_pubkey_compressed(vm, &pubkey);
 }
 
 static Value native_seckey_tweak_add(SigilVM *vm, int argc, Value *args)
