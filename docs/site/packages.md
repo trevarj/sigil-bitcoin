@@ -28,4 +28,4 @@ Use this page as a quick map from package to responsibility.
 
 ## Miniscript
 
-`(sigil bitcoin miniscript)` owns policy fragments, type/signing metadata, hash-lock and branch combinator compilation, descriptors, script compilation, and BIP388 wallet policy expansion.
+`(sigil bitcoin miniscript)` owns policy fragments, type/signing metadata, hash-lock and branch combinator compilation, descriptors with BIP389 multipath keys and Taproot script trees, script compilation, and BIP388 wallet policy expansion.

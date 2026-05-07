@@ -225,6 +225,23 @@
       (assert-equal (string-append "wsh(" %pk-text ")")
                     (descriptor->string desc))))
 
+  (test "parses BIP389 multipath key expressions"
+    (let ((desc (descriptor-parse "wpkh(xpub/<0;1>/*)")))
+      (assert-equal "wpkh(xpub/<0;1>/*)" (descriptor->string desc)))
+    (assert-error (descriptor-parse "wpkh(xpub/<0;>/*)"))
+    (assert-error (descriptor-parse "wpkh(xpub/<0;1/*)")))
+
+  (test "parses Taproot script trees"
+    (let ((desc (descriptor-parse
+                  (string-append
+                    "tr(" %second-pub-text ",{"
+                    %pk-text ",{older(10),after(500)}})"))))
+      (assert-equal
+        (string-append
+          "tr(" %second-pub-text ",{"
+          %pk-text ",{older(10),after(500)}})")
+        (descriptor->string desc))))
+
   (test "compiles wpkh descriptor scriptPubKey"
     (assert-equal
       "0014751e76e8199196d454941c45d1b3a323f1433bd6"
@@ -260,6 +277,17 @@
           "s:pk(" %bip388-xpub-2 "/<0;1>/*),"
           "s:pk(" %bip388-xpub-3 "/<0;1>/*),"
           "sln:older(12960)))")
+        (wallet-policy-descriptor policy))))
+
+  (test "expands Taproot script-tree templates"
+    (let ((policy (wallet-policy-from-template
+                    "tr(@0/**,{pk(@1/**),older(12960)})"
+                    (list %bip388-xpub %bip388-xpub-2))))
+      (assert-equal
+        (string-append
+          "tr(" %bip388-xpub "/<0;1>/*,{"
+          "pk(" %bip388-xpub-2 "/<0;1>/*),"
+          "older(12960)})")
         (wallet-policy-descriptor policy))))
 
   (test "rejects missing key info"

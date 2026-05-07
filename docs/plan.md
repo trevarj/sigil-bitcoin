@@ -218,7 +218,8 @@ or pure Sigil code. No changes to the Sigil VM or compiler are required.
 - [x] Add PSBT BIP32 derivation records, Taproot derivation fields, and unknown/proprietary key preservation.
 - [x] Add hash-lock fragments, `andor`, `or_b`, `or_c`, `or_i`, and executable `thresh` compilation using rust-miniscript/Bitcoin Core vectors.
 - [x] Add Miniscript type metadata beyond the current coarse base type, including malleability and satisfaction properties needed for signing.
-- [ ] Add descriptor checksums, BIP389 multipath parsing, Taproot script trees, and BIP388 `musig(...)` placeholders.
+- [x] Add BIP389 multipath parsing and Taproot descriptor script-tree parsing.
+- [ ] Add descriptor checksums and BIP388 `musig(...)` placeholders.
 - [ ] Connect descriptors and wallet policies to PSBT by deriving scripts, key origins, change detection, and signing inputs.
 - [ ] Add PSBT output BIP32/Taproot derivation fields when descriptor change-output tracking starts using them.
 - [ ] Replace the repo-local docs generator with Press/`sigil-publish` once the site generation package is available in this workspace.

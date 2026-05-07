@@ -158,18 +158,66 @@
            (or (alpha-char? (string-ref s 0))
                (char=? #\[ (string-ref s 0)))))
 
+    (define (valid-multipath-branch? branch)
+      (> (string-length branch) 0))
+
+    (define (split-semicolons s)
+      (let loop ((i 0)
+                 (start 0)
+                 (parts '()))
+        (if (>= i (string-length s))
+            (reverse (cons (substring s start (string-length s)) parts))
+            (if (char=? #\; (string-ref s i))
+                (loop (+ i 1) (+ i 1) (cons (substring s start i) parts))
+                (loop (+ i 1) start parts)))))
+
+    (define (valid-multipath-expression? body)
+      (let ((branches (split-semicolons body)))
+        (and (> (length branches) 1)
+             (let loop ((xs branches))
+               (cond ((null? xs) #t)
+                     ((valid-multipath-branch? (car xs)) (loop (cdr xs)))
+                     (else #f))))))
+
+    (define (valid-multipath-key? key)
+      (let loop ((i 0)
+                 (in-multipath? #f)
+                 (start 0)
+                 (seen? #f))
+        (cond ((>= i (string-length key))
+               (not in-multipath?))
+              ((and in-multipath? (char=? #\> (string-ref key i)))
+               (and (valid-multipath-expression? (substring key start i))
+                    (loop (+ i 1) #f 0 #t)))
+              (in-multipath?
+               (loop (+ i 1) #t start seen?))
+              ((char=? #\< (string-ref key i))
+               (if seen?
+                   #f
+                   (loop (+ i 1) #t (+ i 1) seen?)))
+              ((char=? #\> (string-ref key i))
+               #f)
+              (else
+               (loop (+ i 1) #f start seen?)))))
+
+    (define (valid-symbolic-key-expression? key)
+      (and (symbolic-key? key)
+           (valid-multipath-key? key)))
+
     (define (valid-key-expression? key)
       (or (bytevector? key)
           (and (string? key)
                (or (compressed-pubkey-hex? key)
                    (placeholder-key? key)
-                   (symbolic-key? key)))))
+                   (valid-symbolic-key-expression? key)))))
 
     (define (parse-key-expression s)
       (cond ((compressed-pubkey-hex? s)
              (hex-decode s))
             ((or (placeholder-key? s) (symbolic-key? s))
-             s)
+             (if (or (placeholder-key? s) (valid-symbolic-key-expression? s))
+                 s
+                 (error "miniscript: invalid key expression")))
             (else
              (error "miniscript: invalid key expression"))))
 
@@ -914,6 +962,49 @@
     (define (descriptor-tr key . scripts)
       (descriptor kind: 'tr args: scripts data: (require-key "descriptor-tr" key)))
 
+    (define (tapbranch left right)
+      (list 'tapbranch left right))
+
+    (define (tapbranch? value)
+      (and (pair? value) (eq? (car value) 'tapbranch)))
+
+    (define (tapbranch-left branch)
+      (cadr branch))
+
+    (define (tapbranch-right branch)
+      (caddr branch))
+
+    (define (braced-expression? s)
+      (and (> (string-length s) 1)
+           (char=? #\{ (string-ref s 0))
+           (string-ends-with? s #\})))
+
+    (define (braced-inner who s)
+      (unless (braced-expression? s)
+        (error (string-append who ": malformed Taproot script tree")))
+      (substring s 1 (- (string-length s) 1)))
+
+    (define (parse-taproot-tree s)
+      (if (braced-expression? s)
+          (let ((parts (split-top-level-comma (braced-inner "tr" s))))
+            (tapbranch
+              (parse-taproot-tree (car parts))
+              (parse-taproot-tree (cadr parts))))
+          (parse-fragment s)))
+
+    (define (taproot-tree->string tree)
+      (cond ((miniscript-fragment? tree)
+             (miniscript->string tree))
+            ((tapbranch? tree)
+             (string-append
+               "{"
+               (taproot-tree->string (tapbranch-left tree))
+               ","
+               (taproot-tree->string (tapbranch-right tree))
+               "}"))
+            (else
+             (error "descriptor->string: unsupported Taproot script tree"))))
+
     (define (parse-descriptor-inner s)
       (cond ((string-prefix? "pkh(" s)
              (descriptor-pkh (parse-key-expression (function-inner "pkh" "pkh(" s))))
@@ -925,7 +1016,13 @@
              (descriptor-wsh (parse-fragment (function-inner "wsh" "wsh(" s))))
             ((string-prefix? "tr(" s)
              (let ((args (split-top-level-commas (function-inner "tr" "tr(" s))))
-               (descriptor-tr (parse-key-expression (car args)))))
+               (unless (or (= 1 (length args)) (= 2 (length args)))
+                 (error "descriptor-parse: tr expects key plus optional script tree"))
+               (if (= 1 (length args))
+                   (descriptor-tr (parse-key-expression (car args)))
+                   (descriptor-tr
+                     (parse-key-expression (car args))
+                     (parse-taproot-tree (cadr args))))))
             (else
              (error "descriptor-parse: unsupported descriptor"))))
 
@@ -947,7 +1044,14 @@
               ((eq? kind 'wsh)
                (string-append "wsh(" (miniscript->string (car (descriptor-args desc))) ")"))
               ((eq? kind 'tr)
-               (string-append "tr(" (key->string (descriptor-data desc)) ")"))
+               (if (null? (descriptor-args desc))
+                   (string-append "tr(" (key->string (descriptor-data desc)) ")")
+                   (string-append
+                     "tr("
+                     (key->string (descriptor-data desc))
+                     ","
+                     (taproot-tree->string (car (descriptor-args desc)))
+                     ")")))
               (else
                (error "descriptor->string: unsupported descriptor")))))
 
@@ -1127,6 +1231,19 @@
               (else
                (miniscript->string fragment)))))
 
+    (define (taproot-tree->string-with-keys tree keys)
+      (cond ((miniscript-fragment? tree)
+             (miniscript->string-with-keys tree keys))
+            ((tapbranch? tree)
+             (string-append
+               "{"
+               (taproot-tree->string-with-keys (tapbranch-left tree) keys)
+               ","
+               (taproot-tree->string-with-keys (tapbranch-right tree) keys)
+               "}"))
+            (else
+             (error "wallet-policy: unsupported Taproot script tree"))))
+
     (define (descriptor->string-with-keys desc keys)
       (let ((kind (descriptor-kind desc)))
         (cond ((eq? kind 'pkh)
@@ -1138,7 +1255,14 @@
               ((eq? kind 'wsh)
                (string-append "wsh(" (miniscript->string-with-keys (car (descriptor-args desc)) keys) ")"))
               ((eq? kind 'tr)
-               (string-append "tr(" (wallet-policy-expand-key (descriptor-data desc) keys) ")"))
+               (if (null? (descriptor-args desc))
+                   (string-append "tr(" (wallet-policy-expand-key (descriptor-data desc) keys) ")")
+                   (string-append
+                     "tr("
+                     (wallet-policy-expand-key (descriptor-data desc) keys)
+                     ","
+                     (taproot-tree->string-with-keys (car (descriptor-args desc)) keys)
+                     ")")))
               (else
                (error "wallet-policy: unsupported descriptor template")))))
 
