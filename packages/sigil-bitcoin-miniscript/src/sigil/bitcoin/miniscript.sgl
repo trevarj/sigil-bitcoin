@@ -1,21 +1,41 @@
-;;; (sigil bitcoin miniscript) — Miniscript AST, parser, and compiler
+;;; (sigil bitcoin miniscript) — Miniscript, descriptors, and wallet policies
 
 (define-library (sigil bitcoin miniscript)
   (import (sigil struct)
           (sigil math)
+          (sigil crypto)
+          (sigil bitcoin primitives)
           (sigil bitcoin encoding)
           (sigil bitcoin script))
   (export
     miniscript-fragment miniscript-fragment?
     miniscript-fragment-kind miniscript-fragment-args miniscript-fragment-data
     miniscript-pk-k
+    miniscript-pk-h
+    miniscript-pk
     miniscript-after
     miniscript-older
+    miniscript-multi
+    miniscript-sortedmulti
     miniscript-and-v
+    miniscript-and-b
+    miniscript-or-d
+    miniscript-thresh
+    miniscript-wrapper
     miniscript-parse
     miniscript-type
     miniscript-type-check
-    miniscript-compile)
+    miniscript->string
+    miniscript-compile
+    descriptor descriptor?
+    descriptor-kind descriptor-args descriptor-data
+    descriptor-parse
+    descriptor->string
+    descriptor-script-pubkey
+    wallet-policy wallet-policy?
+    wallet-policy-template wallet-policy-keys
+    wallet-policy-from-template
+    wallet-policy-descriptor)
   (begin
 
     (define-struct miniscript-fragment
@@ -23,27 +43,14 @@
       (args list?)
       (data any?))
 
-    (define (miniscript-pk-k pubkey)
-      (: bytevector? -> miniscript-fragment?)
-      (unless (and (bytevector? pubkey) (= 33 (bytevector-length pubkey)))
-        (error "miniscript-pk-k: expected 33-byte compressed public key"))
-      (miniscript-fragment kind: 'pk-k args: '() data: (bytevector-copy pubkey)))
+    (define-struct descriptor
+      (kind symbol?)
+      (args list?)
+      (data any?))
 
-    (define (miniscript-after locktime)
-      (: integer? -> miniscript-fragment?)
-      (unless (and (integer? locktime) (<= 0 locktime #xffffffff))
-        (error "miniscript-after: locktime out of range"))
-      (miniscript-fragment kind: 'after args: '() data: locktime))
-
-    (define (miniscript-older sequence)
-      (: integer? -> miniscript-fragment?)
-      (unless (and (integer? sequence) (<= 0 sequence #xffffffff))
-        (error "miniscript-older: sequence out of range"))
-      (miniscript-fragment kind: 'older args: '() data: sequence))
-
-    (define (miniscript-and-v left right)
-      (: miniscript-fragment? miniscript-fragment? -> miniscript-fragment?)
-      (miniscript-fragment kind: 'and-v args: (list left right) data: #f))
+    (define-struct wallet-policy
+      (template descriptor?)
+      (keys list?))
 
     (define (whitespace? c)
       (or (char=? c #\space)
@@ -71,7 +78,7 @@
     (define (function-inner who prefix s)
       (unless (and (string-prefix? prefix s)
                    (string-ends-with? s #\)))
-        (error (string-append who ": malformed fragment")))
+        (error (string-append who ": malformed expression")))
       (substring s (string-length prefix) (- (string-length s) 1)))
 
     (define (decimal-digit c)
@@ -89,51 +96,262 @@
               (error (string-append who ": invalid decimal number")))
             (set! n (+ (* n 10) d))))))
 
-    (define (split-top-level-comma s)
+    (define (hex-char? c)
+      (let ((n (char->integer c)))
+        (or (<= 48 n 57)
+            (<= 65 n 70)
+            (<= 97 n 102))))
+
+    (define (hex-string? s)
+      (and (> (string-length s) 0)
+           (let ((ok #t))
+             (do ((i 0 (+ i 1)))
+                 ((>= i (string-length s)) ok)
+               (unless (hex-char? (string-ref s i))
+                 (set! ok #f))))))
+
+    (define (alpha-char? c)
+      (let ((n (char->integer c)))
+        (or (<= 65 n 90)
+            (<= 97 n 122))))
+
+    (define (compressed-pubkey-hex? s)
+      (and (= 66 (string-length s))
+           (hex-string? s)
+           (or (string-prefix? "02" s)
+               (string-prefix? "03" s))))
+
+    (define (placeholder-key? s)
+      (and (> (string-length s) 1)
+           (char=? #\@ (string-ref s 0))))
+
+    (define (symbolic-key? s)
+      (and (> (string-length s) 0)
+           (or (alpha-char? (string-ref s 0))
+               (char=? #\[ (string-ref s 0)))))
+
+    (define (valid-key-expression? key)
+      (or (bytevector? key)
+          (and (string? key)
+               (or (compressed-pubkey-hex? key)
+                   (placeholder-key? key)
+                   (symbolic-key? key)))))
+
+    (define (parse-key-expression s)
+      (cond ((compressed-pubkey-hex? s)
+             (hex-decode s))
+            ((or (placeholder-key? s) (symbolic-key? s))
+             s)
+            (else
+             (error "miniscript: invalid key expression"))))
+
+    (define (key->string key)
+      (cond ((bytevector? key)
+             (hex-encode key))
+            ((string? key)
+             key)
+            (else
+             (error "miniscript: invalid key"))))
+
+    (define (key->bytevector who key)
+      (cond ((bytevector? key)
+             key)
+            ((and (string? key) (compressed-pubkey-hex? key))
+             (hex-decode key))
+            (else
+             (error (string-append who ": expected concrete compressed public key")))))
+
+    (define (require-key who key)
+      (unless (valid-key-expression? key)
+        (error (string-append who ": invalid key expression")))
+      key)
+
+    (define (require-locktime who n)
+      (unless (and (integer? n) (<= 0 n #xffffffff))
+        (error (string-append who ": value out of range")))
+      n)
+
+    (define (miniscript-pk-k key)
+      (: any? -> miniscript-fragment?)
+      (miniscript-fragment kind: 'pk-k args: '() data: (require-key "miniscript-pk-k" key)))
+
+    (define (miniscript-pk-h key)
+      (: any? -> miniscript-fragment?)
+      (miniscript-fragment kind: 'pk-h args: '() data: (require-key "miniscript-pk-h" key)))
+
+    (define (miniscript-pk key)
+      (: any? -> miniscript-fragment?)
+      (miniscript-fragment kind: 'pk args: '() data: (require-key "miniscript-pk" key)))
+
+    (define (miniscript-after locktime)
+      (: integer? -> miniscript-fragment?)
+      (miniscript-fragment kind: 'after args: '() data: (require-locktime "miniscript-after" locktime)))
+
+    (define (miniscript-older sequence)
+      (: integer? -> miniscript-fragment?)
+      (miniscript-fragment kind: 'older args: '() data: (require-locktime "miniscript-older" sequence)))
+
+    (define (require-fragments who fragments)
+      (do ((xs fragments (cdr xs)))
+          ((null? xs) fragments)
+        (unless (miniscript-fragment? (car xs))
+          (error (string-append who ": expected miniscript fragment")))))
+
+    (define (miniscript-multi threshold keys)
+      (: integer? list? -> miniscript-fragment?)
+      (unless (and (integer? threshold) (> threshold 0) (<= threshold (length keys)) (<= (length keys) 16))
+        (error "miniscript-multi: invalid threshold or key count"))
+      (do ((xs keys (cdr xs)))
+          ((null? xs))
+        (require-key "miniscript-multi" (car xs)))
+      (miniscript-fragment kind: 'multi args: keys data: threshold))
+
+    (define (miniscript-sortedmulti threshold keys)
+      (: integer? list? -> miniscript-fragment?)
+      (unless (and (integer? threshold) (> threshold 0) (<= threshold (length keys)) (<= (length keys) 16))
+        (error "miniscript-sortedmulti: invalid threshold or key count"))
+      (do ((xs keys (cdr xs)))
+          ((null? xs))
+        (require-key "miniscript-sortedmulti" (car xs)))
+      (miniscript-fragment kind: 'sortedmulti args: keys data: threshold))
+
+    (define (miniscript-and-v left right)
+      (: miniscript-fragment? miniscript-fragment? -> miniscript-fragment?)
+      (miniscript-fragment kind: 'and-v args: (list left right) data: #f))
+
+    (define (miniscript-and-b left right)
+      (: miniscript-fragment? miniscript-fragment? -> miniscript-fragment?)
+      (miniscript-fragment kind: 'and-b args: (list left right) data: #f))
+
+    (define (miniscript-or-d left right)
+      (: miniscript-fragment? miniscript-fragment? -> miniscript-fragment?)
+      (miniscript-fragment kind: 'or-d args: (list left right) data: #f))
+
+    (define (miniscript-thresh threshold fragments)
+      (: integer? list? -> miniscript-fragment?)
+      (unless (and (integer? threshold) (> threshold 0) (<= threshold (length fragments)))
+        (error "miniscript-thresh: invalid threshold"))
+      (require-fragments "miniscript-thresh" fragments)
+      (miniscript-fragment kind: 'thresh args: fragments data: threshold))
+
+    (define (miniscript-wrapper wrappers fragment)
+      (: string? miniscript-fragment? -> miniscript-fragment?)
+      (unless (and (string? wrappers) (> (string-length wrappers) 0))
+        (error "miniscript-wrapper: empty wrapper"))
+      (unless (miniscript-fragment? fragment)
+        (error "miniscript-wrapper: expected miniscript fragment"))
+      (miniscript-fragment kind: 'wrapper args: (list fragment) data: wrappers))
+
+    (define (bump-depth depth c)
+      (cond ((or (char=? c #\() (char=? c #\{) (char=? c #\[) (char=? c #\<))
+             (+ depth 1))
+            ((or (char=? c #\)) (char=? c #\}) (char=? c #\]) (char=? c #\>))
+             (- depth 1))
+            (else
+             depth)))
+
+    (define (split-top-level-commas s)
       (let loop ((i 0)
                  (depth 0)
-                 (comma #f))
+                 (start 0)
+                 (parts '()))
         (if (>= i (string-length s))
             (begin
               (when (> depth 0)
-                (error "miniscript-parse: unbalanced parentheses"))
-              (unless comma
-                (error "miniscript-parse: expected comma"))
-              (list (substring s 0 comma)
-                    (substring s (+ comma 1) (string-length s))))
+                (error "miniscript-parse: unbalanced expression"))
+              (reverse (cons (substring s start (string-length s)) parts)))
             (let ((c (string-ref s i)))
-              (cond ((char=? c #\()
-                     (loop (+ i 1) (+ depth 1) comma))
-                    ((char=? c #\))
-                     (let ((next-depth (- depth 1)))
-                       (when (< next-depth 0)
-                         (error "miniscript-parse: unbalanced parentheses"))
-                       (loop (+ i 1) next-depth comma)))
-                    ((and (char=? c #\,) (= depth 0))
-                     (when comma
-                       (error "miniscript-parse: too many top-level arguments"))
-                     (loop (+ i 1) depth i))
+              (cond ((and (char=? c #\,) (= depth 0))
+                     (loop (+ i 1) depth (+ i 1) (cons (substring s start i) parts)))
                     (else
-                     (loop (+ i 1) depth comma)))))))
+                     (let ((next-depth (bump-depth depth c)))
+                       (when (< next-depth 0)
+                         (error "miniscript-parse: unbalanced expression"))
+                       (loop (+ i 1) next-depth start parts))))))))
+
+    (define (split-top-level-comma s)
+      (let ((parts (split-top-level-commas s)))
+        (unless (= 2 (length parts))
+          (error "miniscript-parse: expected two arguments"))
+        parts))
+
+    (define (find-wrapper-colon s)
+      (let loop ((i 0))
+        (cond ((>= i (string-length s))
+               #f)
+              ((char=? (string-ref s i) #\()
+               #f)
+              ((char=? (string-ref s i) #\:)
+               i)
+              (else
+               (loop (+ i 1))))))
+
+    (define (parse-key-list args)
+      (let loop ((xs args)
+                 (out '()))
+        (if (null? xs)
+            (reverse out)
+            (loop (cdr xs) (cons (parse-key-expression (car xs)) out)))))
 
     (define (parse-fragment s)
-      (cond ((string-prefix? "pk_k(" s)
-             (let* ((pubkey (hex-decode (function-inner "pk_k" "pk_k(" s))))
-               (miniscript-pk-k pubkey)))
-            ((string-prefix? "after(" s)
-             (miniscript-after
-               (parse-decimal (function-inner "after" "after(" s) "after")))
-            ((string-prefix? "older(" s)
-             (miniscript-older
-               (parse-decimal (function-inner "older" "older(" s) "older")))
-            ((string-prefix? "and_v(" s)
-             (let ((parts (split-top-level-comma
-                            (function-inner "and_v" "and_v(" s))))
-               (miniscript-and-v
-                 (parse-fragment (car parts))
-                 (parse-fragment (cadr parts)))))
-            (else
-             (error "miniscript-parse: unsupported fragment"))))
+      (let ((colon (find-wrapper-colon s)))
+        (if colon
+            (miniscript-wrapper
+              (substring s 0 colon)
+              (parse-fragment (substring s (+ colon 1) (string-length s))))
+            (cond ((string=? s "1")
+                   (miniscript-fragment kind: 'one args: '() data: #f))
+                  ((string-prefix? "pk_k(" s)
+                   (miniscript-pk-k
+                     (parse-key-expression (function-inner "pk_k" "pk_k(" s))))
+                  ((string-prefix? "pk_h(" s)
+                   (miniscript-pk-h
+                     (parse-key-expression (function-inner "pk_h" "pk_h(" s))))
+                  ((string-prefix? "pk(" s)
+                   (miniscript-pk
+                     (parse-key-expression (function-inner "pk" "pk(" s))))
+                  ((string-prefix? "after(" s)
+                   (miniscript-after
+                     (parse-decimal (function-inner "after" "after(" s) "after")))
+                  ((string-prefix? "older(" s)
+                   (miniscript-older
+                     (parse-decimal (function-inner "older" "older(" s) "older")))
+                  ((string-prefix? "multi(" s)
+                   (let ((args (split-top-level-commas (function-inner "multi" "multi(" s))))
+                     (miniscript-multi
+                       (parse-decimal (car args) "multi")
+                       (parse-key-list (cdr args)))))
+                  ((string-prefix? "sortedmulti(" s)
+                   (let ((args (split-top-level-commas (function-inner "sortedmulti" "sortedmulti(" s))))
+                     (miniscript-sortedmulti
+                       (parse-decimal (car args) "sortedmulti")
+                       (parse-key-list (cdr args)))))
+                  ((string-prefix? "and_v(" s)
+                   (let ((parts (split-top-level-comma (function-inner "and_v" "and_v(" s))))
+                     (miniscript-and-v
+                       (parse-fragment (car parts))
+                       (parse-fragment (cadr parts)))))
+                  ((string-prefix? "and_b(" s)
+                   (let ((parts (split-top-level-comma (function-inner "and_b" "and_b(" s))))
+                     (miniscript-and-b
+                       (parse-fragment (car parts))
+                       (parse-fragment (cadr parts)))))
+                  ((string-prefix? "or_d(" s)
+                   (let ((parts (split-top-level-comma (function-inner "or_d" "or_d(" s))))
+                     (miniscript-or-d
+                       (parse-fragment (car parts))
+                       (parse-fragment (cadr parts)))))
+                  ((string-prefix? "thresh(" s)
+                   (let ((args (split-top-level-commas (function-inner "thresh" "thresh(" s))))
+                     (miniscript-thresh
+                       (parse-decimal (car args) "thresh")
+                       (let loop ((xs (cdr args))
+                                  (out '()))
+                         (if (null? xs)
+                             (reverse out)
+                             (loop (cdr xs) (cons (parse-fragment (car xs)) out)))))))
+                  (else
+                   (error "miniscript-parse: unsupported fragment"))))))
 
     (define (miniscript-parse s)
       (: string? -> miniscript-fragment?)
@@ -144,23 +362,105 @@
       (unless (miniscript-fragment? fragment)
         (error "miniscript-type: expected miniscript fragment"))
       (let ((kind (miniscript-fragment-kind fragment)))
-        (cond ((or (eq? kind 'pk-k)
+        (cond ((or (eq? kind 'pk-k) (eq? kind 'pk-h))
+               'K)
+              ((eq? kind 'wrapper)
+               (if (string=? "v" (miniscript-fragment-data fragment))
+                   'V
+                   'B))
+              ((or (eq? kind 'pk)
                    (eq? kind 'after)
-                   (eq? kind 'older))
+                   (eq? kind 'older)
+                   (eq? kind 'multi)
+                   (eq? kind 'sortedmulti)
+                   (eq? kind 'and-v)
+                   (eq? kind 'and-b)
+                   (eq? kind 'or-d)
+                   (eq? kind 'thresh)
+                   (eq? kind 'one))
                'B)
-              ((eq? kind 'and-v)
-               (let ((left (car (miniscript-fragment-args fragment)))
-                     (right (cadr (miniscript-fragment-args fragment))))
-                 (unless (and (eq? 'B (miniscript-type left))
-                              (eq? 'B (miniscript-type right)))
-                   (error "miniscript-type: and_v expects B fragments"))
-                 'B))
               (else
                (error "miniscript-type: unsupported fragment")))))
 
     (define (miniscript-type-check fragment)
       (: miniscript-fragment? -> boolean?)
-      (eq? 'B (miniscript-type fragment)))
+      (and (miniscript-type fragment) #t))
+
+    (define (join-strings parts sep)
+      (cond ((null? parts)
+             "")
+            ((null? (cdr parts))
+             (car parts))
+            (else
+             (let loop ((xs (cdr parts))
+                        (out (car parts)))
+               (if (null? xs)
+                   out
+                   (loop (cdr xs) (string-append out sep (car xs))))))))
+
+    (define (key-list->string keys)
+      (join-strings
+        (let loop ((xs keys)
+                   (out '()))
+          (if (null? xs)
+              (reverse out)
+              (loop (cdr xs) (cons (key->string (car xs)) out))))
+        ","))
+
+    (define (fragment-list->string fragments)
+      (join-strings
+        (let loop ((xs fragments)
+                   (out '()))
+          (if (null? xs)
+              (reverse out)
+              (loop (cdr xs) (cons (miniscript->string (car xs)) out))))
+        ","))
+
+    (define (miniscript->string fragment)
+      (: miniscript-fragment? -> string?)
+      (let ((kind (miniscript-fragment-kind fragment)))
+        (cond ((eq? kind 'one)
+               "1")
+              ((eq? kind 'pk-k)
+               (string-append "pk_k(" (key->string (miniscript-fragment-data fragment)) ")"))
+              ((eq? kind 'pk-h)
+               (string-append "pk_h(" (key->string (miniscript-fragment-data fragment)) ")"))
+              ((eq? kind 'pk)
+               (string-append "pk(" (key->string (miniscript-fragment-data fragment)) ")"))
+              ((eq? kind 'after)
+               (string-append "after(" (number->string (miniscript-fragment-data fragment)) ")"))
+              ((eq? kind 'older)
+               (string-append "older(" (number->string (miniscript-fragment-data fragment)) ")"))
+              ((eq? kind 'multi)
+               (string-append "multi("
+                              (number->string (miniscript-fragment-data fragment))
+                              ","
+                              (key-list->string (miniscript-fragment-args fragment))
+                              ")"))
+              ((eq? kind 'sortedmulti)
+               (string-append "sortedmulti("
+                              (number->string (miniscript-fragment-data fragment))
+                              ","
+                              (key-list->string (miniscript-fragment-args fragment))
+                              ")"))
+              ((eq? kind 'and-v)
+               (string-append "and_v(" (fragment-list->string (miniscript-fragment-args fragment)) ")"))
+              ((eq? kind 'and-b)
+               (string-append "and_b(" (fragment-list->string (miniscript-fragment-args fragment)) ")"))
+              ((eq? kind 'or-d)
+               (string-append "or_d(" (fragment-list->string (miniscript-fragment-args fragment)) ")"))
+              ((eq? kind 'thresh)
+               (string-append "thresh("
+                              (number->string (miniscript-fragment-data fragment))
+                              ","
+                              (fragment-list->string (miniscript-fragment-args fragment))
+                              ")"))
+              ((eq? kind 'wrapper)
+               (string-append (miniscript-fragment-data fragment)
+                              ":"
+                              (miniscript->string (car (miniscript-fragment-args fragment)))))
+              (else
+               (error "miniscript->string: unsupported fragment")))))
 
     (define (integer->script-number n)
       (unless (and (integer? n) (<= 0 n #xffffffff))
@@ -185,13 +485,56 @@
             (else
              (script-push-data (integer->script-number n)))))
 
+    (define (compile-key-push key)
+      (script-push-data (key->bytevector "miniscript-compile" key)))
+
+    (define (compile-multisig fragment verify?)
+      (let ((keys (miniscript-fragment-args fragment))
+            (threshold (miniscript-fragment-data fragment)))
+        (let ((script (script-push-int threshold)))
+          (do ((xs keys (cdr xs)))
+              ((null? xs))
+            (set! script (script-append script (compile-key-push (car xs)))))
+          (script-append script
+                         (script-push-int (length keys))
+                         (script-op (if verify? op-checkmultisigverify op-checkmultisig))))))
+
+    (define (compile-wrapper wrappers child)
+      (cond ((string=? wrappers "c")
+             (let ((kind (miniscript-fragment-kind child)))
+               (cond ((eq? kind 'pk-k)
+                      (script-append (miniscript-compile child) (script-op op-checksig)))
+                     ((eq? kind 'pk-h)
+                      (script-append (miniscript-compile child) (script-op op-checksig)))
+                     (else
+                      (error "miniscript-compile: c wrapper currently supports pk_k/pk_h")))))
+            ((string=? wrappers "v")
+             (script-append (miniscript-compile child) (script-op op-verify)))
+            ((string=? wrappers "j")
+             (miniscript-compile child))
+            ((string=? wrappers "s")
+             (script-append (script-op op-swap) (miniscript-compile child)))
+            (else
+             (error "miniscript-compile: unsupported wrapper"))))
+
     (define (miniscript-compile fragment)
       (: miniscript-fragment? -> bytevector?)
       (miniscript-type-check fragment)
       (let ((kind (miniscript-fragment-kind fragment)))
-        (cond ((eq? kind 'pk-k)
+        (cond ((eq? kind 'one)
+               (script-op op-1))
+              ((eq? kind 'pk-k)
+               (compile-key-push (miniscript-fragment-data fragment)))
+              ((eq? kind 'pk-h)
+               (let ((pubkey (key->bytevector "miniscript-compile" (miniscript-fragment-data fragment))))
+                 (script-append
+                   (script-op op-dup)
+                   (script-op op-hash160)
+                   (script-push-data (hash160 pubkey))
+                   (script-op op-equalverify))))
+              ((eq? kind 'pk)
                (script-append
-                 (script-push-data (miniscript-fragment-data fragment))
+                 (compile-key-push (miniscript-fragment-data fragment))
                  (script-op op-checksig)))
               ((eq? kind 'after)
                (script-append
@@ -201,9 +544,229 @@
                (script-append
                  (script-push-int (miniscript-fragment-data fragment))
                  (script-op op-checksequenceverify)))
+              ((or (eq? kind 'multi) (eq? kind 'sortedmulti))
+               (compile-multisig fragment #f))
               ((eq? kind 'and-v)
                (script-append
                  (miniscript-compile (car (miniscript-fragment-args fragment)))
                  (miniscript-compile (cadr (miniscript-fragment-args fragment)))))
+              ((eq? kind 'wrapper)
+               (compile-wrapper
+                 (miniscript-fragment-data fragment)
+                 (car (miniscript-fragment-args fragment))))
               (else
-               (error "miniscript-compile: unsupported fragment")))))))
+               (error "miniscript-compile: unsupported fragment")))))
+
+    (define (descriptor-pkh key)
+      (descriptor kind: 'pkh args: '() data: (require-key "descriptor-pkh" key)))
+
+    (define (descriptor-wpkh key)
+      (descriptor kind: 'wpkh args: '() data: (require-key "descriptor-wpkh" key)))
+
+    (define (descriptor-sh inner)
+      (descriptor kind: 'sh args: (list inner) data: #f))
+
+    (define (descriptor-wsh fragment)
+      (descriptor kind: 'wsh args: (list fragment) data: #f))
+
+    (define (descriptor-tr key . scripts)
+      (descriptor kind: 'tr args: scripts data: (require-key "descriptor-tr" key)))
+
+    (define (parse-descriptor-inner s)
+      (cond ((string-prefix? "pkh(" s)
+             (descriptor-pkh (parse-key-expression (function-inner "pkh" "pkh(" s))))
+            ((string-prefix? "wpkh(" s)
+             (descriptor-wpkh (parse-key-expression (function-inner "wpkh" "wpkh(" s))))
+            ((string-prefix? "sh(" s)
+             (descriptor-sh (parse-descriptor-inner (function-inner "sh" "sh(" s))))
+            ((string-prefix? "wsh(" s)
+             (descriptor-wsh (parse-fragment (function-inner "wsh" "wsh(" s))))
+            ((string-prefix? "tr(" s)
+             (let ((args (split-top-level-commas (function-inner "tr" "tr(" s))))
+               (descriptor-tr (parse-key-expression (car args)))))
+            (else
+             (error "descriptor-parse: unsupported descriptor"))))
+
+    (define (descriptor-parse s)
+      (: string? -> descriptor?)
+      (parse-descriptor-inner (strip-whitespace s)))
+
+    (define (descriptor->string desc)
+      (: descriptor? -> string?)
+      (let ((kind (descriptor-kind desc)))
+        (cond ((eq? kind 'pkh)
+               (string-append "pkh(" (key->string (descriptor-data desc)) ")"))
+              ((eq? kind 'wpkh)
+               (string-append "wpkh(" (key->string (descriptor-data desc)) ")"))
+              ((eq? kind 'sh)
+               (string-append "sh(" (descriptor->string (car (descriptor-args desc))) ")"))
+              ((eq? kind 'wsh)
+               (string-append "wsh(" (miniscript->string (car (descriptor-args desc))) ")"))
+              ((eq? kind 'tr)
+               (string-append "tr(" (key->string (descriptor-data desc)) ")"))
+              (else
+               (error "descriptor->string: unsupported descriptor")))))
+
+    (define (descriptor-redeem-script desc)
+      (let ((kind (descriptor-kind desc)))
+        (cond ((eq? kind 'pkh)
+               (script-p2pkh (hash160 (key->bytevector "descriptor-redeem-script" (descriptor-data desc)))))
+              ((eq? kind 'wpkh)
+               (script-p2wpkh (hash160 (key->bytevector "descriptor-redeem-script" (descriptor-data desc)))))
+              ((eq? kind 'wsh)
+               (miniscript-compile (car (descriptor-args desc))))
+              (else
+               (error "descriptor-redeem-script: unsupported nested descriptor")))))
+
+    (define (descriptor-script-pubkey desc)
+      (: descriptor? -> bytevector?)
+      (let ((kind (descriptor-kind desc)))
+        (cond ((eq? kind 'pkh)
+               (script-p2pkh (hash160 (key->bytevector "descriptor-script-pubkey" (descriptor-data desc)))))
+              ((eq? kind 'wpkh)
+               (script-p2wpkh (hash160 (key->bytevector "descriptor-script-pubkey" (descriptor-data desc)))))
+              ((eq? kind 'sh)
+               (script-p2sh (hash160 (descriptor-redeem-script (car (descriptor-args desc))))))
+              ((eq? kind 'wsh)
+               (script-p2wsh (sha256-bytes (miniscript-compile (car (descriptor-args desc))))))
+              (else
+               (error "descriptor-script-pubkey: unsupported descriptor")))))
+
+    (define (list-ref-safe xs i)
+      (cond ((< i 0)
+             #f)
+            ((null? xs)
+             #f)
+            ((= i 0)
+             (car xs))
+            (else
+             (list-ref-safe (cdr xs) (- i 1)))))
+
+    (define (placeholder-index key)
+      (unless (placeholder-key? key)
+        (error "wallet-policy: expected key placeholder"))
+      (let loop ((i 1)
+                 (digits ""))
+        (if (or (>= i (string-length key))
+                (not (decimal-digit (string-ref key i))))
+            (begin
+              (when (= 0 (string-length digits))
+                (error "wallet-policy: empty key placeholder index"))
+              (when (and (> (string-length digits) 1)
+                         (char=? #\0 (string-ref digits 0)))
+                (error "wallet-policy: key placeholder has leading zeros"))
+              (list (parse-decimal digits "wallet-policy") (substring key i (string-length key))))
+            (loop (+ i 1) (string-append digits (string (string-ref key i)))))))
+
+    (define (string-contains-placeholder? s)
+      (let ((found #f))
+        (do ((i 0 (+ i 1)))
+            ((>= i (string-length s)) found)
+          (when (char=? #\@ (string-ref s i))
+            (set! found #t)))))
+
+    (define (wallet-policy-expand-key key keys)
+      (if (and (string? key) (placeholder-key? key))
+          (let* ((parts (placeholder-index key))
+                 (index (car parts))
+                 (suffix (cadr parts))
+                 (key-info (list-ref-safe keys index)))
+            (unless key-info
+              (error "wallet-policy: missing key info for placeholder"))
+            (string-append
+              key-info
+              (if (string=? suffix "/**") "/<0;1>/*" suffix)))
+          (key->string key)))
+
+    (define (key-list->string-with-keys keys policy-keys)
+      (join-strings
+        (let loop ((xs keys)
+                   (out '()))
+          (if (null? xs)
+              (reverse out)
+              (loop (cdr xs) (cons (wallet-policy-expand-key (car xs) policy-keys) out))))
+        ","))
+
+    (define (miniscript->string-with-keys fragment keys)
+      (let ((kind (miniscript-fragment-kind fragment)))
+        (cond ((eq? kind 'pk-k)
+               (string-append "pk_k(" (wallet-policy-expand-key (miniscript-fragment-data fragment) keys) ")"))
+              ((eq? kind 'pk-h)
+               (string-append "pk_h(" (wallet-policy-expand-key (miniscript-fragment-data fragment) keys) ")"))
+              ((eq? kind 'pk)
+               (string-append "pk(" (wallet-policy-expand-key (miniscript-fragment-data fragment) keys) ")"))
+              ((or (eq? kind 'multi) (eq? kind 'sortedmulti))
+               (string-append
+                 (if (eq? kind 'multi) "multi(" "sortedmulti(")
+                 (number->string (miniscript-fragment-data fragment))
+                 ","
+                 (key-list->string-with-keys (miniscript-fragment-args fragment) keys)
+                 ")"))
+              ((eq? kind 'wrapper)
+               (string-append
+                 (miniscript-fragment-data fragment)
+                 ":"
+                 (miniscript->string-with-keys (car (miniscript-fragment-args fragment)) keys)))
+              ((eq? kind 'and-v)
+               (string-append
+                 "and_v("
+                 (miniscript->string-with-keys (car (miniscript-fragment-args fragment)) keys)
+                 ","
+                 (miniscript->string-with-keys (cadr (miniscript-fragment-args fragment)) keys)
+                 ")"))
+              ((eq? kind 'and-b)
+               (string-append
+                 "and_b("
+                 (miniscript->string-with-keys (car (miniscript-fragment-args fragment)) keys)
+                 ","
+                 (miniscript->string-with-keys (cadr (miniscript-fragment-args fragment)) keys)
+                 ")"))
+              ((eq? kind 'or-d)
+               (string-append
+                 "or_d("
+                 (miniscript->string-with-keys (car (miniscript-fragment-args fragment)) keys)
+                 ","
+                 (miniscript->string-with-keys (cadr (miniscript-fragment-args fragment)) keys)
+                 ")"))
+              ((eq? kind 'thresh)
+               (string-append
+                 "thresh("
+                 (number->string (miniscript-fragment-data fragment))
+                 ","
+                 (join-strings
+                   (let loop ((xs (miniscript-fragment-args fragment))
+                              (out '()))
+                     (if (null? xs)
+                         (reverse out)
+                         (loop (cdr xs) (cons (miniscript->string-with-keys (car xs) keys) out))))
+                   ",")
+                 ")"))
+              (else
+               (miniscript->string fragment)))))
+
+    (define (descriptor->string-with-keys desc keys)
+      (let ((kind (descriptor-kind desc)))
+        (cond ((eq? kind 'pkh)
+               (string-append "pkh(" (wallet-policy-expand-key (descriptor-data desc) keys) ")"))
+              ((eq? kind 'wpkh)
+               (string-append "wpkh(" (wallet-policy-expand-key (descriptor-data desc) keys) ")"))
+              ((eq? kind 'sh)
+               (string-append "sh(" (descriptor->string-with-keys (car (descriptor-args desc)) keys) ")"))
+              ((eq? kind 'wsh)
+               (string-append "wsh(" (miniscript->string-with-keys (car (descriptor-args desc)) keys) ")"))
+              ((eq? kind 'tr)
+               (string-append "tr(" (wallet-policy-expand-key (descriptor-data desc) keys) ")"))
+              (else
+               (error "wallet-policy: unsupported descriptor template")))))
+
+    (define (wallet-policy-from-template template keys)
+      (: string? list? -> wallet-policy?)
+      (unless (string-contains-placeholder? template)
+        (error "wallet-policy: descriptor template must contain a key placeholder"))
+      (wallet-policy template: (descriptor-parse template) keys: keys))
+
+    (define (wallet-policy-descriptor policy)
+      (: wallet-policy? -> string?)
+      (descriptor->string-with-keys
+        (wallet-policy-template policy)
+        (wallet-policy-keys policy)))))

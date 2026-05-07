@@ -6,7 +6,10 @@
     op-0 op-pushdata1 op-pushdata2 op-pushdata4
     op-1 op-2 op-3 op-4 op-5 op-6 op-7 op-8
     op-9 op-10 op-11 op-12 op-13 op-14 op-15 op-16
-    op-dup op-hash160 op-equal op-equalverify op-checksig
+    op-if op-notif op-else op-endif op-verify
+    op-dup op-hash160 op-equal op-equalverify op-swap
+    op-add op-booland op-checksig op-checksigverify
+    op-checkmultisig op-checkmultisigverify
     op-checklocktimeverify op-checksequenceverify
     script-empty
     script-op
@@ -40,11 +43,22 @@
     (define op-14 #x5e)
     (define op-15 #x5f)
     (define op-16 #x60)
+    (define op-if #x63)
+    (define op-notif #x64)
+    (define op-else #x67)
+    (define op-endif #x68)
+    (define op-verify #x69)
     (define op-dup #x76)
+    (define op-swap #x7c)
     (define op-hash160 #xa9)
     (define op-equal #x87)
     (define op-equalverify #x88)
+    (define op-add #x93)
+    (define op-booland #x9a)
     (define op-checksig #xac)
+    (define op-checksigverify #xad)
+    (define op-checkmultisig #xae)
+    (define op-checkmultisigverify #xaf)
     (define op-checklocktimeverify #xb1)
     (define op-checksequenceverify #xb2)
 

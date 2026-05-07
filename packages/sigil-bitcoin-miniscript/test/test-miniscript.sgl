@@ -8,16 +8,39 @@
 (define %pk-k-text
   "pk_k(0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798)")
 
+(define %pk-text
+  "pk(0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798)")
+
+(define %second-pub
+  (hex-decode "03f028892bad7ed57d2fb57bf33081d5cfcf6f9ed3d3d7f159c2e2fff579dc341a"))
+
+(define %second-pub-text
+  "03f028892bad7ed57d2fb57bf33081d5cfcf6f9ed3d3d7f159c2e2fff579dc341a")
+
+(define %bip388-xpub
+  "[6738736c/44'/0'/0']xpub6Br37sWxruYfT8ASpCjVHKGwgdnYFEn98DwiN76i2oyY6fgH1LAPmmDcF46xjxJr22gw4jmVjTE2E3URMnRPEPYyo1zoPSUba563ESMXCeb")
+
+(define %bip388-xpub-2
+  "[b2b1f0cf/44'/0'/0'/100']xpub6EYajCJHe2CK53RLVXrN14uWoEttZgrRSaRztujsXg7yRhGtHmLBt9ot9Pd5ugfwWEu6eWyJYKSshyvZFKDXiNbBcoK42KRZbxwjRQpm5Js")
+
+(define %bip388-xpub-3
+  "[a666a867/44'/0'/0'/100']xpub6Dgsze3ujLi1EiHoCtHFMS9VLS1UheVqxrHGfP7sBJ2DBfChEUHV4MDwmxAXR2ayeytpwm3zJEU3H3pjCR6q6U5sP2p2qzAD71x9z5QShK2")
+
 (test-group "miniscript AST"
   (test "constructs pk_k fragment"
     (let ((fragment (miniscript-pk-k %generator-pub)))
       (assert-true (miniscript-fragment? fragment))
       (assert-equal 'pk-k (miniscript-fragment-kind fragment))
-      (assert-equal 'B (miniscript-type fragment))))
+      (assert-equal 'K (miniscript-type fragment))))
 
   (test "constructs locktime fragments"
     (assert-equal 'after (miniscript-fragment-kind (miniscript-after 500)))
-    (assert-equal 'older (miniscript-fragment-kind (miniscript-older 12)))))
+    (assert-equal 'older (miniscript-fragment-kind (miniscript-older 12))))
+
+  (test "constructs multisig fragments"
+    (let ((fragment (miniscript-multi 2 (list %generator-pub %second-pub))))
+      (assert-equal 'multi (miniscript-fragment-kind fragment))
+      (assert-equal 'B (miniscript-type fragment)))))
 
 (test-group "miniscript parser"
   (test "parses pk_k"
@@ -25,21 +48,39 @@
       (assert-equal 'pk-k (miniscript-fragment-kind fragment))
       (assert-equal %generator-pub (miniscript-fragment-data fragment))))
 
+  (test "parses rust-miniscript style symbolic keys and wrappers"
+    (let ((fragment (miniscript-parse "and_v(v:pk(A),older(12960))")))
+      (assert-equal "and_v(v:pk(A),older(12960))"
+                    (miniscript->string fragment))
+      (assert-true (miniscript-type-check fragment))))
+
   (test "parses nested and_v"
     (let ((fragment (miniscript-parse
-                      (string-append "and_v(after(500), " %pk-k-text ")"))))
+                      (string-append "and_v(after(500), " %pk-text ")"))))
       (assert-equal 'and-v (miniscript-fragment-kind fragment))
       (assert-true (miniscript-type-check fragment))))
 
+  (test "parses thresh policy from BIP388 examples"
+    (let ((fragment (miniscript-parse
+                      "thresh(3,pk(@0/**),s:pk(@1/**),s:pk(@2/**),sln:older(12960))")))
+      (assert-equal
+        "thresh(3,pk(@0/**),s:pk(@1/**),s:pk(@2/**),sln:older(12960))"
+        (miniscript->string fragment))))
+
   (test "rejects unsupported fragments"
-    (assert-error (miniscript-parse "or_b(after(1),older(2))"))
+    (assert-error (miniscript-parse "andor(after(1),older(2),pk(A))"))
     (assert-error (miniscript-parse "pk_k(00)"))))
 
 (test-group "miniscript compiler"
-  (test "compiles pk_k to push pubkey checksig"
+  (test "compiles pk_k to push pubkey"
+    (assert-equal
+      "210279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+      (hex-encode (miniscript-compile (miniscript-parse %pk-k-text)))))
+
+  (test "compiles pk alias to checksig"
     (assert-equal
       "210279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798ac"
-      (hex-encode (miniscript-compile (miniscript-parse %pk-k-text)))))
+      (hex-encode (miniscript-compile (miniscript-parse %pk-text)))))
 
   (test "compiles after"
     (assert-equal "02f401b1"
@@ -55,6 +96,75 @@
       (hex-encode
         (miniscript-compile
           (miniscript-parse
-            (string-append "and_v(after(500)," %pk-k-text ")")))))))
+            (string-append "and_v(after(500)," %pk-text ")"))))))
+
+  (test "compiles multi"
+    (assert-equal
+      (string-append
+        "52"
+        "210279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+        "21" %second-pub-text
+        "52ae")
+      (hex-encode
+        (miniscript-compile
+          (miniscript-parse
+            (string-append "multi(2,0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798,"
+                           %second-pub-text ")")))))))
+
+(test-group "descriptors"
+  (test "parses descriptors and serializes canonically"
+    (let ((desc (descriptor-parse (string-append "wsh(" %pk-text ")"))))
+      (assert-equal (string-append "wsh(" %pk-text ")")
+                    (descriptor->string desc))))
+
+  (test "compiles wpkh descriptor scriptPubKey"
+    (assert-equal
+      "0014751e76e8199196d454941c45d1b3a323f1433bd6"
+      (hex-encode
+        (descriptor-script-pubkey
+          (descriptor-parse
+            "wpkh(0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798)")))))
+
+  (test "compiles wsh descriptor scriptPubKey shape"
+    (let ((script (descriptor-script-pubkey
+                    (descriptor-parse (string-append "wsh(" %pk-text ")")))))
+      (assert-equal 34 (bytevector-length script))
+      (assert-equal "0020" (substring (hex-encode script) 0 4)))))
+
+(test-group "BIP388 wallet policies"
+  (test "expands /** to multipath descriptor"
+    (let ((policy (wallet-policy-from-template
+                    "pkh(@0/**)"
+                    (list %bip388-xpub))))
+      (assert-equal
+        (string-append
+          "pkh(" %bip388-xpub "/<0;1>/*)")
+        (wallet-policy-descriptor policy))))
+
+  (test "expands miniscript descriptor templates"
+    (let ((policy (wallet-policy-from-template
+                    "wsh(thresh(3,pk(@0/**),s:pk(@1/**),s:pk(@2/**),sln:older(12960)))"
+                    (list %bip388-xpub %bip388-xpub-2 %bip388-xpub-3))))
+      (assert-equal
+        (string-append
+          "wsh(thresh(3,"
+          "pk(" %bip388-xpub "/<0;1>/*),"
+          "s:pk(" %bip388-xpub-2 "/<0;1>/*),"
+          "s:pk(" %bip388-xpub-3 "/<0;1>/*),"
+          "sln:older(12960)))")
+        (wallet-policy-descriptor policy))))
+
+  (test "rejects missing key info"
+    (assert-error
+      (wallet-policy-descriptor
+        (wallet-policy-from-template "wpkh(@1/**)" (list %bip388-xpub)))))
+
+  (test "rejects invalid wallet policy placeholders"
+    (assert-error (wallet-policy-from-template
+                    "wpkh(0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798)"
+                    (list %bip388-xpub)))
+    (assert-error
+      (wallet-policy-descriptor
+        (wallet-policy-from-template "wpkh(@01/**)" (list %bip388-xpub))))))
 
 (run-tests)
