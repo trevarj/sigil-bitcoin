@@ -378,6 +378,19 @@
       (assert-equal (miniscript-compile (miniscript-parse %pk-text))
                     (descriptor-psbt-plan-witness-script plan))))
 
+  (test "hashes Taproot leaves and branches"
+    (let* ((leaf-script (miniscript-compile (miniscript-parse %pk-text)))
+           (branch-desc (descriptor-parse
+                          (string-append
+                            "tr(" %generator-pub-text ",{older(10),after(500)})")))
+           (branch-tree (car (descriptor-args branch-desc))))
+      (assert-equal
+        "d17fdb6ff1bf9e6b45038c039b59a2821a8a56a02b0770ab51575218dc903196"
+        (hex-encode (taproot-leaf-hash leaf-script)))
+      (assert-equal
+        "b5325f5d107c72beb3e1eaaea3b138468ea0c96824c6ce4712597c5aeeead463"
+        (hex-encode (taproot-tree-root branch-tree)))))
+
   (if %native-secp256k1?
     (begin
       (test "derives BIP389 xpub descriptor keys"
@@ -522,6 +535,34 @@
                                (tagged-hash "TapTweak" %bip327-aggregate-xonly)))
              (expected (script-p2tr (secp256k1-pubkey-xonly tweaked-pubkey))))
         (assert-equal expected (descriptor-script-pubkey desc))))
+    (test-skip "native secp256k1 module is not linked in direct workspace runner"
+      #t))
+
+  (if %native-secp256k1?
+    (test "compiles Taproot descriptor script-tree scriptPubKey"
+      (let* ((leaf-desc (descriptor-parse
+                          (string-append
+                            "tr(" %generator-pub-text ",pk(" %second-pub-text "))")))
+             (leaf-script (miniscript-compile
+                            (miniscript-parse
+                              (string-append "pk(" %second-pub-text ")"))))
+             (internal-xonly (secp256k1-pubkey-xonly %generator-pub))
+             (leaf-root (taproot-leaf-hash leaf-script))
+             (tweak (tagged-hash
+                      "TapTweak"
+                      (bytevector-append internal-xonly leaf-root)))
+             (expected (script-p2tr
+                         (secp256k1-pubkey-xonly
+                           (secp256k1-xonly-pubkey-tweak-add internal-xonly tweak)))))
+        (assert-equal expected (descriptor-script-pubkey leaf-desc)))
+      (let ((left-first (descriptor-parse
+                          (string-append
+                            "tr(" %generator-pub-text ",{older(10),after(500)})")))
+            (right-first (descriptor-parse
+                           (string-append
+                             "tr(" %generator-pub-text ",{after(500),older(10)})"))))
+        (assert-equal (descriptor-script-pubkey left-first)
+                      (descriptor-script-pubkey right-first))))
     (test-skip "native secp256k1 module is not linked in direct workspace runner"
       #t)))
 

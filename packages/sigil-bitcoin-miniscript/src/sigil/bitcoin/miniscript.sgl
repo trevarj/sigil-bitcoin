@@ -53,6 +53,9 @@
     descriptor-add-checksum
     descriptor-checksum-valid?
     descriptor-strip-checksum
+    taproot-leaf-hash
+    taproot-branch-hash
+    taproot-tree-root
     descriptor-derive
     descriptor-script-pubkey
     descriptor-derive-script-pubkey
@@ -449,8 +452,43 @@
              (secp256k1-pubkey-xonly
                (key->compressed-pubkey-bytevector who key)))))
 
-    (define (taproot-output-xonly internal-xonly)
-      (let* ((tweak (tagged-hash "TapTweak" internal-xonly))
+    (define %taproot-leaf-version #xc0)
+
+    (define (bytevector-lexicographic<? left right)
+      (let ((llen (bytevector-length left))
+            (rlen (bytevector-length right)))
+        (let loop ((i 0))
+          (cond ((and (= i llen) (= i rlen)) #f)
+                ((= i llen) #t)
+                ((= i rlen) #f)
+                ((< (bytevector-u8-ref left i) (bytevector-u8-ref right i)) #t)
+                ((> (bytevector-u8-ref left i) (bytevector-u8-ref right i)) #f)
+                (else (loop (+ i 1)))))))
+
+    ;;; Compute the BIP341 TapLeaf hash for a tapscript leaf.
+    (define (taproot-leaf-hash script)
+      (: bytevector? -> bytevector?)
+      (tagged-hash
+        "TapLeaf"
+        (bytevector-append
+          (make-bytevector 1 %taproot-leaf-version)
+          (compact-size-encode (bytevector-length script))
+          script)))
+
+    ;;; Compute the BIP341 TapBranch hash with lexicographically sorted children.
+    (define (taproot-branch-hash left right)
+      (: bytevector? bytevector? -> bytevector?)
+      (let* ((right-first? (bytevector-lexicographic<? right left))
+             (a (if right-first? right left))
+             (b (if right-first? left right)))
+        (tagged-hash "TapBranch" (bytevector-append a b))))
+
+    (define (taproot-output-xonly internal-xonly . maybe-merkle-root)
+      (let* ((merkle-root (if (null? maybe-merkle-root) #f (car maybe-merkle-root)))
+             (tweak-data (if merkle-root
+                             (bytevector-append internal-xonly merkle-root)
+                             internal-xonly))
+             (tweak (tagged-hash "TapTweak" tweak-data))
              (output-pubkey (secp256k1-xonly-pubkey-tweak-add internal-xonly tweak)))
         (secp256k1-pubkey-xonly output-pubkey)))
 
@@ -1252,6 +1290,18 @@
             (else
              (error "descriptor->string: unsupported Taproot script tree"))))
 
+    ;;; Compile a parsed Taproot script tree into its BIP341 Merkle root.
+    (define (taproot-tree-root tree)
+      (: any? -> bytevector?)
+      (cond ((miniscript-fragment? tree)
+             (taproot-leaf-hash (miniscript-compile tree)))
+            ((tapbranch? tree)
+             (taproot-branch-hash
+               (taproot-tree-root (tapbranch-left tree))
+               (taproot-tree-root (tapbranch-right tree))))
+            (else
+             (error "taproot-tree-root: unsupported Taproot script tree"))))
+
     (define %descriptor-input-charset
       (string-append
         "0123456789()[],'/*abcdefgh@:$%{}"
@@ -1446,11 +1496,15 @@
               ((eq? kind 'wsh)
                (script-p2wsh (sha256-bytes (miniscript-compile (car (descriptor-args desc))))))
               ((eq? kind 'tr)
-               (unless (null? (descriptor-args desc))
-                 (error "descriptor-script-pubkey: Taproot script trees are not compiled yet"))
-               (script-p2tr
-                 (taproot-output-xonly
-                   (key->xonly-bytevector "descriptor-script-pubkey" (descriptor-data desc)))))
+               (let ((internal-xonly (key->xonly-bytevector
+                                       "descriptor-script-pubkey"
+                                       (descriptor-data desc))))
+                 (script-p2tr
+                   (if (null? (descriptor-args desc))
+                       (taproot-output-xonly internal-xonly)
+                       (taproot-output-xonly
+                         internal-xonly
+                         (taproot-tree-root (car (descriptor-args desc))))))))
               (else
                (error "descriptor-script-pubkey: unsupported descriptor")))))
 

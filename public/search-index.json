@@ -805,6 +805,20 @@
     "summary": "Get the `change?` field of a `descriptor-psbt-plan` struct."
   },
   {
+    "name": "taproot-leaf-hash",
+    "kind": "procedure",
+    "module": "(sigil bitcoin miniscript)",
+    "url": "api/sigil/bitcoin/miniscript.html#taproot-leaf-hash",
+    "summary": "Compute the BIP341 TapLeaf hash for a tapscript leaf."
+  },
+  {
+    "name": "taproot-branch-hash",
+    "kind": "procedure",
+    "module": "(sigil bitcoin miniscript)",
+    "url": "api/sigil/bitcoin/miniscript.html#taproot-branch-hash",
+    "summary": "Compute the BIP341 TapBranch hash with lexicographically sorted children."
+  },
+  {
     "name": "miniscript-pk-k",
     "kind": "procedure",
     "module": "(sigil bitcoin miniscript)",
@@ -985,6 +999,13 @@
     "module": "(sigil bitcoin miniscript)",
     "url": "api/sigil/bitcoin/miniscript.html#miniscript-compile",
     "summary": "Compile a supported Miniscript fragment into script bytes."
+  },
+  {
+    "name": "taproot-tree-root",
+    "kind": "procedure",
+    "module": "(sigil bitcoin miniscript)",
+    "url": "api/sigil/bitcoin/miniscript.html#taproot-tree-root",
+    "summary": "Compile a parsed Taproot script tree into its BIP341 Merkle root."
   },
   {
     "name": "descriptor-checksum",
