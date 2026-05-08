@@ -95,6 +95,8 @@
     final-script-sig: #u8()
     final-script-witness: '()
     taproot-key-sig: #f
+    taproot-script-sigs: '()
+    taproot-leaf-scripts: '()
     redeem-script: #f
     witness-script: #f
     bip32-derivations: '()

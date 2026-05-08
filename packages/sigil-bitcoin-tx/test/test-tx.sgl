@@ -134,6 +134,8 @@
     final-script-sig: #u8()
     final-script-witness: '()
     taproot-key-sig: #f
+    taproot-script-sigs: '()
+    taproot-leaf-scripts: '()
     redeem-script: #f
     witness-script: #f
     bip32-derivations: '()
@@ -525,6 +527,13 @@
     (let* ((global-unknowns (list (cons #u8(#xfb) #u8(#x01 #x02))))
            (input-unknowns (list (cons #u8(#xfc #x01 #x99) #u8(#xaa))))
            (output-unknowns (list (cons #u8(#xfc #x02 #x77) #u8(#xbb #xcc))))
+           (taproot-script-sig-key (bytevector-append %psbt-test-xonly %psbt-test-xonly))
+           (taproot-script-sig (bytevector-append %psbt-test-xonly %psbt-test-xonly))
+           (taproot-leaf-script
+             (psbt-taproot-leaf-script
+               control-block: (bytevector-append #u8(#xc0) %psbt-test-xonly)
+               script: #u8(#x51)
+               leaf-version: #xc0))
            (input
              (psbt-input
                non-witness-utxo: #f
@@ -534,6 +543,8 @@
                final-script-sig: #u8()
                final-script-witness: '()
                taproot-key-sig: #f
+               taproot-script-sigs: (list (cons taproot-script-sig-key taproot-script-sig))
+               taproot-leaf-scripts: (list taproot-leaf-script)
                redeem-script: #f
                witness-script: %p2wsh-witness-script
                bip32-derivations: (list (cons %psbt-test-pubkey %psbt-test-origin))
@@ -561,6 +572,15 @@
                     (psbt-input-bip32-derivations parsed-input))
       (assert-equal (list (cons %psbt-test-xonly %psbt-test-taproot-origin))
                     (psbt-input-taproot-bip32-derivations parsed-input))
+      (assert-equal (list (cons taproot-script-sig-key taproot-script-sig))
+                    (psbt-input-taproot-script-sigs parsed-input))
+      (let ((parsed-leaf-script (car (psbt-input-taproot-leaf-scripts parsed-input))))
+        (assert-equal (psbt-taproot-leaf-script-control-block taproot-leaf-script)
+                      (psbt-taproot-leaf-script-control-block parsed-leaf-script))
+        (assert-equal (psbt-taproot-leaf-script-script taproot-leaf-script)
+                      (psbt-taproot-leaf-script-script parsed-leaf-script))
+        (assert-equal (psbt-taproot-leaf-script-leaf-version taproot-leaf-script)
+                      (psbt-taproot-leaf-script-leaf-version parsed-leaf-script)))
       (assert-equal %p2wsh-witness-script
                     (psbt-input-witness-script parsed-input))
       (assert-equal (list (cons %psbt-test-pubkey %psbt-test-origin))
