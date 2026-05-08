@@ -67,11 +67,13 @@
     psbt-sign-p2wpkh-input
     psbt-sign-p2wsh-input
     psbt-sign-p2tr-keypath-input
+    psbt-sign-p2tr-scriptpath-input
     psbt-sign-standard-input
     psbt-finalize-p2pkh-input
     psbt-finalize-p2wpkh-input
     psbt-finalize-p2wsh-input
     psbt-finalize-p2tr-keypath-input
+    psbt-finalize-p2tr-scriptpath-input
     psbt-finalize-standard-input
     psbt-extract-transaction)
   (begin
@@ -688,6 +690,53 @@
                    (bytevector-append
                      (make-bytevector 1 leaf-version)
                      (bytes-with-length script))))
+
+    (define (bytevector-lexicographic<? left right)
+      (let ((llen (bytevector-length left))
+            (rlen (bytevector-length right)))
+        (let loop ((i 0))
+          (cond ((and (= i llen) (= i rlen)) #f)
+                ((= i llen) #t)
+                ((= i rlen) #f)
+                ((< (bytevector-u8-ref left i) (bytevector-u8-ref right i)) #t)
+                ((> (bytevector-u8-ref left i) (bytevector-u8-ref right i)) #f)
+                (else (loop (+ i 1)))))))
+
+    (define (taproot-branch-hash left right)
+      (let* ((right-first? (bytevector-lexicographic<? right left))
+             (a (if right-first? right left))
+             (b (if right-first? left right)))
+        (tagged-hash "TapBranch" (bytevector-append a b))))
+
+    (define (taproot-control-block-merkle-root leaf-hash control-block)
+      (validate-taproot-control-block "taproot control block" control-block)
+      (let loop ((offset 33)
+                 (root leaf-hash))
+        (if (>= offset (bytevector-length control-block))
+            root
+            (loop (+ offset 32)
+                  (taproot-branch-hash
+                    root
+                    (bytevector-copy control-block offset (+ offset 32)))))))
+
+    (define (taproot-control-block-internal-key control-block)
+      (validate-taproot-control-block "taproot control block" control-block)
+      (bytevector-copy control-block 1 33))
+
+    (define (taproot-control-block-leaf-version control-block)
+      (bitwise-and (bytevector-u8-ref control-block 0) #xfe))
+
+    (define (taproot-control-block-output-xonly leaf-hash control-block)
+      (let* ((internal (taproot-control-block-internal-key control-block))
+             (root (taproot-control-block-merkle-root leaf-hash control-block))
+             (tweaked (secp256k1-xonly-pubkey-tweak-add
+                        internal
+                        (tagged-hash "TapTweak"
+                                     (bytevector-append internal root))))
+             (parity (if (= #x03 (bytevector-u8-ref tweaked 0)) 1 0)))
+        (unless (= parity (bitwise-and (bytevector-u8-ref control-block 0) 1))
+          (error "taproot control block: output key parity mismatch"))
+        (secp256k1-pubkey-xonly tweaked)))
 
     (define (taproot-sigmsg-base tx input-index prevouts sighash-type spend-type who)
       (validate-transaction tx)
@@ -1845,6 +1894,55 @@
           (bytevector-copy script 1 34)
           #f))
 
+    (define (tapscript-pk-checksig-pubkey script)
+      (if (and (= 34 (bytevector-length script))
+               (= #x20 (bytevector-u8-ref script 0))
+               (= op-checksig (bytevector-u8-ref script 33)))
+          (bytevector-copy script 1 33)
+          #f))
+
+    (define (p2tr-script-xonly script)
+      (if (and (= 34 (bytevector-length script))
+               (= op-1 (bytevector-u8-ref script 0))
+               (= #x20 (bytevector-u8-ref script 1)))
+          (bytevector-copy script 2 34)
+          #f))
+
+    (define (taproot-leaf-script-hash leaf-script)
+      (taproot-leaf-hash
+        (psbt-taproot-leaf-script-script leaf-script)
+        (psbt-taproot-leaf-script-leaf-version leaf-script)))
+
+    (define (find-taproot-leaf-for-pubkey leaf-scripts xonly-pubkey who)
+      (let loop ((xs leaf-scripts))
+        (cond ((null? xs)
+               (error (string-append who ": missing Taproot leaf script for key")))
+              ((let* ((leaf-script (car xs))
+                      (script (psbt-taproot-leaf-script-script leaf-script))
+                      (script-key (tapscript-pk-checksig-pubkey script)))
+                 (and script-key (equal? script-key xonly-pubkey)))
+               (car xs))
+              (else (loop (cdr xs))))))
+
+    (define (find-taproot-script-sig script-sigs xonly-pubkey leaf-hash who)
+      (let ((wanted-key (bytevector-append xonly-pubkey leaf-hash)))
+        (let loop ((xs script-sigs))
+          (cond ((null? xs)
+                 (error (string-append who ": missing Taproot script signature")))
+                ((equal? wanted-key (car (car xs))) (cdr (car xs)))
+                (else (loop (cdr xs)))))))
+
+    (define (verify-taproot-leaf-prevout utxo leaf-script leaf-hash who)
+      (let* ((script (txout-script-pubkey utxo))
+             (expected-xonly (p2tr-script-xonly script)))
+        (unless expected-xonly
+          (error (string-append who ": UTXO is not P2TR")))
+        (unless (equal? expected-xonly
+                        (taproot-control-block-output-xonly
+                          leaf-hash
+                          (psbt-taproot-leaf-script-control-block leaf-script)))
+          (error (string-append who ": Taproot control block does not match UTXO")))))
+
     ;;; Add a legacy P2PKH partial signature to a PSBT input.
     ;;;
     ;;; The input must contain the previous transaction as a non-witness UTXO.
@@ -2016,6 +2114,56 @@
                    unknowns: (psbt-input-unknowns input))))
           (psbt-update-input p input-index signed-input))))
 
+    ;;; Add a Taproot script-path signature for a single-key checksig leaf.
+    (define (psbt-sign-p2tr-scriptpath-input p input-index private-key)
+      (: psbt? integer? bytevector? -> psbt?)
+      (validate-psbt p)
+      (let* ((input (nth-item (psbt-inputs p) input-index "psbt-sign-p2tr-scriptpath-input"))
+             (prevouts (psbt-prevouts p "psbt-sign-p2tr-scriptpath-input"))
+             (utxo (nth-item prevouts input-index "psbt-sign-p2tr-scriptpath-input"))
+             (keypair (secp256k1-keypair-create private-key))
+             (xonly-pubkey (secp256k1-keypair-xonly-pub keypair))
+             (leaf-script (find-taproot-leaf-for-pubkey
+                            (psbt-input-taproot-leaf-scripts input)
+                            xonly-pubkey
+                            "psbt-sign-p2tr-scriptpath-input"))
+             (script (psbt-taproot-leaf-script-script leaf-script))
+             (leaf-version (psbt-taproot-leaf-script-leaf-version leaf-script))
+             (leaf-hash (taproot-leaf-script-hash leaf-script))
+             (sighash-type (psbt-input-sighash-or-default input sighash-default)))
+        (verify-taproot-leaf-prevout
+          utxo
+          leaf-script
+          leaf-hash
+          "psbt-sign-p2tr-scriptpath-input")
+        (let* ((msghash (transaction-sighash-taproot-scriptpath
+                          (psbt-unsigned-tx p)
+                          input-index
+                          prevouts
+                          script
+                          leaf-version
+                          sighash-type))
+               (sig (taproot-keypath-signature keypair msghash sighash-type))
+               (sig-key (bytevector-append xonly-pubkey leaf-hash))
+               (signed-input
+                 (psbt-input
+                   non-witness-utxo: (psbt-input-non-witness-utxo input)
+                   witness-utxo: (psbt-input-witness-utxo input)
+                   partial-sigs: (psbt-input-partial-sigs input)
+                   sighash-type: sighash-type
+                   final-script-sig: (psbt-input-final-script-sig input)
+                   final-script-witness: (psbt-input-final-script-witness input)
+                   taproot-key-sig: (psbt-input-taproot-key-sig input)
+                   taproot-script-sigs: (append (psbt-input-taproot-script-sigs input)
+                                                (list (cons sig-key sig)))
+                   taproot-leaf-scripts: (psbt-input-taproot-leaf-scripts input)
+                   redeem-script: (psbt-input-redeem-script input)
+                   witness-script: (psbt-input-witness-script input)
+                   bip32-derivations: (psbt-input-bip32-derivations input)
+                   taproot-bip32-derivations: (psbt-input-taproot-bip32-derivations input)
+                   unknowns: (psbt-input-unknowns input))))
+          (psbt-update-input p input-index signed-input))))
+
     ;;; Sign a standard P2PKH, P2WPKH, or key-path P2TR PSBT input.
     (define (psbt-sign-standard-input p input-index private-key)
       (: psbt? integer? bytevector? -> psbt?)
@@ -2146,6 +2294,46 @@
                   taproot-bip32-derivations: (psbt-input-taproot-bip32-derivations input)
                   unknowns: (psbt-input-unknowns input))))
           (psbt-update-input p input-index final-input))))
+
+    ;;; Finalize a signed Taproot script-path PSBT input.
+    (define (psbt-finalize-p2tr-scriptpath-input p input-index)
+      (: psbt? integer? -> psbt?)
+      (validate-psbt p)
+      (let* ((input (nth-item (psbt-inputs p) input-index "psbt-finalize-p2tr-scriptpath-input"))
+             (leaf-scripts (psbt-input-taproot-leaf-scripts input)))
+        (when (null? leaf-scripts)
+          (error "psbt-finalize-p2tr-scriptpath-input: missing Taproot leaf script"))
+        (let* ((leaf-script (car leaf-scripts))
+               (script (psbt-taproot-leaf-script-script leaf-script))
+               (script-key (tapscript-pk-checksig-pubkey script))
+               (leaf-hash (taproot-leaf-script-hash leaf-script)))
+          (unless script-key
+            (error "psbt-finalize-p2tr-scriptpath-input: unsupported Taproot leaf script"))
+          (let* ((sig (find-taproot-script-sig
+                        (psbt-input-taproot-script-sigs input)
+                        script-key
+                        leaf-hash
+                        "psbt-finalize-p2tr-scriptpath-input"))
+                 (final-input
+                   (psbt-input
+                     non-witness-utxo: (psbt-input-non-witness-utxo input)
+                     witness-utxo: (psbt-input-witness-utxo input)
+                     partial-sigs: (psbt-input-partial-sigs input)
+                     sighash-type: (psbt-input-sighash-type input)
+                     final-script-sig: #u8()
+                     final-script-witness: (list
+                                             sig
+                                             script
+                                             (psbt-taproot-leaf-script-control-block leaf-script))
+                     taproot-key-sig: (psbt-input-taproot-key-sig input)
+                     taproot-script-sigs: (psbt-input-taproot-script-sigs input)
+                     taproot-leaf-scripts: leaf-scripts
+                     redeem-script: (psbt-input-redeem-script input)
+                     witness-script: (psbt-input-witness-script input)
+                     bip32-derivations: (psbt-input-bip32-derivations input)
+                     taproot-bip32-derivations: (psbt-input-taproot-bip32-derivations input)
+                     unknowns: (psbt-input-unknowns input))))
+            (psbt-update-input p input-index final-input)))))
 
     ;;; Finalize a standard P2PKH, P2WPKH, or key-path P2TR PSBT input.
     (define (psbt-finalize-standard-input p input-index)

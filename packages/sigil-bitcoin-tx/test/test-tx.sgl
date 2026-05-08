@@ -125,6 +125,24 @@
          (tweak (tagged-hash "TapTweak" internal-xonly)))
     (secp256k1-keypair-xonly-tweak-add keypair tweak)))
 
+(define (taproot-test-leaf-hash script)
+  (tagged-hash "TapLeaf"
+               (bytevector-append #u8(#xc0)
+                                  (compact-size-encode (bytevector-length script))
+                                  script)))
+
+(define (taproot-script-output-data internal-key script)
+  (let* ((leaf-hash (taproot-test-leaf-hash script))
+         (tweak (tagged-hash "TapTweak"
+                             (bytevector-append internal-key leaf-hash)))
+         (tweaked (secp256k1-xonly-pubkey-tweak-add internal-key tweak))
+         (output-xonly (secp256k1-pubkey-xonly tweaked))
+         (parity (if (= #x03 (bytevector-u8-ref tweaked 0)) 1 0))
+         (control-block (bytevector-append
+                          (make-bytevector 1 (+ #xc0 parity))
+                          internal-key)))
+    (list output-xonly control-block)))
+
 (define (empty-test-psbt-input non-witness-utxo witness-utxo)
   (psbt-input
     non-witness-utxo: non-witness-utxo
@@ -718,8 +736,57 @@
              (finalized (psbt-finalize-p2tr-keypath-input parsed 0))
              (extracted (psbt-extract-transaction finalized))
              (witness (txin-witness (car (transaction-inputs extracted)))))
-        (assert-equal 64 (bytevector-length (psbt-input-taproot-key-sig signed-input)))
-        (assert-equal 1 (length witness))
+	        (assert-equal 64 (bytevector-length (psbt-input-taproot-key-sig signed-input)))
+	        (assert-equal 1 (length witness))
+	        (assert-true (transaction-has-witness? extracted))))
+
+    (test "signs, finalizes, and extracts P2TR script-path transaction"
+      (let* ((keypair (secp256k1-keypair-create %one))
+             (xonly (secp256k1-keypair-xonly-pub keypair))
+             (script (script-append (script-push-data xonly)
+                                    (script-op op-checksig)))
+             (output-data (taproot-script-output-data xonly script))
+             (output-xonly (car output-data))
+             (control-block (cadr output-data))
+             (prevout (txout value: 1000 script-pubkey: (script-p2tr output-xonly)))
+             (leaf-script (psbt-taproot-leaf-script
+                            control-block: control-block
+                            script: script
+                            leaf-version: #xc0))
+             (p (psbt
+                  unsigned-tx: %witness-tx
+                  inputs: (list
+                    (psbt-input
+                      non-witness-utxo: #f
+                      witness-utxo: prevout
+                      partial-sigs: '()
+                      sighash-type: #f
+                      final-script-sig: #u8()
+                      final-script-witness: '()
+                      taproot-key-sig: #f
+                      taproot-script-sigs: '()
+                      taproot-leaf-scripts: (list leaf-script)
+                      redeem-script: #f
+                      witness-script: #f
+                      bip32-derivations: '()
+                      taproot-bip32-derivations: '()
+                      unknowns: '()))
+                  outputs: (list (empty-test-psbt-output))
+                  unknowns: '()))
+             (signed (psbt-sign-p2tr-scriptpath-input p 0 %one))
+             (signed-input (car (psbt-inputs signed)))
+             (parsed (psbt-parse (psbt-serialize signed)))
+             (finalized (psbt-finalize-p2tr-scriptpath-input parsed 0))
+             (extracted (psbt-extract-transaction finalized))
+             (witness (txin-witness (car (transaction-inputs extracted))))
+             (sig (car witness))
+             (msghash (transaction-sighash-taproot-scriptpath
+                        %witness-tx 0 (list prevout) script #xc0)))
+        (assert-equal 1 (length (psbt-input-taproot-script-sigs signed-input)))
+        (assert-equal 3 (length witness))
+        (assert-true (secp256k1-schnorrsig-verify sig msghash xonly))
+        (assert-equal script (cadr witness))
+        (assert-equal control-block (caddr witness))
         (assert-true (transaction-has-witness? extracted)))))
   (test-group "PSBT signing"
     (test-skip "native secp256k1 module is not linked in direct workspace runner"
