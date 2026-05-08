@@ -2081,12 +2081,16 @@
     ;;; Attach descriptor-derived metadata to a PSBT input.
     (define (descriptor-psbt-plan-annotate-input p input-index plan)
       (: psbt? integer? descriptor-psbt-plan? -> psbt?)
-      (psbt-annotate-input
-        p
+      (psbt-annotate-input-scripts
+        (psbt-annotate-input
+          p
+          input-index
+          (descriptor-psbt-plan-script-pubkey plan)
+          (descriptor-psbt-plan-bip32-derivations plan)
+          (descriptor-psbt-plan-taproot-bip32-derivations plan))
         input-index
-        (descriptor-psbt-plan-script-pubkey plan)
-        (descriptor-psbt-plan-bip32-derivations plan)
-        (descriptor-psbt-plan-taproot-bip32-derivations plan)))
+        (descriptor-psbt-plan-redeem-script plan)
+        (descriptor-psbt-plan-witness-script plan)))
 
     ;;; Attach descriptor-derived metadata to a PSBT output.
     (define (descriptor-psbt-plan-annotate-output p output-index plan)

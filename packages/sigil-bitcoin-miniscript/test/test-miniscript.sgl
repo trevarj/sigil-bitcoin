@@ -95,6 +95,8 @@
     final-script-sig: #u8()
     final-script-witness: '()
     taproot-key-sig: #f
+    redeem-script: #f
+    witness-script: #f
     bip32-derivations: '()
     taproot-bip32-derivations: '()
     unknowns: '()))
@@ -445,6 +447,18 @@
                (witness (txin-witness (car (transaction-inputs extracted)))))
           (assert-equal 2 (length witness))
           (assert-true (transaction-has-witness? extracted))))
+
+      (test "signs and finalizes WSH descriptor PSBT plans"
+        (let* ((desc (descriptor-parse (string-append "wsh(" %pk-text ")")))
+               (plan (descriptor-derive-psbt-plan desc 0 0))
+               (p (single-input-psbt (descriptor-psbt-plan-script-pubkey plan)))
+               (signed (descriptor-psbt-plan-sign-input p 0 plan %one))
+               (finalized (descriptor-psbt-plan-finalize-input signed 0 plan))
+               (extracted (psbt-extract-transaction finalized))
+               (witness (txin-witness (car (transaction-inputs extracted)))))
+          (assert-equal 2 (length witness))
+          (assert-equal (descriptor-psbt-plan-witness-script plan)
+                        (cadr witness))))
 
       (test "derives xpub keys inside miniscript fragments"
         (let* ((desc (descriptor-parse

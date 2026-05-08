@@ -1,4 +1,5 @@
 (import (sigil test)
+        (sigil crypto)
         (sigil secp256k1)
         (sigil bitcoin encoding)
         (sigil bitcoin primitives)
@@ -27,9 +28,15 @@
   #u8(#x75 #x1e #x76 #xe8 #x19 #x91 #x96 #xd4 #x54 #x94
       #x1c #x45 #xd1 #xb3 #xa3 #x23 #xf1 #x43 #x3b #xd6))
 
+(define %generator-pub
+  (hex-decode "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"))
+
 (define %p2pkh-script (script-p2pkh %pubkey-hash))
 
 (define %p2wpkh-script (script-p2wpkh %pubkey-hash))
+
+(define %p2wsh-witness-script
+  (script-append (script-push-data %generator-pub) (script-op op-checksig)))
 
 (define %p2wpkh-utxo
   (txout value: 1000 script-pubkey: %p2wpkh-script))
@@ -127,6 +134,8 @@
     final-script-sig: #u8()
     final-script-witness: '()
     taproot-key-sig: #f
+    redeem-script: #f
+    witness-script: #f
     bip32-derivations: '()
     taproot-bip32-derivations: '()
     unknowns: '()))
@@ -525,6 +534,8 @@
                final-script-sig: #u8()
                final-script-witness: '()
                taproot-key-sig: #f
+               redeem-script: #f
+               witness-script: %p2wsh-witness-script
                bip32-derivations: (list (cons %psbt-test-pubkey %psbt-test-origin))
                taproot-bip32-derivations: (list (cons %psbt-test-xonly
                                                        %psbt-test-taproot-origin))
@@ -550,6 +561,8 @@
                     (psbt-input-bip32-derivations parsed-input))
       (assert-equal (list (cons %psbt-test-xonly %psbt-test-taproot-origin))
                     (psbt-input-taproot-bip32-derivations parsed-input))
+      (assert-equal %p2wsh-witness-script
+                    (psbt-input-witness-script parsed-input))
       (assert-equal (list (cons %psbt-test-pubkey %psbt-test-origin))
                     (psbt-output-bip32-derivations parsed-output))
       (assert-equal (list (cons %psbt-test-xonly %psbt-test-taproot-origin))
@@ -600,6 +613,26 @@
              (witness (txin-witness (car (transaction-inputs extracted)))))
         (assert-equal 1 (length (psbt-input-partial-sigs signed-input)))
         (assert-equal 2 (length witness))
+        (assert-true (transaction-has-witness? extracted))))
+
+    (test "signs, finalizes, and extracts P2WSH single-key transaction"
+      (let* ((prevout (txout value: 1000
+                             script-pubkey: (script-p2wsh
+                                              (sha256-bytes %p2wsh-witness-script))))
+             (p (psbt
+                  unsigned-tx: %witness-tx
+                  inputs: (list
+                    (empty-test-psbt-input #f prevout))
+                  outputs: (list (empty-test-psbt-output))
+                  unknowns: '()))
+             (with-script (psbt-annotate-input-scripts p 0 #f %p2wsh-witness-script))
+             (signed (psbt-sign-standard-input with-script 0 %one))
+             (parsed (psbt-parse (psbt-serialize signed)))
+             (finalized (psbt-finalize-standard-input parsed 0))
+             (extracted (psbt-extract-transaction finalized))
+             (witness (txin-witness (car (transaction-inputs extracted)))))
+        (assert-equal 2 (length witness))
+        (assert-equal %p2wsh-witness-script (cadr witness))
         (assert-true (transaction-has-witness? extracted))))
 
     (test "signs, finalizes, and extracts P2PKH transaction"

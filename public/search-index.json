@@ -1827,6 +1827,20 @@
     "summary": "Get the `taproot-key-sig` field of a `psbt-input` struct."
   },
   {
+    "name": "psbt-input-redeem-script",
+    "kind": "procedure",
+    "module": "(sigil bitcoin tx)",
+    "url": "api/sigil/bitcoin/tx.html#psbt-input-redeem-script",
+    "summary": "Get the `redeem-script` field of a `psbt-input` struct."
+  },
+  {
+    "name": "psbt-input-witness-script",
+    "kind": "procedure",
+    "module": "(sigil bitcoin tx)",
+    "url": "api/sigil/bitcoin/tx.html#psbt-input-witness-script",
+    "summary": "Get the `witness-script` field of a `psbt-input` struct."
+  },
+  {
     "name": "psbt-input-bip32-derivations",
     "kind": "procedure",
     "module": "(sigil bitcoin tx)",
@@ -2051,6 +2065,13 @@
     "summary": "Attach BIP32 derivation metadata to a PSBT input after script matching."
   },
   {
+    "name": "psbt-annotate-input-scripts",
+    "kind": "procedure",
+    "module": "(sigil bitcoin tx)",
+    "url": "api/sigil/bitcoin/tx.html#psbt-annotate-input-scripts",
+    "summary": "Attach redeem or witness scripts to a PSBT input map."
+  },
+  {
     "name": "psbt-annotate-output",
     "kind": "procedure",
     "module": "(sigil bitcoin tx)",
@@ -2070,6 +2091,13 @@
     "module": "(sigil bitcoin tx)",
     "url": "api/sigil/bitcoin/tx.html#psbt-sign-p2wpkh-input",
     "summary": "Add a P2WPKH partial signature to a PSBT input."
+  },
+  {
+    "name": "psbt-sign-p2wsh-input",
+    "kind": "procedure",
+    "module": "(sigil bitcoin tx)",
+    "url": "api/sigil/bitcoin/tx.html#psbt-sign-p2wsh-input",
+    "summary": "Add a P2WSH partial signature for a single-key checksig witness script."
   },
   {
     "name": "psbt-sign-p2tr-keypath-input",
@@ -2098,6 +2126,13 @@
     "module": "(sigil bitcoin tx)",
     "url": "api/sigil/bitcoin/tx.html#psbt-finalize-p2wpkh-input",
     "summary": "Finalize a signed P2WPKH PSBT input."
+  },
+  {
+    "name": "psbt-finalize-p2wsh-input",
+    "kind": "procedure",
+    "module": "(sigil bitcoin tx)",
+    "url": "api/sigil/bitcoin/tx.html#psbt-finalize-p2wsh-input",
+    "summary": "Finalize a signed P2WSH single-key checksig PSBT input."
   },
   {
     "name": "psbt-finalize-p2tr-keypath-input",
