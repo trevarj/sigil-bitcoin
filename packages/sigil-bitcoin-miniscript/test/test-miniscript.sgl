@@ -224,6 +224,11 @@
       "210279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798ac"
       (hex-encode (miniscript-compile (miniscript-parse %pk-text)))))
 
+  (test "compiles tapscript keys as x-only pubkeys"
+    (assert-equal
+      "2079be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798ac"
+      (hex-encode (miniscript-compile-tapscript (miniscript-parse %pk-text)))))
+
   (test "compiles after"
     (assert-equal "02f401b1"
                   (hex-encode (miniscript-compile (miniscript-after 500)))))
@@ -379,13 +384,13 @@
                     (descriptor-psbt-plan-witness-script plan))))
 
   (test "hashes Taproot leaves and branches"
-    (let* ((leaf-script (miniscript-compile (miniscript-parse %pk-text)))
+    (let* ((leaf-script (miniscript-compile-tapscript (miniscript-parse %pk-text)))
            (branch-desc (descriptor-parse
                           (string-append
                             "tr(" %generator-pub-text ",{older(10),after(500)})")))
            (branch-tree (car (descriptor-args branch-desc))))
       (assert-equal
-        "d17fdb6ff1bf9e6b45038c039b59a2821a8a56a02b0770ab51575218dc903196"
+        "763e9da064b9dc0471fb0f3c8fa2c84b4b84d2ca992497c12d2274386795aa8e"
         (hex-encode (taproot-leaf-hash leaf-script)))
       (assert-equal
         "b5325f5d107c72beb3e1eaaea3b138468ea0c96824c6ce4712597c5aeeead463"
@@ -543,7 +548,7 @@
       (let* ((leaf-desc (descriptor-parse
                           (string-append
                             "tr(" %generator-pub-text ",pk(" %second-pub-text "))")))
-             (leaf-script (miniscript-compile
+             (leaf-script (miniscript-compile-tapscript
                             (miniscript-parse
                               (string-append "pk(" %second-pub-text ")"))))
              (internal-xonly (secp256k1-pubkey-xonly %generator-pub))

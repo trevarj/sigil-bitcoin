@@ -45,6 +45,7 @@
     miniscript-type-check
     miniscript->string
     miniscript-compile
+    miniscript-compile-tapscript
     descriptor descriptor?
     descriptor-kind descriptor-args descriptor-data
     descriptor-parse
@@ -451,6 +452,17 @@
             (else
              (secp256k1-pubkey-xonly
                (key->compressed-pubkey-bytevector who key)))))
+
+    (define (key->tapscript-bytevector who key)
+      (cond ((musig-key? key)
+             (key->xonly-bytevector who key))
+            (else
+             (let ((pubkey (key->bytevector who key)))
+               (unless (and (= 33 (bytevector-length pubkey))
+                            (or (= 2 (bytevector-u8-ref pubkey 0))
+                                (= 3 (bytevector-u8-ref pubkey 0))))
+                 (error (string-append who ": expected concrete compressed public key")))
+               (bytevector-copy pubkey 1 33)))))
 
     (define %taproot-leaf-version #xc0)
 
@@ -1066,16 +1078,21 @@
             (else
              (script-push-data (integer->script-number n)))))
 
-    (define (compile-key-push key)
-      (script-push-data (key->bytevector "miniscript-compile" key)))
+    (define (compile-key-push key tapscript?)
+      (script-push-data
+        (if tapscript?
+            (key->tapscript-bytevector "miniscript-compile-tapscript" key)
+            (key->bytevector "miniscript-compile" key))))
 
-    (define (compile-multisig fragment verify?)
+    (define (compile-multisig fragment verify? tapscript?)
+      (when tapscript?
+        (error "miniscript-compile-tapscript: multi/sortedmulti needs tapscript CHECKSIGADD support"))
       (let ((keys (miniscript-fragment-args fragment))
             (threshold (miniscript-fragment-data fragment)))
         (let ((script (script-push-int threshold)))
           (do ((xs keys (cdr xs)))
               ((null? xs))
-            (set! script (script-append script (compile-key-push (car xs)))))
+            (set! script (script-append script (compile-key-push (car xs) tapscript?))))
           (script-append script
                          (script-push-int (length keys))
                          (script-op (if verify? op-checkmultisigverify op-checkmultisig))))))
@@ -1089,49 +1106,57 @@
         (script-push-data expected)
         (script-op op-equal)))
 
-    (define (compile-thresh fragment)
+    (define (compile-thresh fragment tapscript?)
       (let ((fragments (miniscript-fragment-args fragment))
             (threshold (miniscript-fragment-data fragment)))
-        (let ((script (miniscript-compile (car fragments))))
+        (let ((script (compile-fragment (car fragments) tapscript?)))
           (do ((xs (cdr fragments) (cdr xs)))
               ((null? xs))
             (set! script
                   (script-append script
-                                 (miniscript-compile (car xs))
+                                 (compile-fragment (car xs) tapscript?)
                                  (script-op op-add))))
           (script-append script
                          (script-push-int threshold)
                          (script-op op-equal)))))
 
-    (define (compile-wrapper wrappers child)
+    (define (compile-wrapper wrappers child tapscript?)
       (cond ((string=? wrappers "c")
              (let ((kind (miniscript-fragment-kind child)))
                (cond ((eq? kind 'pk-k)
-                      (script-append (miniscript-compile child) (script-op op-checksig)))
+                      (script-append
+                        (compile-fragment child tapscript?)
+                        (script-op op-checksig)))
                      ((eq? kind 'pk-h)
-                      (script-append (miniscript-compile child) (script-op op-checksig)))
+                      (script-append
+                        (compile-fragment child tapscript?)
+                        (script-op op-checksig)))
                      (else
                       (error "miniscript-compile: c wrapper currently supports pk_k/pk_h")))))
             ((string=? wrappers "v")
-             (script-append (miniscript-compile child) (script-op op-verify)))
+             (script-append (compile-fragment child tapscript?) (script-op op-verify)))
             ((string=? wrappers "j")
-             (miniscript-compile child))
+             (compile-fragment child tapscript?))
             ((string=? wrappers "s")
-             (script-append (script-op op-swap) (miniscript-compile child)))
+             (script-append (script-op op-swap) (compile-fragment child tapscript?)))
             (else
              (error "miniscript-compile: unsupported wrapper"))))
 
-    ;;; Compile a supported Miniscript fragment into script bytes.
-    (define (miniscript-compile fragment)
-      (: miniscript-fragment? -> bytevector?)
+    (define (compile-fragment fragment tapscript?)
       (miniscript-type-check fragment)
       (let ((kind (miniscript-fragment-kind fragment)))
         (cond ((eq? kind 'one)
                (script-op op-1))
               ((eq? kind 'pk-k)
-               (compile-key-push (miniscript-fragment-data fragment)))
+               (compile-key-push (miniscript-fragment-data fragment) tapscript?))
               ((eq? kind 'pk-h)
-               (let ((pubkey (key->bytevector "miniscript-compile" (miniscript-fragment-data fragment))))
+               (let ((pubkey (if tapscript?
+                                 (key->tapscript-bytevector
+                                   "miniscript-compile-tapscript"
+                                   (miniscript-fragment-data fragment))
+                                 (key->bytevector
+                                   "miniscript-compile"
+                                   (miniscript-fragment-data fragment)))))
                  (script-append
                    (script-op op-dup)
                    (script-op op-hash160)
@@ -1139,7 +1164,7 @@
                    (script-op op-equalverify))))
               ((eq? kind 'pk)
                (script-append
-                 (compile-key-push (miniscript-fragment-data fragment))
+                 (compile-key-push (miniscript-fragment-data fragment) tapscript?)
                  (script-op op-checksig)))
               ((eq? kind 'after)
                (script-append
@@ -1158,57 +1183,68 @@
               ((eq? kind 'hash160)
                (compile-hashlock op-hash160 (miniscript-fragment-data fragment)))
               ((or (eq? kind 'multi) (eq? kind 'sortedmulti))
-               (compile-multisig fragment #f))
+               (compile-multisig fragment #f tapscript?))
               ((eq? kind 'and-v)
                (script-append
-                 (miniscript-compile (car (miniscript-fragment-args fragment)))
-                 (miniscript-compile (cadr (miniscript-fragment-args fragment)))))
+                 (compile-fragment (car (miniscript-fragment-args fragment)) tapscript?)
+                 (compile-fragment (cadr (miniscript-fragment-args fragment)) tapscript?)))
               ((eq? kind 'and-b)
                (script-append
-                 (miniscript-compile (car (miniscript-fragment-args fragment)))
-                 (miniscript-compile (cadr (miniscript-fragment-args fragment)))
+                 (compile-fragment (car (miniscript-fragment-args fragment)) tapscript?)
+                 (compile-fragment (cadr (miniscript-fragment-args fragment)) tapscript?)
                  (script-op op-booland)))
               ((eq? kind 'andor)
                (script-append
-                 (miniscript-compile (car (miniscript-fragment-args fragment)))
+                 (compile-fragment (car (miniscript-fragment-args fragment)) tapscript?)
                  (script-op op-notif)
-                 (miniscript-compile (caddr (miniscript-fragment-args fragment)))
+                 (compile-fragment (caddr (miniscript-fragment-args fragment)) tapscript?)
                  (script-op op-else)
-                 (miniscript-compile (cadr (miniscript-fragment-args fragment)))
+                 (compile-fragment (cadr (miniscript-fragment-args fragment)) tapscript?)
                  (script-op op-endif)))
               ((eq? kind 'or-b)
                (script-append
-                 (miniscript-compile (car (miniscript-fragment-args fragment)))
-                 (miniscript-compile (cadr (miniscript-fragment-args fragment)))
+                 (compile-fragment (car (miniscript-fragment-args fragment)) tapscript?)
+                 (compile-fragment (cadr (miniscript-fragment-args fragment)) tapscript?)
                  (script-op op-boolor)))
               ((eq? kind 'or-c)
                (script-append
-                 (miniscript-compile (car (miniscript-fragment-args fragment)))
+                 (compile-fragment (car (miniscript-fragment-args fragment)) tapscript?)
                  (script-op op-notif)
-                 (miniscript-compile (cadr (miniscript-fragment-args fragment)))
+                 (compile-fragment (cadr (miniscript-fragment-args fragment)) tapscript?)
                  (script-op op-endif)))
               ((eq? kind 'or-d)
                (script-append
-                 (miniscript-compile (car (miniscript-fragment-args fragment)))
+                 (compile-fragment (car (miniscript-fragment-args fragment)) tapscript?)
                  (script-op op-ifdup)
                  (script-op op-notif)
-                 (miniscript-compile (cadr (miniscript-fragment-args fragment)))
+                 (compile-fragment (cadr (miniscript-fragment-args fragment)) tapscript?)
                  (script-op op-endif)))
               ((eq? kind 'or-i)
                (script-append
                  (script-op op-if)
-                 (miniscript-compile (car (miniscript-fragment-args fragment)))
+                 (compile-fragment (car (miniscript-fragment-args fragment)) tapscript?)
                  (script-op op-else)
-                 (miniscript-compile (cadr (miniscript-fragment-args fragment)))
+                 (compile-fragment (cadr (miniscript-fragment-args fragment)) tapscript?)
                  (script-op op-endif)))
               ((eq? kind 'thresh)
-               (compile-thresh fragment))
+               (compile-thresh fragment tapscript?))
               ((eq? kind 'wrapper)
                (compile-wrapper
                  (miniscript-fragment-data fragment)
-                 (car (miniscript-fragment-args fragment))))
+                 (car (miniscript-fragment-args fragment))
+                 tapscript?))
               (else
                (error "miniscript-compile: unsupported fragment")))))
+
+    ;;; Compile a supported Miniscript fragment into script bytes.
+    (define (miniscript-compile fragment)
+      (: miniscript-fragment? -> bytevector?)
+      (compile-fragment fragment #f))
+
+    ;;; Compile a supported Miniscript fragment into BIP342 tapscript bytes.
+    (define (miniscript-compile-tapscript fragment)
+      (: miniscript-fragment? -> bytevector?)
+      (compile-fragment fragment #t))
 
     (define (descriptor-pkh key)
       (descriptor kind: 'pkh args: '() data: (require-key "descriptor-pkh" key)))
@@ -1294,7 +1330,7 @@
     (define (taproot-tree-root tree)
       (: any? -> bytevector?)
       (cond ((miniscript-fragment? tree)
-             (taproot-leaf-hash (miniscript-compile tree)))
+             (taproot-leaf-hash (miniscript-compile-tapscript tree)))
             ((tapbranch? tree)
              (taproot-branch-hash
                (taproot-tree-root (tapbranch-left tree))

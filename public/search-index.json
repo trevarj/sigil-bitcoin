@@ -1001,6 +1001,13 @@
     "summary": "Compile a supported Miniscript fragment into script bytes."
   },
   {
+    "name": "miniscript-compile-tapscript",
+    "kind": "procedure",
+    "module": "(sigil bitcoin miniscript)",
+    "url": "api/sigil/bitcoin/miniscript.html#miniscript-compile-tapscript",
+    "summary": "Compile a supported Miniscript fragment into BIP342 tapscript bytes."
+  },
+  {
     "name": "taproot-tree-root",
     "kind": "procedure",
     "module": "(sigil bitcoin miniscript)",
