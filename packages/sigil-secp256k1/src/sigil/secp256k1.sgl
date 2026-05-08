@@ -5,7 +5,11 @@
     secp256k1-seckey-verify?
     secp256k1-pubkey-create
     secp256k1-pubkey-parse
+    secp256k1-pubkey-xonly
     secp256k1-pubkey-tweak-add
+    secp256k1-pubkey-tweak-mul
+    secp256k1-pubkey-combine
+    secp256k1-xonly-pubkey-tweak-add
     secp256k1-seckey-tweak-add
     secp256k1-ecdsa-sign
     secp256k1-ecdsa-verify
@@ -32,8 +36,24 @@
     (define-native (secp256k1-pubkey-parse pubkey)
       (: bytevector? -> (any-of bytevector? boolean?)))
 
+    ;;; Convert a serialized public key into a 32-byte x-only public key.
+    (define-native (secp256k1-pubkey-xonly pubkey)
+      (: bytevector? -> bytevector?))
+
     ;;; Add a 32-byte tweak to a serialized public key.
     (define-native (secp256k1-pubkey-tweak-add pubkey tweak)
+      (: bytevector? bytevector? -> bytevector?))
+
+    ;;; Multiply a serialized public key by a 32-byte scalar.
+    (define-native (secp256k1-pubkey-tweak-mul pubkey tweak)
+      (: bytevector? bytevector? -> bytevector?))
+
+    ;;; Add two serialized public keys and return a compressed public key.
+    (define-native (secp256k1-pubkey-combine pubkey-a pubkey-b)
+      (: bytevector? bytevector? -> bytevector?))
+
+    ;;; Add an x-only tweak to a 32-byte x-only public key.
+    (define-native (secp256k1-xonly-pubkey-tweak-add xonly-pubkey tweak)
       (: bytevector? bytevector? -> bytevector?))
 
     ;;; Add a 32-byte tweak to a secret key.

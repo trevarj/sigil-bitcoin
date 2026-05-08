@@ -5,6 +5,11 @@
 
 (define %native-secp256k1? (procedure? secp256k1-seckey-verify?))
 
+(define (scalar-byte n)
+  (let ((out (make-bytevector 32 0)))
+    (bytevector-u8-set! out 31 n)
+    out))
+
 (if %native-secp256k1?
   (begin
     (test-group "seckey-verify?"
@@ -83,6 +88,34 @@
       (assert-equal 33 (bytevector-length tweaked))
       (assert-equal expected tweaked))))
 
+(test-group "public key point operations"
+  (test "pubkey-xonly matches keypair x-only output"
+    (let* ((sk (random-bytes 32))
+           (kp (secp256k1-keypair-create sk))
+           (pk (secp256k1-pubkey-create sk)))
+      (assert-equal (secp256k1-keypair-xonly-pub kp)
+                    (secp256k1-pubkey-xonly pk))))
+  (test "pubkey-tweak-mul by one preserves the public key"
+    (let ((pk (secp256k1-pubkey-create (random-bytes 32))))
+      (assert-equal pk (secp256k1-pubkey-tweak-mul pk (scalar-byte 1)))))
+  (test "pubkey-combine matches secret-key addition"
+    (let* ((sk-a (random-bytes 32))
+           (sk-b (random-bytes 32))
+           (sk-sum (secp256k1-seckey-tweak-add sk-a sk-b))
+           (pk-a (secp256k1-pubkey-create sk-a))
+           (pk-b (secp256k1-pubkey-create sk-b)))
+      (assert-equal (secp256k1-pubkey-create sk-sum)
+                    (secp256k1-pubkey-combine pk-a pk-b))))
+  (test "xonly tweak matches keypair x-only tweak"
+    (let* ((sk (random-bytes 32))
+           (kp (secp256k1-keypair-create sk))
+           (xonly (secp256k1-keypair-xonly-pub kp))
+           (tweak (sha256-bytes "public xonly tweak"))
+           (pub-tweaked (secp256k1-xonly-pubkey-tweak-add xonly tweak))
+           (kp-tweaked (secp256k1-keypair-xonly-tweak-add kp tweak)))
+      (assert-equal (secp256k1-keypair-xonly-pub kp-tweaked)
+                    (secp256k1-pubkey-xonly pub-tweaked)))))
+
 (test-group "keypair"
   (test "create returns 96-byte keypair"
     (let ((kp (secp256k1-keypair-create (random-bytes 32))))
@@ -160,6 +193,19 @@
       (assert-error
         (secp256k1-seckey-tweak-add (random-bytes 32)
                                     (make-bytevector 31 1)))))
+
+  (test "public key point operations reject invalid input"
+    (let ((pk (secp256k1-pubkey-create (random-bytes 32))))
+      (assert-error (secp256k1-pubkey-xonly (make-bytevector 33 0)))
+      (assert-error (secp256k1-pubkey-tweak-mul pk (make-bytevector 31 1)))
+      (assert-error (secp256k1-pubkey-tweak-mul pk (make-bytevector 32 0)))
+      (assert-error (secp256k1-pubkey-combine pk (make-bytevector 33 0)))
+      (assert-error
+        (secp256k1-xonly-pubkey-tweak-add (make-bytevector 31 1)
+                                          (make-bytevector 32 1)))
+      (assert-error
+        (secp256k1-xonly-pubkey-tweak-add (secp256k1-pubkey-xonly pk)
+                                          (make-bytevector 31 1)))))
 
   (test "ecdsa rejects invalid input lengths and DER"
     (let* ((sk (random-bytes 32))

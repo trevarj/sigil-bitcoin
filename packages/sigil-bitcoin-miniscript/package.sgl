@@ -17,8 +17,21 @@
                package: "sigil-bitcoin-encoding")
     (from-path dir: "../sigil-bitcoin-script"
                package: "sigil-bitcoin-script")
+    (from-path dir: "../sigil-secp256k1"
+               package: "sigil-secp256k1")
     (from-path dir: "../../../sigil-crypto"
                package: "sigil-crypto"))
+
+  dev-dependencies: (list
+    (from-git url: "codeberg:sigil/sigil"
+              package: "sigil-stdlib" version: "^0.15")
+    (from-git url: "codeberg:sigil/sigil-ansi" version: "^0.13.1")
+    (from-git url: "codeberg:sigil/sigil-json" version: "^0.13.1")
+    (from-git url: "codeberg:sigil/sigil-version" version: "^0.13.1")
+    (from-git url: "codeberg:sigil/sigil"
+              package: "sigil-test" version: "^0.15")
+    (from-git url: "codeberg:sigil/sigil"
+              package: "sigil-test-runner" version: "^0.15"))
 
   tasks: (list
     (task

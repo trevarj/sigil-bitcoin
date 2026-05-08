@@ -140,6 +140,39 @@ static Value native_pubkey_parse(SigilVM *vm, int argc, Value *args)
     return make_bv(vm, pubkey.data, sizeof(pubkey.data));
 }
 
+static Value native_pubkey_xonly(SigilVM *vm, int argc, Value *args)
+{
+    (void)argc;
+    if (!ensure_context(vm)) return SIGIL_UNDEFINED;
+
+    secp256k1_pubkey pubkey;
+    if (!parse_serialized_pubkey(
+            vm, args[0], &pubkey,
+            "secp256k1-pubkey-xonly: expected bytevector")) {
+        sigil__vm_error(vm, SIGIL_ERR_RUNTIME,
+                        "secp256k1-pubkey-xonly: invalid pubkey");
+        return SIGIL_UNDEFINED;
+    }
+
+    secp256k1_xonly_pubkey xonly;
+    int parity = 0;
+    if (secp256k1_xonly_pubkey_from_pubkey(secp_ctx, &xonly, &parity,
+                                           &pubkey) != 1) {
+        sigil__vm_error(vm, SIGIL_ERR_RUNTIME,
+                        "secp256k1-pubkey-xonly: conversion failed");
+        return SIGIL_UNDEFINED;
+    }
+
+    unsigned char out[32];
+    if (secp256k1_xonly_pubkey_serialize(secp_ctx, out, &xonly) != 1) {
+        sigil__vm_error(vm, SIGIL_ERR_RUNTIME,
+                        "secp256k1-pubkey-xonly: serialize failed");
+        return SIGIL_UNDEFINED;
+    }
+
+    return make_bv(vm, out, sizeof(out));
+}
+
 static Value native_pubkey_tweak_add(SigilVM *vm, int argc, Value *args)
 {
     (void)argc;
@@ -168,6 +201,102 @@ static Value native_pubkey_tweak_add(SigilVM *vm, int argc, Value *args)
     }
 
     return serialize_pubkey_compressed(vm, &pubkey);
+}
+
+static Value native_pubkey_tweak_mul(SigilVM *vm, int argc, Value *args)
+{
+    (void)argc;
+    if (!ensure_context(vm)) return SIGIL_UNDEFINED;
+
+    secp256k1_pubkey pubkey;
+    if (!parse_serialized_pubkey(
+            vm, args[0], &pubkey,
+            "secp256k1-pubkey-tweak-mul: expected bytevector")) {
+        sigil__vm_error(vm, SIGIL_ERR_RUNTIME,
+                        "secp256k1-pubkey-tweak-mul: invalid pubkey");
+        return SIGIL_UNDEFINED;
+    }
+
+    const unsigned char *tweak;
+    if (!read_bv_exact(vm, args[1], 32,
+                       "secp256k1-pubkey-tweak-mul: expected 32-byte tweak",
+                       &tweak)) {
+        return SIGIL_UNDEFINED;
+    }
+
+    if (secp256k1_ec_pubkey_tweak_mul(secp_ctx, &pubkey, tweak) != 1) {
+        sigil__vm_error(vm, SIGIL_ERR_RUNTIME,
+                        "secp256k1-pubkey-tweak-mul: tweak failed");
+        return SIGIL_UNDEFINED;
+    }
+
+    return serialize_pubkey_compressed(vm, &pubkey);
+}
+
+static Value native_pubkey_combine(SigilVM *vm, int argc, Value *args)
+{
+    (void)argc;
+    if (!ensure_context(vm)) return SIGIL_UNDEFINED;
+
+    secp256k1_pubkey pubkey_a;
+    secp256k1_pubkey pubkey_b;
+    if (!parse_serialized_pubkey(
+            vm, args[0], &pubkey_a,
+            "secp256k1-pubkey-combine: expected first pubkey")) {
+        sigil__vm_error(vm, SIGIL_ERR_RUNTIME,
+                        "secp256k1-pubkey-combine: invalid first pubkey");
+        return SIGIL_UNDEFINED;
+    }
+    if (!parse_serialized_pubkey(
+            vm, args[1], &pubkey_b,
+            "secp256k1-pubkey-combine: expected second pubkey")) {
+        sigil__vm_error(vm, SIGIL_ERR_RUNTIME,
+                        "secp256k1-pubkey-combine: invalid second pubkey");
+        return SIGIL_UNDEFINED;
+    }
+
+    const secp256k1_pubkey *pubkeys[2] = {&pubkey_a, &pubkey_b};
+    secp256k1_pubkey combined;
+    if (secp256k1_ec_pubkey_combine(secp_ctx, &combined, pubkeys, 2) != 1) {
+        sigil__vm_error(vm, SIGIL_ERR_RUNTIME,
+                        "secp256k1-pubkey-combine: combine failed");
+        return SIGIL_UNDEFINED;
+    }
+
+    return serialize_pubkey_compressed(vm, &combined);
+}
+
+static Value native_xonly_pubkey_tweak_add(SigilVM *vm, int argc, Value *args)
+{
+    (void)argc;
+    if (!ensure_context(vm)) return SIGIL_UNDEFINED;
+
+    const unsigned char *xonly_data;
+    const unsigned char *tweak;
+    if (!read_bv_exact(vm, args[0], 32,
+                       "secp256k1-xonly-pubkey-tweak-add: expected 32-byte xonly pubkey",
+                       &xonly_data) ||
+        !read_bv_exact(vm, args[1], 32,
+                       "secp256k1-xonly-pubkey-tweak-add: expected 32-byte tweak",
+                       &tweak)) {
+        return SIGIL_UNDEFINED;
+    }
+
+    secp256k1_xonly_pubkey xonly;
+    if (secp256k1_xonly_pubkey_parse(secp_ctx, &xonly, xonly_data) != 1) {
+        sigil__vm_error(vm, SIGIL_ERR_RUNTIME,
+                        "secp256k1-xonly-pubkey-tweak-add: invalid xonly pubkey");
+        return SIGIL_UNDEFINED;
+    }
+
+    secp256k1_pubkey tweaked;
+    if (secp256k1_xonly_pubkey_tweak_add(secp_ctx, &tweaked, &xonly, tweak) != 1) {
+        sigil__vm_error(vm, SIGIL_ERR_RUNTIME,
+                        "secp256k1-xonly-pubkey-tweak-add: tweak failed");
+        return SIGIL_UNDEFINED;
+    }
+
+    return serialize_pubkey_compressed(vm, &tweaked);
 }
 
 static Value native_seckey_tweak_add(SigilVM *vm, int argc, Value *args)
@@ -521,9 +650,21 @@ void sigil__init_sigil_secp256k1_module(SigilVM *vm)
     REGISTER_AND_EXPORT("secp256k1-pubkey-parse",
                         native_pubkey_parse, SIGIL_ARITY_EXACT(1),
                         "Parse a serialized public key");
+    REGISTER_AND_EXPORT("secp256k1-pubkey-xonly",
+                        native_pubkey_xonly, SIGIL_ARITY_EXACT(1),
+                        "Convert a serialized public key to x-only form");
     REGISTER_AND_EXPORT("secp256k1-pubkey-tweak-add",
                         native_pubkey_tweak_add, SIGIL_ARITY_EXACT(2),
                         "Add a tweak to a public key");
+    REGISTER_AND_EXPORT("secp256k1-pubkey-tweak-mul",
+                        native_pubkey_tweak_mul, SIGIL_ARITY_EXACT(2),
+                        "Multiply a public key by a scalar tweak");
+    REGISTER_AND_EXPORT("secp256k1-pubkey-combine",
+                        native_pubkey_combine, SIGIL_ARITY_EXACT(2),
+                        "Add two public keys");
+    REGISTER_AND_EXPORT("secp256k1-xonly-pubkey-tweak-add",
+                        native_xonly_pubkey_tweak_add, SIGIL_ARITY_EXACT(2),
+                        "Add an x-only tweak to an x-only public key");
     REGISTER_AND_EXPORT("secp256k1-seckey-tweak-add",
                         native_seckey_tweak_add, SIGIL_ARITY_EXACT(2),
                         "Add a tweak to a secret key");

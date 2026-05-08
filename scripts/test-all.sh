@@ -8,8 +8,8 @@ link_package_deps() {
   mkdir -p "$package_dir/.sigil"
 
   if [ -e "$package_dir/.sigil/deps" ] && [ ! -L "$package_dir/.sigil/deps" ]; then
-    printf 'error: %s exists and is not a symlink\n' "$package_dir/.sigil/deps" >&2
-    exit 1
+    # Keep package-local caches produced by `sigil deps install`.
+    return 0
   fi
 
   # Package-local native test runs use the workspace dependency cache.
@@ -40,4 +40,11 @@ link_package_deps "$ROOT/packages/sigil-bitcoin-tx"
 cd "$ROOT/packages/sigil-bitcoin-tx"
 guix shell -m ../../manifest.scm -- \
   sigil test test/test-tx.sgl \
+    --redirects ../../dev-redirects.sgl --no-color
+
+printf '\n==> sigil-bitcoin-miniscript native harness\n'
+link_package_deps "$ROOT/packages/sigil-bitcoin-miniscript"
+cd "$ROOT/packages/sigil-bitcoin-miniscript"
+guix shell -m ../../manifest.scm -- \
+  sigil test test/test-miniscript.sgl \
     --redirects ../../dev-redirects.sgl --no-color

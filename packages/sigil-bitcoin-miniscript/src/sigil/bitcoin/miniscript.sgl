@@ -6,7 +6,8 @@
           (sigil crypto)
           (sigil bitcoin primitives)
           (sigil bitcoin encoding)
-          (sigil bitcoin script))
+          (sigil bitcoin script)
+          (sigil secp256k1))
   (export
     miniscript-fragment miniscript-fragment?
     miniscript-fragment-kind miniscript-fragment-args miniscript-fragment-data
@@ -340,6 +341,89 @@
              (hex-decode key))
             (else
              (error (string-append who ": expected concrete compressed public key")))))
+
+    (define (key->compressed-pubkey-bytevector who key)
+      (let ((pubkey (key->bytevector who key)))
+        (unless (and (= 33 (bytevector-length pubkey))
+                     (or (= 2 (bytevector-u8-ref pubkey 0))
+                         (= 3 (bytevector-u8-ref pubkey 0)))
+                     (secp256k1-pubkey-parse pubkey))
+          (error (string-append who ": expected concrete compressed public key")))
+        pubkey))
+
+    (define (bytes32-one)
+      (let ((out (make-bytevector 32 0)))
+        (bytevector-u8-set! out 31 1)
+        out))
+
+    (define (bytevector-concat-list chunks)
+      (let ((len (let loop ((xs chunks)
+                            (n 0))
+                   (if (null? xs)
+                       n
+                       (loop (cdr xs) (+ n (bytevector-length (car xs))))))))
+        (let ((out (make-bytevector len 0)))
+          (let loop ((xs chunks)
+                     (offset 0))
+            (if (null? xs)
+                out
+                (let ((chunk (car xs)))
+                  (bytevector-copy! out offset chunk)
+                  (loop (cdr xs) (+ offset (bytevector-length chunk)))))))))
+
+    (define (musig-hash-keys pubkeys)
+      (tagged-hash "KeyAgg list" (bytevector-concat-list pubkeys)))
+
+    (define (musig-second-key pubkeys)
+      (let ((first (car pubkeys)))
+        (let loop ((xs pubkeys))
+          (cond ((null? xs) (make-bytevector 33 0))
+                ((equal? (car xs) first) (loop (cdr xs)))
+                (else (car xs))))))
+
+    (define (musig-key-aggregate-pubkey key)
+      (unless (string=? "" (musig-key-suffix key))
+        (error "musig-key-aggregate: ranged musig key needs concrete derivation first"))
+      (let* ((pubkeys (let loop ((xs (musig-key-keys key))
+                                 (out '()))
+                        (if (null? xs)
+                            (reverse out)
+                            (loop (cdr xs)
+                                  (cons (key->compressed-pubkey-bytevector
+                                          "musig-key-aggregate"
+                                          (car xs))
+                                        out)))))
+             (key-list-hash (musig-hash-keys pubkeys))
+             (second-key (musig-second-key pubkeys)))
+        (let loop ((xs pubkeys)
+                   (aggregate #f))
+          (if (null? xs)
+              aggregate
+              (let* ((pubkey (car xs))
+                     (coefficient (if (equal? pubkey second-key)
+                                      (bytes32-one)
+                                      (tagged-hash
+                                        "KeyAgg coefficient"
+                                        (bytevector-append key-list-hash pubkey))))
+                     (term (if (equal? coefficient (bytes32-one))
+                               pubkey
+                               (secp256k1-pubkey-tweak-mul pubkey coefficient))))
+                (loop (cdr xs)
+                      (if aggregate
+                          (secp256k1-pubkey-combine aggregate term)
+                          term)))))))
+
+    (define (key->xonly-bytevector who key)
+      (cond ((musig-key? key)
+             (secp256k1-pubkey-xonly (musig-key-aggregate-pubkey key)))
+            (else
+             (secp256k1-pubkey-xonly
+               (key->compressed-pubkey-bytevector who key)))))
+
+    (define (taproot-output-xonly internal-xonly)
+      (let* ((tweak (tagged-hash "TapTweak" internal-xonly))
+             (output-pubkey (secp256k1-xonly-pubkey-tweak-add internal-xonly tweak)))
+        (secp256k1-pubkey-xonly output-pubkey)))
 
     (define (parse-non-musig-key-expression who s)
       (let ((key (parse-key-expression s)))
@@ -1332,6 +1416,12 @@
                (script-p2sh (hash160 (descriptor-redeem-script (car (descriptor-args desc))))))
               ((eq? kind 'wsh)
                (script-p2wsh (sha256-bytes (miniscript-compile (car (descriptor-args desc))))))
+              ((eq? kind 'tr)
+               (unless (null? (descriptor-args desc))
+                 (error "descriptor-script-pubkey: Taproot script trees are not compiled yet"))
+               (script-p2tr
+                 (taproot-output-xonly
+                   (key->xonly-bytevector "descriptor-script-pubkey" (descriptor-data desc)))))
               (else
                (error "descriptor-script-pubkey: unsupported descriptor")))))
 

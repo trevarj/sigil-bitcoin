@@ -1,6 +1,11 @@
 (import (sigil test)
         (sigil bitcoin encoding)
-        (sigil bitcoin miniscript))
+        (sigil bitcoin primitives)
+        (sigil bitcoin script)
+        (sigil bitcoin miniscript)
+        (sigil secp256k1))
+
+(define %native-secp256k1? (procedure? secp256k1-pubkey-xonly))
 
 (define %generator-pub
   (hex-decode "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"))
@@ -19,6 +24,18 @@
 
 (define %second-pub-text
   "03f028892bad7ed57d2fb57bf33081d5cfcf6f9ed3d3d7f159c2e2fff579dc341a")
+
+(define %bip327-pub-0
+  "02F9308A019258C31049344F85F89D5229B531C845836F99B08601F113BCE036F9")
+
+(define %bip327-pub-1
+  "03DFF1D77F2A671C5F36183726DB2341BE58FEAE1DA2DECED843240F7B502BA659")
+
+(define %bip327-pub-2
+  "023590A94E768F8E1815C2F24B4D80A8E3149316C3518CE7B7AD338368D038CA66")
+
+(define %bip327-aggregate-xonly
+  (hex-decode "90539EEDE565F5D054F32CC0C220126889ED1E5D193BAF15AEF344FE59D4610C"))
 
 (define %zero-sha256
   "0000000000000000000000000000000000000000000000000000000000000000")
@@ -286,7 +303,23 @@
     (let ((script (descriptor-script-pubkey
                     (descriptor-parse (string-append "wsh(" %pk-text ")")))))
       (assert-equal 34 (bytevector-length script))
-      (assert-equal "0020" (substring (hex-encode script) 0 4)))))
+      (assert-equal "0020" (substring (hex-encode script) 0 4))))
+
+  (if %native-secp256k1?
+    (test "compiles musig Taproot descriptor scriptPubKey"
+      (let* ((desc (descriptor-parse
+                     (string-append
+                       "tr(musig("
+                       %bip327-pub-0 ","
+                       %bip327-pub-1 ","
+                       %bip327-pub-2 "))")))
+             (tweaked-pubkey (secp256k1-xonly-pubkey-tweak-add
+                               %bip327-aggregate-xonly
+                               (tagged-hash "TapTweak" %bip327-aggregate-xonly)))
+             (expected (script-p2tr (secp256k1-pubkey-xonly tweaked-pubkey))))
+        (assert-equal expected (descriptor-script-pubkey desc))))
+    (test-skip "native secp256k1 module is not linked in direct workspace runner"
+      #t)))
 
 (test-group "BIP388 wallet policies"
   (test "expands /** to multipath descriptor"

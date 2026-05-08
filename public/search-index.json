@@ -1988,11 +1988,39 @@
     "summary": "Parse a 33-byte or 65-byte serialized public key."
   },
   {
+    "name": "secp256k1-pubkey-xonly",
+    "kind": "procedure",
+    "module": "(sigil secp256k1)",
+    "url": "api/sigil/secp256k1.html#secp256k1-pubkey-xonly",
+    "summary": "Convert a serialized public key into a 32-byte x-only public key."
+  },
+  {
     "name": "secp256k1-pubkey-tweak-add",
     "kind": "procedure",
     "module": "(sigil secp256k1)",
     "url": "api/sigil/secp256k1.html#secp256k1-pubkey-tweak-add",
     "summary": "Add a 32-byte tweak to a serialized public key."
+  },
+  {
+    "name": "secp256k1-pubkey-tweak-mul",
+    "kind": "procedure",
+    "module": "(sigil secp256k1)",
+    "url": "api/sigil/secp256k1.html#secp256k1-pubkey-tweak-mul",
+    "summary": "Multiply a serialized public key by a 32-byte scalar."
+  },
+  {
+    "name": "secp256k1-pubkey-combine",
+    "kind": "procedure",
+    "module": "(sigil secp256k1)",
+    "url": "api/sigil/secp256k1.html#secp256k1-pubkey-combine",
+    "summary": "Add two serialized public keys and return a compressed public key."
+  },
+  {
+    "name": "secp256k1-xonly-pubkey-tweak-add",
+    "kind": "procedure",
+    "module": "(sigil secp256k1)",
+    "url": "api/sigil/secp256k1.html#secp256k1-xonly-pubkey-tweak-add",
+    "summary": "Add an x-only tweak to a 32-byte x-only public key."
   },
   {
     "name": "secp256k1-seckey-tweak-add",
