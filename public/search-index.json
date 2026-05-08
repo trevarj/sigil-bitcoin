@@ -973,6 +973,20 @@
     "summary": "Derive the scriptPubKey for a descriptor."
   },
   {
+    "name": "descriptor-derive",
+    "kind": "procedure",
+    "module": "(sigil bitcoin miniscript)",
+    "url": "api/sigil/bitcoin/miniscript.html#descriptor-derive",
+    "summary": "Derive ranged descriptor keys into concrete public keys."
+  },
+  {
+    "name": "descriptor-derive-script-pubkey",
+    "kind": "procedure",
+    "module": "(sigil bitcoin miniscript)",
+    "url": "api/sigil/bitcoin/miniscript.html#descriptor-derive-script-pubkey",
+    "summary": "Derive a ranged descriptor and return its concrete scriptPubKey."
+  },
+  {
     "name": "wallet-policy-from-template",
     "kind": "procedure",
     "module": "(sigil bitcoin miniscript)",

@@ -6,6 +6,7 @@
           (sigil crypto)
           (sigil bitcoin primitives)
           (sigil bitcoin encoding)
+          (sigil bitcoin keys)
           (sigil bitcoin script)
           (sigil secp256k1))
   (export
@@ -51,7 +52,9 @@
     descriptor-add-checksum
     descriptor-checksum-valid?
     descriptor-strip-checksum
+    descriptor-derive
     descriptor-script-pubkey
+    descriptor-derive-script-pubkey
     wallet-policy wallet-policy?
     wallet-policy-template wallet-policy-keys
     wallet-policy-from-template
@@ -260,7 +263,8 @@
                                (if close (+ close 1) (string-length key)))
                              0))
                   (rest (substring key start (string-length key))))
-             (string-prefix? "xpub" rest))))
+             (or (string-prefix? "xpub" rest)
+                 (string-prefix? "tpub" rest)))))
 
     (define (valid-musig-suffix? suffix)
       (or (string=? suffix "")
@@ -1434,6 +1438,213 @@
              (car xs))
             (else
              (list-ref-safe (cdr xs) (- i 1)))))
+
+    (define (require-derivation-index who n)
+      (unless (and (integer? n) (>= n 0) (< n #x80000000))
+        (error (string-append who ": expected non-hardened child index")))
+      n)
+
+    (define (key-expression-body key)
+      (if (and (> (string-length key) 0)
+               (char=? #\[ (string-ref key 0)))
+          (let ((close (string-index-char key #\])))
+            (unless close
+              (error "descriptor-derive: malformed key origin"))
+            (substring key (+ close 1) (string-length key)))
+          key))
+
+    (define (split-xpub-key-expression who key)
+      (let* ((body (key-expression-body key))
+             (slash (string-index-char body #\/))
+             (base (if slash (substring body 0 slash) body))
+             (suffix (if slash (substring body slash (string-length body)) "")))
+        (unless (or (string-prefix? "xpub" base)
+                    (string-prefix? "tpub" base))
+          (error (string-append who ": expected xpub or tpub key expression")))
+        (list base suffix)))
+
+    (define (split-derivation-suffix suffix)
+      (if (string=? suffix "")
+          '()
+          (begin
+            (unless (char=? #\/ (string-ref suffix 0))
+              (error "descriptor-derive: malformed derivation suffix"))
+            (let loop ((i 1)
+                       (start 1)
+                       (parts '()))
+              (cond ((>= i (string-length suffix))
+                     (reverse (cons (substring suffix start (string-length suffix)) parts)))
+                    ((char=? #\/ (string-ref suffix i))
+                     (loop (+ i 1) (+ i 1) (cons (substring suffix start i) parts)))
+                    (else
+                     (loop (+ i 1) start parts)))))))
+
+    (define (multipath-segment? segment)
+      (and (> (string-length segment) 1)
+           (char=? #\< (string-ref segment 0))
+           (char=? #\> (string-ref segment (- (string-length segment) 1)))))
+
+    (define (resolve-derivation-segment segment branch index)
+      (cond ((string=? segment "")
+             (error "descriptor-derive: empty derivation path segment"))
+            ((string=? segment "*")
+             (number->string index))
+            ((multipath-segment? segment)
+             (let* ((body (substring segment 1 (- (string-length segment) 1)))
+                    (branches (split-semicolons body))
+                    (selected (list-ref-safe branches branch)))
+               (unless selected
+                 (error "descriptor-derive: multipath branch index out of range"))
+               selected))
+            (else
+             segment)))
+
+    (define (resolve-derivation-suffix suffix branch index)
+      (let ((parts (split-derivation-suffix suffix)))
+        (if (null? parts)
+            ""
+            (string-append
+              "/"
+              (join-strings
+                (let loop ((xs parts)
+                           (out '()))
+                  (if (null? xs)
+                      (reverse out)
+                      (loop (cdr xs)
+                            (cons (resolve-derivation-segment (car xs) branch index)
+                                  out))))
+                "/")))))
+
+    (define (derive-xpub-key-expression who key branch index)
+      (let* ((parts (split-xpub-key-expression who key))
+             (xpub (string->bip32-xpub (car parts)))
+             (suffix (resolve-derivation-suffix (cadr parts) branch index))
+             (derived (if (string=? suffix "")
+                          xpub
+                          (bip32-derive-path xpub (string-append "m" suffix)))))
+        (extended-public-key-public-key derived)))
+
+    (define (derive-key-expression who key branch index)
+      (cond ((bytevector? key)
+             key)
+            ((musig-key? key)
+             (derive-musig-key key branch index))
+            ((and (string? key) (compressed-pubkey-hex? key))
+             (hex-decode key))
+            ((and (string? key) (placeholder-key? key))
+             (error (string-append who ": unresolved wallet policy placeholder")))
+            ((and (string? key) (xpub-key-expression? key))
+             (derive-xpub-key-expression who key branch index))
+            (else
+             (error (string-append who ": expected concrete or derivable key expression")))))
+
+    (define (derive-musig-key key branch index)
+      (let ((suffix (musig-key-suffix key)))
+        (musig-key
+          keys: (let loop ((xs (musig-key-keys key))
+                           (out '()))
+                  (if (null? xs)
+                      (reverse out)
+                      (let ((participant (car xs)))
+                        (loop
+                          (cdr xs)
+                          (cons
+                            (if (string=? suffix "")
+                                (derive-key-expression "descriptor-derive" participant branch index)
+                                (derive-key-expression
+                                  "descriptor-derive"
+                                  (string-append (key->string participant) suffix)
+                                  branch
+                                  index))
+                            out)))))
+          suffix: "")))
+
+    (define (derive-key-list keys branch index)
+      (let loop ((xs keys)
+                 (out '()))
+        (if (null? xs)
+            (reverse out)
+            (loop (cdr xs)
+                  (cons (derive-key-expression "descriptor-derive" (car xs) branch index)
+                        out)))))
+
+    (define (derive-fragment fragment branch index)
+      (let ((kind (miniscript-fragment-kind fragment)))
+        (cond ((or (eq? kind 'pk-k) (eq? kind 'pk-h) (eq? kind 'pk))
+               (miniscript-fragment
+                 kind: kind
+                 args: '()
+                 data: (derive-key-expression
+                         "descriptor-derive"
+                         (miniscript-fragment-data fragment)
+                         branch
+                         index)))
+              ((or (eq? kind 'multi) (eq? kind 'sortedmulti))
+               (miniscript-fragment
+                 kind: kind
+                 args: (derive-key-list (miniscript-fragment-args fragment) branch index)
+                 data: (miniscript-fragment-data fragment)))
+              ((or (eq? kind 'one)
+                   (eq? kind 'after)
+                   (eq? kind 'older)
+                   (eq? kind 'sha256)
+                   (eq? kind 'hash256)
+                   (eq? kind 'ripemd160)
+                   (eq? kind 'hash160))
+               fragment)
+              (else
+               (miniscript-fragment
+                 kind: kind
+                 args: (let loop ((xs (miniscript-fragment-args fragment))
+                                  (out '()))
+                         (if (null? xs)
+                             (reverse out)
+                             (loop (cdr xs)
+                                   (cons (derive-fragment (car xs) branch index) out))))
+                 data: (miniscript-fragment-data fragment))))))
+
+    (define (derive-taproot-tree tree branch index)
+      (cond ((miniscript-fragment? tree)
+             (derive-fragment tree branch index))
+            ((tapbranch? tree)
+             (tapbranch
+               (derive-taproot-tree (tapbranch-left tree) branch index)
+               (derive-taproot-tree (tapbranch-right tree) branch index)))
+            (else
+             (error "descriptor-derive: unsupported Taproot script tree"))))
+
+    ;;; Derive ranged descriptor keys into concrete public keys.
+    ;;;
+    ;;; `branch` selects BIP389 multipath alternatives, and `index` replaces
+    ;;; wildcard path segments.
+    (define (descriptor-derive desc branch index)
+      (: descriptor? integer? integer? -> descriptor?)
+      (require-derivation-index "descriptor-derive branch" branch)
+      (require-derivation-index "descriptor-derive index" index)
+      (let ((kind (descriptor-kind desc)))
+        (cond ((or (eq? kind 'pkh) (eq? kind 'wpkh))
+               (descriptor
+                 kind: kind
+                 args: '()
+                 data: (derive-key-expression "descriptor-derive" (descriptor-data desc) branch index)))
+              ((eq? kind 'sh)
+               (descriptor-sh (descriptor-derive (car (descriptor-args desc)) branch index)))
+              ((eq? kind 'wsh)
+               (descriptor-wsh (derive-fragment (car (descriptor-args desc)) branch index)))
+              ((eq? kind 'tr)
+               (let ((key (derive-key-expression "descriptor-derive" (descriptor-data desc) branch index)))
+                 (if (null? (descriptor-args desc))
+                     (descriptor-tr key)
+                     (descriptor-tr
+                       key
+                       (derive-taproot-tree (car (descriptor-args desc)) branch index)))))
+              (else
+               (error "descriptor-derive: unsupported descriptor")))))
+
+    ;;; Derive a ranged descriptor and return its concrete scriptPubKey.
+    (define (descriptor-derive-script-pubkey desc branch index)
+      (: descriptor? integer? integer? -> bytevector?)
+      (descriptor-script-pubkey (descriptor-derive desc branch index)))
 
     (define (placeholder-index key)
       (unless (placeholder-key? key)

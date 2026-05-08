@@ -2,6 +2,7 @@
         (sigil bitcoin encoding)
         (sigil bitcoin primitives)
         (sigil bitcoin script)
+        (sigil bitcoin keys)
         (sigil bitcoin miniscript)
         (sigil secp256k1))
 
@@ -54,11 +55,21 @@
 (define %bip388-xpub
   "[6738736c/44'/0'/0']xpub6Br37sWxruYfT8ASpCjVHKGwgdnYFEn98DwiN76i2oyY6fgH1LAPmmDcF46xjxJr22gw4jmVjTE2E3URMnRPEPYyo1zoPSUba563ESMXCeb")
 
+(define %bip388-xpub-body
+  "xpub6Br37sWxruYfT8ASpCjVHKGwgdnYFEn98DwiN76i2oyY6fgH1LAPmmDcF46xjxJr22gw4jmVjTE2E3URMnRPEPYyo1zoPSUba563ESMXCeb")
+
 (define %bip388-xpub-2
   "[b2b1f0cf/44'/0'/0'/100']xpub6EYajCJHe2CK53RLVXrN14uWoEttZgrRSaRztujsXg7yRhGtHmLBt9ot9Pd5ugfwWEu6eWyJYKSshyvZFKDXiNbBcoK42KRZbxwjRQpm5Js")
 
+(define %bip388-xpub-2-body
+  "xpub6EYajCJHe2CK53RLVXrN14uWoEttZgrRSaRztujsXg7yRhGtHmLBt9ot9Pd5ugfwWEu6eWyJYKSshyvZFKDXiNbBcoK42KRZbxwjRQpm5Js")
+
 (define %bip388-xpub-3
   "[a666a867/44'/0'/0'/100']xpub6Dgsze3ujLi1EiHoCtHFMS9VLS1UheVqxrHGfP7sBJ2DBfChEUHV4MDwmxAXR2ayeytpwm3zJEU3H3pjCR6q6U5sP2p2qzAD71x9z5QShK2")
+
+(define (xpub-pubkey-at xpub path)
+  (extended-public-key-public-key
+    (bip32-derive-path (string->bip32-xpub xpub) path)))
 
 (test-group "miniscript AST"
   (test "constructs pk_k fragment"
@@ -304,6 +315,70 @@
                     (descriptor-parse (string-append "wsh(" %pk-text ")")))))
       (assert-equal 34 (bytevector-length script))
       (assert-equal "0020" (substring (hex-encode script) 0 4))))
+
+  (if %native-secp256k1?
+    (begin
+      (test "derives BIP389 xpub descriptor keys"
+        (let* ((desc (descriptor-parse
+                       (string-append "wpkh(" %bip388-xpub "/<0;1>/*)")))
+               (derived (descriptor-derive desc 1 7))
+               (expected-key (xpub-pubkey-at %bip388-xpub-body "m/1/7")))
+          (assert-equal
+            (string-append "wpkh(" (hex-encode expected-key) ")")
+            (descriptor->string derived))
+          (assert-equal
+            (descriptor-script-pubkey derived)
+            (descriptor-derive-script-pubkey desc 1 7))
+          (assert-error (descriptor-derive desc 2 7))))
+
+      (test "derives xpub keys inside miniscript fragments"
+        (let* ((desc (descriptor-parse
+                       (string-append
+                         "wsh(thresh(2,pk("
+                         %bip388-xpub
+                         "/<0;1>/*),s:pk("
+                         %bip388-xpub-2
+                         "/<0;1>/*)))")))
+               (derived (descriptor-derive desc 0 3))
+               (key-a (xpub-pubkey-at %bip388-xpub-body "m/0/3"))
+               (key-b (xpub-pubkey-at %bip388-xpub-2-body "m/0/3")))
+          (assert-equal
+            (string-append
+              "wsh(thresh(2,pk(" (hex-encode key-a) "),s:pk(" (hex-encode key-b) ")))")
+            (descriptor->string derived))))
+
+      (test "derives musig xpub participants"
+        (let* ((desc (descriptor-parse
+                       (string-append
+                         "tr(musig("
+                         %bip388-xpub
+                         ","
+                         %bip388-xpub-2
+                         ")/<0;1>/*)")))
+               (derived (descriptor-derive desc 1 5))
+               (key-a (xpub-pubkey-at %bip388-xpub-body "m/1/5"))
+               (key-b (xpub-pubkey-at %bip388-xpub-2-body "m/1/5")))
+          (assert-equal
+            (string-append
+              "tr(musig(" (hex-encode key-a) "," (hex-encode key-b) "))")
+            (descriptor->string derived))
+          (assert-equal 34 (bytevector-length (descriptor-script-pubkey derived))))
+        (let* ((desc (descriptor-parse
+                       (string-append
+                         "tr(musig("
+                         %bip388-xpub
+                         "/<0;1>/*,"
+                         %bip388-xpub-2
+                         "/<0;1>/*))")))
+               (derived (descriptor-derive desc 0 4))
+               (key-a (xpub-pubkey-at %bip388-xpub-body "m/0/4"))
+               (key-b (xpub-pubkey-at %bip388-xpub-2-body "m/0/4")))
+          (assert-equal
+            (string-append
+              "tr(musig(" (hex-encode key-a) "," (hex-encode key-b) "))")
+            (descriptor->string derived)))))
+    (test-skip "native secp256k1 module is not linked in direct workspace runner"
+      #t))
 
   (if %native-secp256k1?
     (test "compiles musig Taproot descriptor scriptPubKey"
