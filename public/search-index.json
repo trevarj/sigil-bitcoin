@@ -742,6 +742,55 @@
     "summary": "Get the `keys` field of a `wallet-policy` struct."
   },
   {
+    "name": "descriptor-psbt-plan",
+    "kind": "procedure",
+    "module": "(sigil bitcoin miniscript)",
+    "url": "api/sigil/bitcoin/miniscript.html#descriptor-psbt-plan",
+    "summary": "Derived descriptor data ready to attach to a PSBT input or output."
+  },
+  {
+    "name": "descriptor-psbt-plan?",
+    "kind": "procedure",
+    "module": "(sigil bitcoin miniscript)",
+    "url": "api/sigil/bitcoin/miniscript.html#descriptor-psbt-plan?",
+    "summary": "Test if a value is a `descriptor-psbt-plan` struct."
+  },
+  {
+    "name": "descriptor-psbt-plan-descriptor",
+    "kind": "procedure",
+    "module": "(sigil bitcoin miniscript)",
+    "url": "api/sigil/bitcoin/miniscript.html#descriptor-psbt-plan-descriptor",
+    "summary": "Get the `descriptor` field of a `descriptor-psbt-plan` struct."
+  },
+  {
+    "name": "descriptor-psbt-plan-script-pubkey",
+    "kind": "procedure",
+    "module": "(sigil bitcoin miniscript)",
+    "url": "api/sigil/bitcoin/miniscript.html#descriptor-psbt-plan-script-pubkey",
+    "summary": "Get the `script-pubkey` field of a `descriptor-psbt-plan` struct."
+  },
+  {
+    "name": "descriptor-psbt-plan-bip32-derivations",
+    "kind": "procedure",
+    "module": "(sigil bitcoin miniscript)",
+    "url": "api/sigil/bitcoin/miniscript.html#descriptor-psbt-plan-bip32-derivations",
+    "summary": "Get the `bip32-derivations` field of a `descriptor-psbt-plan` struct."
+  },
+  {
+    "name": "descriptor-psbt-plan-taproot-bip32-derivations",
+    "kind": "procedure",
+    "module": "(sigil bitcoin miniscript)",
+    "url": "api/sigil/bitcoin/miniscript.html#descriptor-psbt-plan-taproot-bip32-derivations",
+    "summary": "Get the `taproot-bip32-derivations` field of a `descriptor-psbt-plan` struct."
+  },
+  {
+    "name": "descriptor-psbt-plan-change?",
+    "kind": "procedure",
+    "module": "(sigil bitcoin miniscript)",
+    "url": "api/sigil/bitcoin/miniscript.html#descriptor-psbt-plan-change?",
+    "summary": "Get the `change?` field of a `descriptor-psbt-plan` struct."
+  },
+  {
     "name": "miniscript-pk-k",
     "kind": "procedure",
     "module": "(sigil bitcoin miniscript)",
@@ -987,6 +1036,13 @@
     "summary": "Derive a ranged descriptor and return its concrete scriptPubKey."
   },
   {
+    "name": "descriptor-derive-psbt-plan",
+    "kind": "procedure",
+    "module": "(sigil bitcoin miniscript)",
+    "url": "api/sigil/bitcoin/miniscript.html#descriptor-derive-psbt-plan",
+    "summary": "Build a derived descriptor plan containing script and PSBT key-origin data."
+  },
+  {
     "name": "wallet-policy-from-template",
     "kind": "procedure",
     "module": "(sigil bitcoin miniscript)",
@@ -999,6 +1055,13 @@
     "module": "(sigil bitcoin miniscript)",
     "url": "api/sigil/bitcoin/miniscript.html#wallet-policy-descriptor",
     "summary": "Expand a wallet policy into a concrete descriptor."
+  },
+  {
+    "name": "wallet-policy-derive-psbt-plan",
+    "kind": "procedure",
+    "module": "(sigil bitcoin miniscript)",
+    "url": "api/sigil/bitcoin/miniscript.html#wallet-policy-derive-psbt-plan",
+    "summary": "Expand and derive a wallet policy into a PSBT planning record."
   },
   {
     "name": "miniscript-type-info?",

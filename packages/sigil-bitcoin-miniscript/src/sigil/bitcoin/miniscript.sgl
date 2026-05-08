@@ -57,8 +57,16 @@
     descriptor-derive-script-pubkey
     wallet-policy wallet-policy?
     wallet-policy-template wallet-policy-keys
+    descriptor-psbt-plan descriptor-psbt-plan?
+    descriptor-psbt-plan-descriptor
+    descriptor-psbt-plan-script-pubkey
+    descriptor-psbt-plan-bip32-derivations
+    descriptor-psbt-plan-taproot-bip32-derivations
+    descriptor-psbt-plan-change?
     wallet-policy-from-template
-    wallet-policy-descriptor)
+    wallet-policy-descriptor
+    descriptor-derive-psbt-plan
+    wallet-policy-derive-psbt-plan)
   (begin
 
     ;;; Miniscript fragment AST node.
@@ -92,6 +100,14 @@
     (define-struct wallet-policy
       (template descriptor?)
       (keys list?))
+
+    ;;; Derived descriptor data ready to attach to a PSBT input or output.
+    (define-struct descriptor-psbt-plan
+      (descriptor descriptor?)
+      (script-pubkey bytevector?)
+      (bip32-derivations list?)
+      (taproot-bip32-derivations list?)
+      (change? boolean?))
 
     (define (whitespace? c)
       (or (char=? c #\space)
@@ -1444,6 +1460,49 @@
         (error (string-append who ": expected non-hardened child index")))
       n)
 
+    (define (u32-le n)
+      (let ((out (make-bytevector 4 0)))
+        (unless (and (integer? n) (>= n 0) (<= n #xffffffff))
+          (error "descriptor key origin path segment: expected u32"))
+        (bytevector-u8-set! out 0 (bitwise-and n #xff))
+        (bytevector-u8-set! out 1 (bitwise-and (arithmetic-shift n -8) #xff))
+        (bytevector-u8-set! out 2 (bitwise-and (arithmetic-shift n -16) #xff))
+        (bytevector-u8-set! out 3 (bitwise-and (arithmetic-shift n -24) #xff))
+        out))
+
+    (define (path-segment->child-number segment)
+      (let* ((len (string-length segment))
+             (last (if (> len 0) (string-ref segment (- len 1)) #\space))
+             (hardened? (or (char=? last #\')
+                            (char=? last #\h)
+                            (char=? last #\H)))
+             (digits (if hardened? (substring segment 0 (- len 1)) segment))
+             (n (if (> (string-length digits) 0)
+                    (string->number digits)
+                    #f)))
+        (when (or (not n) (< n 0) (>= n #x80000000))
+          (error "descriptor key origin: invalid path segment"))
+        (if hardened? (+ n #x80000000) n)))
+
+    (define (path-segments->bytes segments)
+      (let loop ((xs segments)
+                 (out '()))
+        (if (null? xs)
+            (if (null? out)
+                #u8()
+                (apply bytevector-append (reverse out)))
+            (loop (cdr xs)
+                  (cons (u32-le (path-segment->child-number (car xs))) out)))))
+
+    (define (key-expression-origin key)
+      (if (and (> (string-length key) 0)
+               (char=? #\[ (string-ref key 0)))
+          (let ((close (string-index-char key #\])))
+            (unless close
+              (error "descriptor key origin: malformed origin"))
+            (substring key 1 close))
+          #f))
+
     (define (key-expression-body key)
       (if (and (> (string-length key) 0)
                (char=? #\[ (string-ref key 0)))
@@ -1462,6 +1521,22 @@
                     (string-prefix? "tpub" base))
           (error (string-append who ": expected xpub or tpub key expression")))
         (list base suffix)))
+
+    (define (origin-fingerprint origin)
+      (let* ((slash (string-index-char origin #\/))
+             (fingerprint-text (if slash (substring origin 0 slash) origin)))
+        (unless (and (= 8 (string-length fingerprint-text))
+                     (hex-string? fingerprint-text))
+          (error "descriptor key origin: invalid fingerprint"))
+        (hex-decode fingerprint-text)))
+
+    (define (origin-path-segments origin)
+      (let ((slash (string-index-char origin #\/)))
+        (if slash
+            (split-derivation-suffix (string-append
+                                       "/"
+                                       (substring origin (+ slash 1) (string-length origin))))
+            '())))
 
     (define (split-derivation-suffix suffix)
       (if (string=? suffix "")
@@ -1645,6 +1720,133 @@
     (define (descriptor-derive-script-pubkey desc branch index)
       (: descriptor? integer? integer? -> bytevector?)
       (descriptor-script-pubkey (descriptor-derive desc branch index)))
+
+    (define (resolved-key-origin-value key branch index taproot?)
+      (let ((origin (key-expression-origin key)))
+        (if origin
+            (let* ((parts (split-xpub-key-expression "descriptor key origin" key))
+                   (resolved-suffix (resolve-derivation-suffix (cadr parts) branch index))
+                   (origin-path (origin-path-segments origin))
+                   (derived-path (split-derivation-suffix resolved-suffix))
+                   (base-value (bytevector-append
+                                 (origin-fingerprint origin)
+                                 (path-segments->bytes (append origin-path derived-path)))))
+              (if taproot?
+                  (bytevector-append #u8(0) base-value)
+                  base-value))
+            #f)))
+
+    (define (key-origin-entry key branch index taproot?)
+      (if (and (string? key) (xpub-key-expression? key))
+          (let ((origin-value (resolved-key-origin-value key branch index taproot?)))
+            (if origin-value
+                (let ((pubkey (derive-xpub-key-expression
+                                "descriptor key origin"
+                                key
+                                branch
+                                index)))
+                  (cons (if taproot?
+                            (secp256k1-pubkey-xonly pubkey)
+                            pubkey)
+                        origin-value))
+                #f))
+          #f))
+
+    (define (append-origin-entry maybe-entry entries)
+      (if maybe-entry
+          (cons maybe-entry entries)
+          entries))
+
+    (define (key-origin-entries key branch index taproot?)
+      (cond ((musig-key? key)
+             (let ((suffix (musig-key-suffix key)))
+               (let loop ((xs (musig-key-keys key))
+                          (out '()))
+                 (if (null? xs)
+                     out
+                     (let ((participant (car xs)))
+                       (loop
+                         (cdr xs)
+                         (append
+                           (key-origin-entries
+                             (if (string=? suffix "")
+                                 participant
+                                 (string-append (key->string participant) suffix))
+                             branch
+                             index
+                             taproot?)
+                           out)))))))
+            (else
+             (append-origin-entry
+               (key-origin-entry key branch index taproot?)
+               '()))))
+
+    (define (key-list-origin-entries keys branch index taproot?)
+      (let loop ((xs keys)
+                 (out '()))
+        (if (null? xs)
+            out
+            (loop (cdr xs)
+                  (append (key-origin-entries (car xs) branch index taproot?) out)))))
+
+    (define (fragment-origin-entries fragment branch index taproot?)
+      (let ((kind (miniscript-fragment-kind fragment)))
+        (cond ((or (eq? kind 'pk-k) (eq? kind 'pk-h) (eq? kind 'pk))
+               (key-origin-entries (miniscript-fragment-data fragment) branch index taproot?))
+              ((or (eq? kind 'multi) (eq? kind 'sortedmulti))
+               (key-list-origin-entries (miniscript-fragment-args fragment) branch index taproot?))
+              (else
+               (let loop ((xs (miniscript-fragment-args fragment))
+                          (out '()))
+                 (if (null? xs)
+                     out
+                     (loop (cdr xs)
+                           (append (fragment-origin-entries (car xs) branch index taproot?)
+                                   out))))))))
+
+    (define (taproot-tree-origin-entries tree branch index)
+      (cond ((miniscript-fragment? tree)
+             (fragment-origin-entries tree branch index #t))
+            ((tapbranch? tree)
+             (append
+               (taproot-tree-origin-entries (tapbranch-left tree) branch index)
+               (taproot-tree-origin-entries (tapbranch-right tree) branch index)))
+            (else
+             (error "descriptor PSBT plan: unsupported Taproot script tree"))))
+
+    (define (descriptor-origin-entries desc branch index taproot?)
+      (let ((kind (descriptor-kind desc)))
+        (cond ((or (eq? kind 'pkh) (eq? kind 'wpkh))
+               (key-origin-entries (descriptor-data desc) branch index taproot?))
+              ((eq? kind 'sh)
+               (descriptor-origin-entries (car (descriptor-args desc)) branch index taproot?))
+              ((eq? kind 'wsh)
+               (fragment-origin-entries (car (descriptor-args desc)) branch index taproot?))
+              ((eq? kind 'tr)
+               (append
+                 (key-origin-entries (descriptor-data desc) branch index #t)
+                 (if (null? (descriptor-args desc))
+                     '()
+                     (taproot-tree-origin-entries (car (descriptor-args desc)) branch index))))
+              (else
+               (error "descriptor PSBT plan: unsupported descriptor")))))
+
+    ;;; Build a derived descriptor plan containing script and PSBT key-origin data.
+    (define (descriptor-derive-psbt-plan desc branch index)
+      (: descriptor? integer? integer? -> descriptor-psbt-plan?)
+      (let* ((derived (descriptor-derive desc branch index))
+             (script (descriptor-script-pubkey derived))
+             (taproot? (eq? (descriptor-kind desc) 'tr)))
+        (descriptor-psbt-plan
+          descriptor: derived
+          script-pubkey: script
+          bip32-derivations: (if taproot?
+                                 '()
+                                 (reverse (descriptor-origin-entries desc branch index #f)))
+          taproot-bip32-derivations: (if taproot?
+                                         (reverse (descriptor-origin-entries desc branch index #t))
+                                         '())
+          change?: (= branch 1))))
 
     (define (placeholder-index key)
       (unless (placeholder-key? key)
@@ -1839,4 +2041,12 @@
       (: wallet-policy? -> string?)
       (descriptor->string-with-keys
         (wallet-policy-template policy)
-        (wallet-policy-keys policy)))))
+        (wallet-policy-keys policy)))
+
+    ;;; Expand and derive a wallet policy into a PSBT planning record.
+    (define (wallet-policy-derive-psbt-plan policy branch index)
+      (: wallet-policy? integer? integer? -> descriptor-psbt-plan?)
+      (descriptor-derive-psbt-plan
+        (descriptor-parse (wallet-policy-descriptor policy))
+        branch
+        index))))
