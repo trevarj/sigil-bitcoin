@@ -770,6 +770,20 @@
     "summary": "Get the `script-pubkey` field of a `descriptor-psbt-plan` struct."
   },
   {
+    "name": "descriptor-psbt-plan-redeem-script",
+    "kind": "procedure",
+    "module": "(sigil bitcoin miniscript)",
+    "url": "api/sigil/bitcoin/miniscript.html#descriptor-psbt-plan-redeem-script",
+    "summary": "Get the `redeem-script` field of a `descriptor-psbt-plan` struct."
+  },
+  {
+    "name": "descriptor-psbt-plan-witness-script",
+    "kind": "procedure",
+    "module": "(sigil bitcoin miniscript)",
+    "url": "api/sigil/bitcoin/miniscript.html#descriptor-psbt-plan-witness-script",
+    "summary": "Get the `witness-script` field of a `descriptor-psbt-plan` struct."
+  },
+  {
     "name": "descriptor-psbt-plan-bip32-derivations",
     "kind": "procedure",
     "module": "(sigil bitcoin miniscript)",

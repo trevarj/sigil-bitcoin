@@ -369,6 +369,13 @@
       (assert-equal 34 (bytevector-length script))
       (assert-equal "0020" (substring (hex-encode script) 0 4))))
 
+  (test "includes WSH witness script in PSBT plans"
+    (let* ((desc (descriptor-parse (string-append "wsh(" %pk-text ")")))
+           (plan (descriptor-derive-psbt-plan desc 0 0)))
+      (assert-false (descriptor-psbt-plan-redeem-script plan))
+      (assert-equal (miniscript-compile (miniscript-parse %pk-text))
+                    (descriptor-psbt-plan-witness-script plan))))
+
   (if %native-secp256k1?
     (begin
       (test "derives BIP389 xpub descriptor keys"

@@ -61,6 +61,8 @@
     descriptor-psbt-plan descriptor-psbt-plan?
     descriptor-psbt-plan-descriptor
     descriptor-psbt-plan-script-pubkey
+    descriptor-psbt-plan-redeem-script
+    descriptor-psbt-plan-witness-script
     descriptor-psbt-plan-bip32-derivations
     descriptor-psbt-plan-taproot-bip32-derivations
     descriptor-psbt-plan-change?
@@ -110,6 +112,8 @@
     (define-struct descriptor-psbt-plan
       (descriptor descriptor?)
       (script-pubkey bytevector?)
+      (redeem-script any?)
+      (witness-script any?)
       (bip32-derivations list?)
       (taproot-bip32-derivations list?)
       (change? boolean?))
@@ -1836,6 +1840,22 @@
               (else
                (error "descriptor PSBT plan: unsupported descriptor")))))
 
+    (define (descriptor-plan-redeem-script desc)
+      (if (eq? (descriptor-kind desc) 'sh)
+          (descriptor-redeem-script (car (descriptor-args desc)))
+          #f))
+
+    (define (descriptor-plan-witness-script desc)
+      (let ((kind (descriptor-kind desc)))
+        (cond ((eq? kind 'wsh)
+               (miniscript-compile (car (descriptor-args desc))))
+              ((and (eq? kind 'sh)
+                    (eq? (descriptor-kind (car (descriptor-args desc))) 'wsh))
+               (miniscript-compile
+                 (car (descriptor-args (car (descriptor-args desc))))))
+              (else
+               #f))))
+
     ;;; Build a derived descriptor plan containing script and PSBT key-origin data.
     (define (descriptor-derive-psbt-plan desc branch index)
       (: descriptor? integer? integer? -> descriptor-psbt-plan?)
@@ -1845,6 +1865,8 @@
         (descriptor-psbt-plan
           descriptor: derived
           script-pubkey: script
+          redeem-script: (descriptor-plan-redeem-script derived)
+          witness-script: (descriptor-plan-witness-script derived)
           bip32-derivations: (if taproot?
                                  '()
                                  (reverse (descriptor-origin-entries desc branch index #f)))
