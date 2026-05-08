@@ -375,11 +375,30 @@
                     %witness-tx 0 (list %p2tr-utxo) sighash-default)))
       (assert-equal 32 (bytevector-length digest))))
 
+  (test "taproot script-path SIGHASH_DEFAULT returns 32-byte digest"
+    (let ((digest (transaction-sighash-taproot-scriptpath
+                    %witness-tx 0 (list %p2tr-utxo) #u8(#x51) #xc0 sighash-default)))
+      (assert-equal 32 (bytevector-length digest))))
+
   (test "taproot key-path SIGHASH_DEFAULT and ALL encode different hash types"
     (assert-false
       (equal?
         (transaction-sighash-taproot-keypath %witness-tx 0 (list %p2tr-utxo) sighash-default)
         (transaction-sighash-taproot-keypath %witness-tx 0 (list %p2tr-utxo) sighash-all))))
+
+  (test "taproot script-path commits to leaf script and version"
+    (let ((base (transaction-sighash-taproot-scriptpath
+                  %witness-tx 0 (list %p2tr-utxo) #u8(#x51) #xc0)))
+      (assert-false
+        (equal?
+          base
+          (transaction-sighash-taproot-scriptpath
+            %witness-tx 0 (list %p2tr-utxo) #u8(#x52) #xc0)))
+      (assert-false
+        (equal?
+          base
+          (transaction-sighash-taproot-scriptpath
+            %witness-tx 0 (list %p2tr-utxo) #u8(#x51) #xc2)))))
 
   (test "taproot key-path sighash commits to prevout amount and script"
     (let* ((base (transaction-sighash-taproot-keypath
@@ -403,7 +422,12 @@
 
   (test "taproot key-path sighash rejects unsupported hash type"
     (assert-error
-      (transaction-sighash-taproot-keypath %witness-tx 0 (list %p2tr-utxo) #x02))))
+      (transaction-sighash-taproot-keypath %witness-tx 0 (list %p2tr-utxo) #x02)))
+
+  (test "taproot script-path sighash rejects unsupported hash type"
+    (assert-error
+      (transaction-sighash-taproot-scriptpath
+        %witness-tx 0 (list %p2tr-utxo) #u8(#x51) #xc0 #x02))))
 
 (if %native-secp256k1?
   (test-group "input signing"

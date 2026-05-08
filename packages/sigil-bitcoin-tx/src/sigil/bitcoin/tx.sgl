@@ -53,6 +53,7 @@
     transaction-sighash-legacy
     transaction-sighash-segwit-v0
     transaction-sighash-taproot-keypath
+    transaction-sighash-taproot-scriptpath
     transaction-sign-p2pkh-input
     transaction-sign-p2wpkh-input
     transaction-sign-p2tr-keypath-input
@@ -680,6 +681,60 @@
           ((null? xs) prevouts)
         (validate-txout (car xs))))
 
+    (define (taproot-leaf-hash script leaf-version)
+      (require-bytevector "taproot leaf script" script)
+      (require-uint "taproot leaf version" leaf-version #xff)
+      (tagged-hash "TapLeaf"
+                   (bytevector-append
+                     (make-bytevector 1 leaf-version)
+                     (bytes-with-length script))))
+
+    (define (taproot-sigmsg-base tx input-index prevouts sighash-type spend-type who)
+      (validate-transaction tx)
+      (require-taproot-sighash who sighash-type)
+      (validate-prevouts tx prevouts who)
+      (require-uint (string-append who " spend type") spend-type #xff)
+      (let ((input (nth-item (transaction-inputs tx)
+                             input-index
+                             who)))
+        (let* ((sha-prevouts
+                 (sha256-bytes
+                   (serialize-items
+                     (transaction-inputs tx)
+                     (lambda (txin)
+                       (serialize-outpoint (txin-previous-output txin))))))
+               (sha-amounts
+                 (sha256-bytes
+                   (serialize-items
+                     prevouts
+                     (lambda (prevout)
+                       (u64-le (txout-value prevout))))))
+               (sha-scriptpubkeys
+                 (sha256-bytes
+                   (serialize-items prevouts prevout-script-bytes)))
+               (sha-sequences
+                 (sha256-bytes
+                   (serialize-items
+                     (transaction-inputs tx)
+                     (lambda (txin)
+                       (u32-le (txin-sequence txin))))))
+               (sha-outputs
+                 (sha256-bytes
+                   (serialize-items (transaction-outputs tx) serialize-txout))))
+          ;; Reference `input` so out-of-range indexes fail before hashing.
+          (txin-sequence input)
+          (bytevector-append
+            (make-bytevector 1 sighash-type)
+            (u32-le (transaction-version tx))
+            (u32-le (transaction-lock-time tx))
+            sha-prevouts
+            sha-amounts
+            sha-scriptpubkeys
+            sha-sequences
+            sha-outputs
+            (make-bytevector 1 spend-type)
+            (u32-le input-index)))))
+
     ;;; Compute a legacy pre-SegWit signature hash for one input.
     ;;;
     ;;; Currently supports `SIGHASH_ALL`.
@@ -748,52 +803,43 @@
       (let ((sighash-type (if (null? maybe-sighash-type)
                               sighash-default
                               (car maybe-sighash-type))))
-        (validate-transaction tx)
-        (require-taproot-sighash "transaction-sighash-taproot-keypath" sighash-type)
-        (validate-prevouts tx prevouts "transaction-sighash-taproot-keypath")
-        (let ((input (nth-item (transaction-inputs tx)
-                               input-index
-                               "transaction-sighash-taproot-keypath")))
-          (let* ((sha-prevouts
-                   (sha256-bytes
-                     (serialize-items
-                       (transaction-inputs tx)
-                       (lambda (txin)
-                         (serialize-outpoint (txin-previous-output txin))))))
-                 (sha-amounts
-                   (sha256-bytes
-                     (serialize-items
-                       prevouts
-                       (lambda (prevout)
-                         (u64-le (txout-value prevout))))))
-                 (sha-scriptpubkeys
-                   (sha256-bytes
-                     (serialize-items prevouts prevout-script-bytes)))
-                 (sha-sequences
-                   (sha256-bytes
-                     (serialize-items
-                       (transaction-inputs tx)
-                       (lambda (txin)
-                         (u32-le (txin-sequence txin))))))
-                 (sha-outputs
-                   (sha256-bytes
-                     (serialize-items (transaction-outputs tx) serialize-txout)))
-                 (sigmsg
-                   (bytevector-append
-                     (make-bytevector 1 sighash-type)
-                     (u32-le (transaction-version tx))
-                     (u32-le (transaction-lock-time tx))
-                     sha-prevouts
-                     sha-amounts
-                     sha-scriptpubkeys
-                     sha-sequences
-                     sha-outputs
-                     #u8(0)
-                     (u32-le input-index))))
-            ;; Reference `input` so out-of-range indexes fail before hashing.
-            (txin-sequence input)
-            (tagged-hash "TapSighash"
-                         (bytevector-append #u8(0) sigmsg))))))
+        (tagged-hash
+          "TapSighash"
+          (bytevector-append
+            #u8(0)
+            (taproot-sigmsg-base
+              tx
+              input-index
+              prevouts
+              sighash-type
+              0
+              "transaction-sighash-taproot-keypath")))))
+
+    ;;; Compute a BIP341/BIP342 Taproot script-path signature hash.
+    ;;;
+    ;;; Supports script-path spends without annex or non-default code separator
+    ;;; for `SIGHASH_DEFAULT` and `SIGHASH_ALL`.
+    (define (transaction-sighash-taproot-scriptpath tx input-index prevouts script leaf-version . maybe-sighash-type)
+      (: transaction? integer? list? bytevector? integer? integer? ... -> bytevector?)
+      (let ((sighash-type (if (null? maybe-sighash-type)
+                              sighash-default
+                              (car maybe-sighash-type))))
+        (require-bytevector "transaction-sighash-taproot-scriptpath script" script)
+        (require-uint "transaction-sighash-taproot-scriptpath leaf version" leaf-version #xff)
+        (tagged-hash
+          "TapSighash"
+          (bytevector-append
+            #u8(0)
+            (taproot-sigmsg-base
+              tx
+              input-index
+              prevouts
+              sighash-type
+              2
+              "transaction-sighash-taproot-scriptpath")
+            (taproot-leaf-hash script leaf-version)
+            #u8(0)
+            (u32-le %u32-max)))))
 
     ;;; Sign one legacy P2PKH input and return a transaction with scriptSig data.
     (define (transaction-sign-p2pkh-input tx input-index private-key . maybe-sighash-type)
