@@ -13,7 +13,8 @@ The current stack can build simple legacy, SegWit v0, and Taproot key-path signi
 - Attach non-witness UTXO data for P2PKH inputs.
 - Attach witness UTXO data for SegWit v0 and Taproot key-path inputs.
 - Preserve global, input, and output unknown/proprietary PSBT keys during parse and serialize.
-- Preserve input BIP32 and Taproot derivation records for wallet coordination.
+- Preserve input and output BIP32/Taproot derivation records for wallet coordination.
+- Derive descriptor and wallet-policy PSBT plans for input/output annotation.
 - Sign and finalize P2PKH, P2WPKH, and BIP86-style Taproot key-path PSBT inputs.
 - Compute BIP341 key-path sighashes for Taproot spends.
 - Extract finalized PSBTs into signed transactions.
@@ -22,5 +23,4 @@ The complete PSBT signing/finalization paths are P2PKH, P2WPKH with `SIGHASH_ALL
 
 Still pending:
 
-- Descriptor-driven change detection and input ownership.
-- Output-side PSBT derivation records for descriptor-derived change outputs.
+- Script-path signing for WSH and Taproot script-tree descriptors.

@@ -1064,6 +1064,34 @@
     "summary": "Expand and derive a wallet policy into a PSBT planning record."
   },
   {
+    "name": "descriptor-psbt-plan-annotate-input",
+    "kind": "procedure",
+    "module": "(sigil bitcoin miniscript)",
+    "url": "api/sigil/bitcoin/miniscript.html#descriptor-psbt-plan-annotate-input",
+    "summary": "Attach descriptor-derived metadata to a PSBT input."
+  },
+  {
+    "name": "descriptor-psbt-plan-annotate-output",
+    "kind": "procedure",
+    "module": "(sigil bitcoin miniscript)",
+    "url": "api/sigil/bitcoin/miniscript.html#descriptor-psbt-plan-annotate-output",
+    "summary": "Attach descriptor-derived metadata to a PSBT output."
+  },
+  {
+    "name": "descriptor-psbt-plan-sign-input",
+    "kind": "procedure",
+    "module": "(sigil bitcoin miniscript)",
+    "url": "api/sigil/bitcoin/miniscript.html#descriptor-psbt-plan-sign-input",
+    "summary": "Annotate and sign a standard descriptor PSBT input."
+  },
+  {
+    "name": "descriptor-psbt-plan-finalize-input",
+    "kind": "procedure",
+    "module": "(sigil bitcoin miniscript)",
+    "url": "api/sigil/bitcoin/miniscript.html#descriptor-psbt-plan-finalize-input",
+    "summary": "Finalize a standard descriptor PSBT input."
+  },
+  {
     "name": "miniscript-type-info?",
     "kind": "variable",
     "module": "(sigil bitcoin miniscript)",
@@ -1810,7 +1838,7 @@
     "kind": "procedure",
     "module": "(sigil bitcoin tx)",
     "url": "api/sigil/bitcoin/tx.html#psbt-output",
-    "summary": "PSBT output map placeholder."
+    "summary": "PSBT output map subset supported by this package."
   },
   {
     "name": "psbt-output?",
@@ -1818,6 +1846,20 @@
     "module": "(sigil bitcoin tx)",
     "url": "api/sigil/bitcoin/tx.html#psbt-output?",
     "summary": "Test if a value is a `psbt-output` struct."
+  },
+  {
+    "name": "psbt-output-bip32-derivations",
+    "kind": "procedure",
+    "module": "(sigil bitcoin tx)",
+    "url": "api/sigil/bitcoin/tx.html#psbt-output-bip32-derivations",
+    "summary": "Get the `bip32-derivations` field of a `psbt-output` struct."
+  },
+  {
+    "name": "psbt-output-taproot-bip32-derivations",
+    "kind": "procedure",
+    "module": "(sigil bitcoin tx)",
+    "url": "api/sigil/bitcoin/tx.html#psbt-output-taproot-bip32-derivations",
+    "summary": "Get the `taproot-bip32-derivations` field of a `psbt-output` struct."
   },
   {
     "name": "psbt-output-unknowns",
@@ -1988,6 +2030,20 @@
     "summary": "Parse PSBT v0 bytes into a PSBT record."
   },
   {
+    "name": "psbt-annotate-input",
+    "kind": "procedure",
+    "module": "(sigil bitcoin tx)",
+    "url": "api/sigil/bitcoin/tx.html#psbt-annotate-input",
+    "summary": "Attach BIP32 derivation metadata to a PSBT input after script matching."
+  },
+  {
+    "name": "psbt-annotate-output",
+    "kind": "procedure",
+    "module": "(sigil bitcoin tx)",
+    "url": "api/sigil/bitcoin/tx.html#psbt-annotate-output",
+    "summary": "Attach BIP32 derivation metadata to a PSBT output after script matching."
+  },
+  {
     "name": "psbt-sign-p2pkh-input",
     "kind": "procedure",
     "module": "(sigil bitcoin tx)",
@@ -2009,6 +2065,13 @@
     "summary": "Add a Taproot key-path signature to a PSBT input."
   },
   {
+    "name": "psbt-sign-standard-input",
+    "kind": "procedure",
+    "module": "(sigil bitcoin tx)",
+    "url": "api/sigil/bitcoin/tx.html#psbt-sign-standard-input",
+    "summary": "Sign a standard P2PKH, P2WPKH, or key-path P2TR PSBT input."
+  },
+  {
     "name": "psbt-finalize-p2pkh-input",
     "kind": "procedure",
     "module": "(sigil bitcoin tx)",
@@ -2028,6 +2091,13 @@
     "module": "(sigil bitcoin tx)",
     "url": "api/sigil/bitcoin/tx.html#psbt-finalize-p2tr-keypath-input",
     "summary": "Finalize a signed Taproot key-path PSBT input."
+  },
+  {
+    "name": "psbt-finalize-standard-input",
+    "kind": "procedure",
+    "module": "(sigil bitcoin tx)",
+    "url": "api/sigil/bitcoin/tx.html#psbt-finalize-standard-input",
+    "summary": "Finalize a standard P2PKH, P2WPKH, or key-path P2TR PSBT input."
   },
   {
     "name": "psbt-extract-transaction",

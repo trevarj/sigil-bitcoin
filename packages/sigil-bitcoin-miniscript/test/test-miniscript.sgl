@@ -3,10 +3,19 @@
         (sigil bitcoin primitives)
         (sigil bitcoin script)
         (sigil bitcoin keys)
+        (sigil bitcoin tx)
         (sigil bitcoin miniscript)
         (sigil secp256k1))
 
 (define %native-secp256k1? (procedure? secp256k1-pubkey-xonly))
+
+(define %zero-txid (make-bytevector 32 0))
+
+(define %one
+  #u8(#x00 #x00 #x00 #x00 #x00 #x00 #x00 #x00
+      #x00 #x00 #x00 #x00 #x00 #x00 #x00 #x00
+      #x00 #x00 #x00 #x00 #x00 #x00 #x00 #x00
+      #x00 #x00 #x00 #x00 #x00 #x00 #x00 #x01))
 
 (define %generator-pub
   (hex-decode "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"))
@@ -76,6 +85,44 @@
 
 (define %bip388-taproot-origin-branch-0-index-4
   "006738736c2c00008000000080000000800000000004000000")
+
+(define (empty-test-psbt-input witness-utxo)
+  (psbt-input
+    non-witness-utxo: #f
+    witness-utxo: witness-utxo
+    partial-sigs: '()
+    sighash-type: #f
+    final-script-sig: #u8()
+    final-script-witness: '()
+    taproot-key-sig: #f
+    bip32-derivations: '()
+    taproot-bip32-derivations: '()
+    unknowns: '()))
+
+(define (empty-test-psbt-output)
+  (psbt-output
+    bip32-derivations: '()
+    taproot-bip32-derivations: '()
+    unknowns: '()))
+
+(define (single-input-psbt script-pubkey)
+  (psbt
+    unsigned-tx: (transaction
+                   version: 2
+                   inputs: (list
+                     (txin
+                       previous-output: (outpoint txid: %zero-txid index: 0)
+                       script-sig: #u8()
+                       sequence: #xfffffffe
+                       witness: '()))
+                   outputs: (list
+                     (txout value: 1000 script-pubkey: script-pubkey))
+                   lock-time: 0)
+    inputs: (list
+      (empty-test-psbt-input
+        (txout value: 1000 script-pubkey: script-pubkey)))
+    outputs: (list (empty-test-psbt-output))
+    unknowns: '()))
 
 (test-group "miniscript AST"
   (test "constructs pk_k fragment"
@@ -363,6 +410,34 @@
           (assert-equal expected-key (car entry))
           (assert-equal %bip388-taproot-origin-branch-0-index-4
                         (hex-encode (cdr entry)))))
+
+      (test "annotates PSBT inputs and outputs from descriptor plans"
+        (let* ((desc (descriptor-parse
+                       (string-append "wpkh(" %bip388-xpub "/<0;1>/*)")))
+               (plan (descriptor-derive-psbt-plan desc 1 7))
+               (p (single-input-psbt (descriptor-psbt-plan-script-pubkey plan)))
+               (annotated-input (descriptor-psbt-plan-annotate-input p 0 plan))
+               (annotated-output (descriptor-psbt-plan-annotate-output
+                                   annotated-input
+                                   0
+                                   plan))
+               (input (car (psbt-inputs annotated-output)))
+               (output (car (psbt-outputs annotated-output))))
+          (assert-equal (descriptor-psbt-plan-bip32-derivations plan)
+                        (psbt-input-bip32-derivations input))
+          (assert-equal (descriptor-psbt-plan-bip32-derivations plan)
+                        (psbt-output-bip32-derivations output))))
+
+      (test "signs and finalizes descriptor PSBT plans"
+        (let* ((desc (descriptor-parse (string-append "wpkh(" %generator-pub-text ")")))
+               (plan (descriptor-derive-psbt-plan desc 0 0))
+               (p (single-input-psbt (descriptor-psbt-plan-script-pubkey plan)))
+               (signed (descriptor-psbt-plan-sign-input p 0 plan %one))
+               (finalized (descriptor-psbt-plan-finalize-input signed 0 plan))
+               (extracted (psbt-extract-transaction finalized))
+               (witness (txin-witness (car (transaction-inputs extracted)))))
+          (assert-equal 2 (length witness))
+          (assert-true (transaction-has-witness? extracted))))
 
       (test "derives xpub keys inside miniscript fragments"
         (let* ((desc (descriptor-parse

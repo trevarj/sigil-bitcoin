@@ -8,6 +8,7 @@
           (sigil bitcoin encoding)
           (sigil bitcoin keys)
           (sigil bitcoin script)
+          (sigil bitcoin tx)
           (sigil secp256k1))
   (export
     miniscript-fragment miniscript-fragment?
@@ -66,7 +67,11 @@
     wallet-policy-from-template
     wallet-policy-descriptor
     descriptor-derive-psbt-plan
-    wallet-policy-derive-psbt-plan)
+    wallet-policy-derive-psbt-plan
+    descriptor-psbt-plan-annotate-input
+    descriptor-psbt-plan-annotate-output
+    descriptor-psbt-plan-sign-input
+    descriptor-psbt-plan-finalize-input)
   (begin
 
     ;;; Miniscript fragment AST node.
@@ -2049,4 +2054,39 @@
       (descriptor-derive-psbt-plan
         (descriptor-parse (wallet-policy-descriptor policy))
         branch
-        index))))
+        index))
+
+    ;;; Attach descriptor-derived metadata to a PSBT input.
+    (define (descriptor-psbt-plan-annotate-input p input-index plan)
+      (: psbt? integer? descriptor-psbt-plan? -> psbt?)
+      (psbt-annotate-input
+        p
+        input-index
+        (descriptor-psbt-plan-script-pubkey plan)
+        (descriptor-psbt-plan-bip32-derivations plan)
+        (descriptor-psbt-plan-taproot-bip32-derivations plan)))
+
+    ;;; Attach descriptor-derived metadata to a PSBT output.
+    (define (descriptor-psbt-plan-annotate-output p output-index plan)
+      (: psbt? integer? descriptor-psbt-plan? -> psbt?)
+      (psbt-annotate-output
+        p
+        output-index
+        (descriptor-psbt-plan-script-pubkey plan)
+        (descriptor-psbt-plan-bip32-derivations plan)
+        (descriptor-psbt-plan-taproot-bip32-derivations plan)))
+
+    ;;; Annotate and sign a standard descriptor PSBT input.
+    (define (descriptor-psbt-plan-sign-input p input-index plan private-key)
+      (: psbt? integer? descriptor-psbt-plan? bytevector? -> psbt?)
+      (psbt-sign-standard-input
+        (descriptor-psbt-plan-annotate-input p input-index plan)
+        input-index
+        private-key))
+
+    ;;; Finalize a standard descriptor PSBT input.
+    (define (descriptor-psbt-plan-finalize-input p input-index plan)
+      (: psbt? integer? descriptor-psbt-plan? -> psbt?)
+      (psbt-finalize-standard-input
+        (descriptor-psbt-plan-annotate-input p input-index plan)
+        input-index))))

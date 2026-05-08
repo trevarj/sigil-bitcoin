@@ -31,6 +31,8 @@
     psbt-input-taproot-bip32-derivations
     psbt-input-unknowns
     psbt-output psbt-output?
+    psbt-output-bip32-derivations
+    psbt-output-taproot-bip32-derivations
     psbt-output-unknowns
     psbt-unknowns
     compact-size-encode
@@ -48,14 +50,18 @@
     transaction-sign-p2wpkh-input
     transaction-sign-p2tr-keypath-input
     psbt-create
+    psbt-annotate-input
+    psbt-annotate-output
     psbt-serialize
     psbt-parse
     psbt-sign-p2pkh-input
     psbt-sign-p2wpkh-input
     psbt-sign-p2tr-keypath-input
+    psbt-sign-standard-input
     psbt-finalize-p2pkh-input
     psbt-finalize-p2wpkh-input
     psbt-finalize-p2tr-keypath-input
+    psbt-finalize-standard-input
     psbt-extract-transaction)
   (begin
 
@@ -105,8 +111,10 @@
       (taproot-bip32-derivations list?)
       (unknowns list?))
 
-    ;;; PSBT output map placeholder.
+    ;;; PSBT output map subset supported by this package.
     (define-struct psbt-output
+      (bip32-derivations list?)
+      (taproot-bip32-derivations list?)
       (unknowns list?))
 
     ;;; Partially Signed Bitcoin Transaction record.
@@ -881,7 +889,9 @@
                   unknowns: '()))
 
     (define (empty-psbt-output)
-      (psbt-output unknowns: '()))
+      (psbt-output bip32-derivations: '()
+                   taproot-bip32-derivations: '()
+                   unknowns: '()))
 
     (define (validate-raw-keyvals who keyvals)
       (unless (list? keyvals)
@@ -982,6 +992,16 @@
     (define (validate-psbt-output output)
       (unless (psbt-output? output)
         (error "psbt output: expected psbt-output"))
+      (validate-bip32-derivations
+        "psbt output BIP32 derivation"
+        (psbt-output-bip32-derivations output)
+        33
+        validate-bip32-origin-value)
+      (validate-bip32-derivations
+        "psbt output Taproot BIP32 derivation"
+        (psbt-output-taproot-bip32-derivations output)
+        32
+        validate-taproot-origin-value)
       (validate-raw-keyvals "psbt output unknowns" (psbt-output-unknowns output))
       output)
 
@@ -1061,7 +1081,20 @@
 
     (define (psbt-output->keyvals output)
       (validate-psbt-output output)
-      (map psbt-raw-keyval (psbt-output-unknowns output)))
+      (let ((parts '()))
+        (do ((xs (psbt-output-bip32-derivations output) (cdr xs)))
+            ((null? xs))
+          (let ((entry (car xs)))
+            (set! parts
+                  (append parts
+                          (list (psbt-keyval #x02 (car entry) (cdr entry)))))))
+        (do ((xs (psbt-output-taproot-bip32-derivations output) (cdr xs)))
+            ((null? xs))
+          (let ((entry (car xs)))
+            (set! parts
+                  (append parts
+                          (list (psbt-keyval #x07 (car entry) (cdr entry)))))))
+        (append parts (map psbt-raw-keyval (psbt-output-unknowns output)))))
 
     (define (serialize-psbt-map keyvals)
       (apply bytevector-append (append keyvals (list #u8(0)))))
@@ -1260,6 +1293,37 @@
                     (cadr parsed)
                     (cons (parse-psbt-input (car parsed)) inputs))))))
 
+    (define (parse-output-entry output entry)
+      (let* ((key (car entry))
+             (value (cdr entry))
+             (key-type (bytevector-u8-ref key 0))
+             (key-data (bytevector-copy key 1)))
+        (cond ((= key-type #x02)
+               (require-bytevector-length "psbt output BIP32 derivation pubkey" key-data 33)
+               (validate-bip32-origin-value "psbt output BIP32 derivation" value)
+               (psbt-output bip32-derivations: (append (psbt-output-bip32-derivations output)
+                                                       (list (cons key-data value)))
+                            taproot-bip32-derivations: (psbt-output-taproot-bip32-derivations output)
+                            unknowns: (psbt-output-unknowns output)))
+              ((= key-type #x07)
+               (require-bytevector-length "psbt output Taproot BIP32 derivation xonly pubkey" key-data 32)
+               (validate-taproot-origin-value "psbt output Taproot BIP32 derivation" value)
+               (psbt-output bip32-derivations: (psbt-output-bip32-derivations output)
+                            taproot-bip32-derivations: (append (psbt-output-taproot-bip32-derivations output)
+                                                               (list (cons key-data value)))
+                            unknowns: (psbt-output-unknowns output)))
+              (else
+               (psbt-output bip32-derivations: (psbt-output-bip32-derivations output)
+                            taproot-bip32-derivations: (psbt-output-taproot-bip32-derivations output)
+                            unknowns: (append (psbt-output-unknowns output)
+                                              (list (cons key value))))))))
+
+    (define (parse-psbt-output entries)
+      (let ((output (empty-psbt-output)))
+        (do ((xs entries (cdr xs)))
+            ((null? xs) output)
+          (set! output (parse-output-entry output (car xs))))))
+
     (define (parse-psbt-outputs bytes offset count)
       (let loop ((i 0) (next offset) (outputs '()))
         (if (>= i count)
@@ -1267,7 +1331,7 @@
             (let ((parsed (parse-psbt-map bytes next)))
               (loop (+ i 1)
                     (cadr parsed)
-                    (cons (psbt-output unknowns: (car parsed)) outputs))))))
+                    (cons (parse-psbt-output (car parsed)) outputs))))))
 
     ;;; Parse PSBT v0 bytes into a PSBT record.
     (define (psbt-parse bytes)
@@ -1303,6 +1367,118 @@
                                  "psbt input")
             outputs: (psbt-outputs p)
             unknowns: (psbt-unknowns p)))
+
+    (define (psbt-update-output p output-index output)
+      (psbt unsigned-tx: (psbt-unsigned-tx p)
+            inputs: (psbt-inputs p)
+            outputs: (replace-nth (psbt-outputs p)
+                                  output-index
+                                  output
+                                  "psbt output")
+            unknowns: (psbt-unknowns p)))
+
+    (define (entry-key-in? key entries)
+      (cond ((null? entries) #f)
+            ((equal? key (car (car entries))) #t)
+            (else (entry-key-in? key (cdr entries)))))
+
+    (define (merge-keyvals existing added)
+      (let loop ((xs existing)
+                 (out '()))
+        (if (null? xs)
+            (append (reverse out) added)
+            (let ((entry (car xs)))
+              (loop (cdr xs)
+                    (if (entry-key-in? (car entry) added)
+                        out
+                        (cons entry out)))))))
+
+    (define (script-p2pkh? script)
+      (and (= 25 (bytevector-length script))
+           (= op-dup (bytevector-u8-ref script 0))
+           (= op-hash160 (bytevector-u8-ref script 1))
+           (= #x14 (bytevector-u8-ref script 2))
+           (= op-equalverify (bytevector-u8-ref script 23))
+           (= op-checksig (bytevector-u8-ref script 24))))
+
+    (define (script-p2wpkh? script)
+      (and (= 22 (bytevector-length script))
+           (= op-0 (bytevector-u8-ref script 0))
+           (= #x14 (bytevector-u8-ref script 1))))
+
+    (define (script-p2tr? script)
+      (and (= 34 (bytevector-length script))
+           (= op-1 (bytevector-u8-ref script 0))
+           (= #x20 (bytevector-u8-ref script 1))))
+
+    ;;; Attach BIP32 derivation metadata to a PSBT input after script matching.
+    (define (psbt-annotate-input p input-index script-pubkey bip32-derivations taproot-bip32-derivations)
+      (: psbt? integer? bytevector? list? list? -> psbt?)
+      (validate-psbt p)
+      (require-bytevector "psbt-annotate-input scriptPubKey" script-pubkey)
+      (validate-bip32-derivations
+        "psbt-annotate-input BIP32 derivation"
+        bip32-derivations
+        33
+        validate-bip32-origin-value)
+      (validate-bip32-derivations
+        "psbt-annotate-input Taproot BIP32 derivation"
+        taproot-bip32-derivations
+        32
+        validate-taproot-origin-value)
+      (let* ((input (nth-item (psbt-inputs p) input-index "psbt-annotate-input"))
+             (utxo (psbt-input-prevout p input-index "psbt-annotate-input")))
+        (unless (equal? script-pubkey (txout-script-pubkey utxo))
+          (error "psbt-annotate-input: prevout scriptPubKey mismatch"))
+        (psbt-update-input
+          p
+          input-index
+          (psbt-input
+            non-witness-utxo: (psbt-input-non-witness-utxo input)
+            witness-utxo: (psbt-input-witness-utxo input)
+            partial-sigs: (psbt-input-partial-sigs input)
+            sighash-type: (psbt-input-sighash-type input)
+            final-script-sig: (psbt-input-final-script-sig input)
+            final-script-witness: (psbt-input-final-script-witness input)
+            taproot-key-sig: (psbt-input-taproot-key-sig input)
+            bip32-derivations: (merge-keyvals (psbt-input-bip32-derivations input)
+                                              bip32-derivations)
+            taproot-bip32-derivations: (merge-keyvals
+                                          (psbt-input-taproot-bip32-derivations input)
+                                          taproot-bip32-derivations)
+            unknowns: (psbt-input-unknowns input)))))
+
+    ;;; Attach BIP32 derivation metadata to a PSBT output after script matching.
+    (define (psbt-annotate-output p output-index script-pubkey bip32-derivations taproot-bip32-derivations)
+      (: psbt? integer? bytevector? list? list? -> psbt?)
+      (validate-psbt p)
+      (require-bytevector "psbt-annotate-output scriptPubKey" script-pubkey)
+      (validate-bip32-derivations
+        "psbt-annotate-output BIP32 derivation"
+        bip32-derivations
+        33
+        validate-bip32-origin-value)
+      (validate-bip32-derivations
+        "psbt-annotate-output Taproot BIP32 derivation"
+        taproot-bip32-derivations
+        32
+        validate-taproot-origin-value)
+      (let* ((output (nth-item (psbt-outputs p) output-index "psbt-annotate-output"))
+             (txout0 (nth-item (transaction-outputs (psbt-unsigned-tx p))
+                               output-index
+                               "psbt-annotate-output")))
+        (unless (equal? script-pubkey (txout-script-pubkey txout0))
+          (error "psbt-annotate-output: output scriptPubKey mismatch"))
+        (psbt-update-output
+          p
+          output-index
+          (psbt-output
+            bip32-derivations: (merge-keyvals (psbt-output-bip32-derivations output)
+                                              bip32-derivations)
+            taproot-bip32-derivations: (merge-keyvals
+                                          (psbt-output-taproot-bip32-derivations output)
+                                          taproot-bip32-derivations)
+            unknowns: (psbt-output-unknowns output)))))
 
     (define (psbt-input-sighash-or-default input default)
       (if (psbt-input-sighash-type input)
@@ -1452,6 +1628,21 @@
                    unknowns: (psbt-input-unknowns input))))
           (psbt-update-input p input-index signed-input))))
 
+    ;;; Sign a standard P2PKH, P2WPKH, or key-path P2TR PSBT input.
+    (define (psbt-sign-standard-input p input-index private-key)
+      (: psbt? integer? bytevector? -> psbt?)
+      (validate-psbt p)
+      (let* ((utxo (psbt-input-prevout p input-index "psbt-sign-standard-input"))
+             (script (txout-script-pubkey utxo)))
+        (cond ((script-p2pkh? script)
+               (psbt-sign-p2pkh-input p input-index private-key))
+              ((script-p2wpkh? script)
+               (psbt-sign-p2wpkh-input p input-index private-key))
+              ((script-p2tr? script)
+               (psbt-sign-p2tr-keypath-input p input-index private-key))
+              (else
+               (error "psbt-sign-standard-input: unsupported prevout scriptPubKey")))))
+
     ;;; Finalize a signed P2PKH PSBT input.
     (define (psbt-finalize-p2pkh-input p input-index)
       (: psbt? integer? -> psbt?)
@@ -1521,6 +1712,21 @@
                   taproot-bip32-derivations: (psbt-input-taproot-bip32-derivations input)
                   unknowns: (psbt-input-unknowns input))))
           (psbt-update-input p input-index final-input))))
+
+    ;;; Finalize a standard P2PKH, P2WPKH, or key-path P2TR PSBT input.
+    (define (psbt-finalize-standard-input p input-index)
+      (: psbt? integer? -> psbt?)
+      (validate-psbt p)
+      (let* ((utxo (psbt-input-prevout p input-index "psbt-finalize-standard-input"))
+             (script (txout-script-pubkey utxo)))
+        (cond ((script-p2pkh? script)
+               (psbt-finalize-p2pkh-input p input-index))
+              ((script-p2wpkh? script)
+               (psbt-finalize-p2wpkh-input p input-index))
+              ((script-p2tr? script)
+               (psbt-finalize-p2tr-keypath-input p input-index))
+              (else
+               (error "psbt-finalize-standard-input: unsupported prevout scriptPubKey")))))
 
     ;;; Extract the final transaction from a fully-finalized PSBT.
     (define (psbt-extract-transaction p)

@@ -19,6 +19,8 @@
                package: "sigil-bitcoin-keys")
     (from-path dir: "../sigil-bitcoin-script"
                package: "sigil-bitcoin-script")
+    (from-path dir: "../sigil-bitcoin-tx"
+               package: "sigil-bitcoin-tx")
     (from-path dir: "../sigil-secp256k1"
                package: "sigil-secp256k1")
     (from-path dir: "../../../sigil-crypto"

@@ -24,8 +24,8 @@ Use this page as a quick map from package to responsibility.
 
 ## Transactions and PSBT
 
-`(sigil bitcoin tx)` owns transaction records, serialization, parsing, txids, sighashes, P2PKH/P2WPKH/P2TR key-path signing, and PSBT v0 operations including non-witness UTXOs, derivation records, unknown/proprietary keys, and Taproot key signatures.
+`(sigil bitcoin tx)` owns transaction records, serialization, parsing, txids, sighashes, P2PKH/P2WPKH/P2TR key-path signing, and PSBT v0 operations including non-witness UTXOs, input/output derivation records, annotation helpers, unknown/proprietary keys, and Taproot key signatures.
 
 ## Miniscript
 
-`(sigil bitcoin miniscript)` owns policy fragments, type/signing metadata, hash-lock and branch combinator compilation, descriptors with checksums, BIP389 multipath key derivation, Taproot script trees, concrete BIP327 `musig(...)` key aggregation for Taproot descriptor scriptPubKeys, script compilation, BIP388 wallet policy expansion, and PSBT planning records.
+`(sigil bitcoin miniscript)` owns policy fragments, type/signing metadata, hash-lock and branch combinator compilation, descriptors with checksums, BIP389 multipath key derivation, Taproot script trees, concrete BIP327 `musig(...)` key aggregation for Taproot descriptor scriptPubKeys, script compilation, BIP388 wallet policy expansion, PSBT planning records, and descriptor-plan PSBT signing wrappers.

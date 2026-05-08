@@ -132,7 +132,10 @@
     unknowns: '()))
 
 (define (empty-test-psbt-output)
-  (psbt-output unknowns: '()))
+  (psbt-output
+    bip32-derivations: '()
+    taproot-bip32-derivations: '()
+    unknowns: '()))
 
 (define (funding-transaction script-pubkey)
   (transaction
@@ -526,7 +529,12 @@
                taproot-bip32-derivations: (list (cons %psbt-test-xonly
                                                        %psbt-test-taproot-origin))
                unknowns: input-unknowns))
-           (output (psbt-output unknowns: output-unknowns))
+           (output (psbt-output
+                     bip32-derivations: (list (cons %psbt-test-pubkey
+                                                    %psbt-test-origin))
+                     taproot-bip32-derivations: (list (cons %psbt-test-xonly
+                                                            %psbt-test-taproot-origin))
+                     unknowns: output-unknowns))
            (p (psbt
                 unsigned-tx: %unsigned-p2wpkh-tx
                 inputs: (list input)
@@ -541,7 +549,39 @@
       (assert-equal (list (cons %psbt-test-pubkey %psbt-test-origin))
                     (psbt-input-bip32-derivations parsed-input))
       (assert-equal (list (cons %psbt-test-xonly %psbt-test-taproot-origin))
-                    (psbt-input-taproot-bip32-derivations parsed-input)))))
+                    (psbt-input-taproot-bip32-derivations parsed-input))
+      (assert-equal (list (cons %psbt-test-pubkey %psbt-test-origin))
+                    (psbt-output-bip32-derivations parsed-output))
+      (assert-equal (list (cons %psbt-test-xonly %psbt-test-taproot-origin))
+                    (psbt-output-taproot-bip32-derivations parsed-output))))
+
+  (test "annotates PSBT inputs and outputs with derivation records"
+    (let* ((p (psbt
+                unsigned-tx: %unsigned-p2wpkh-tx
+                inputs: (list
+                  (empty-test-psbt-input #f %p2wpkh-utxo))
+                outputs: (list (empty-test-psbt-output))
+                unknowns: '()))
+           (annotated-input (psbt-annotate-input
+                              p
+                              0
+                              %p2wpkh-script
+                              (list (cons %psbt-test-pubkey %psbt-test-origin))
+                              '()))
+           (annotated-output (psbt-annotate-output
+                               annotated-input
+                               0
+                               %p2wpkh-script
+                               (list (cons %psbt-test-pubkey %psbt-test-origin))
+                               '()))
+           (input (car (psbt-inputs annotated-output)))
+           (output (car (psbt-outputs annotated-output))))
+      (assert-equal (list (cons %psbt-test-pubkey %psbt-test-origin))
+                    (psbt-input-bip32-derivations input))
+      (assert-equal (list (cons %psbt-test-pubkey %psbt-test-origin))
+                    (psbt-output-bip32-derivations output))
+      (assert-error
+        (psbt-annotate-input p 0 %p2pkh-script '() '())))))
 
 (if %native-secp256k1?
   (test-group "PSBT signing"
@@ -552,10 +592,10 @@
                     (empty-test-psbt-input #f %p2wpkh-utxo))
                   outputs: (list (empty-test-psbt-output))
                   unknowns: '()))
-             (signed (psbt-sign-p2wpkh-input p 0 %one))
+             (signed (psbt-sign-standard-input p 0 %one))
              (signed-input (car (psbt-inputs signed)))
              (parsed (psbt-parse (psbt-serialize signed)))
-             (finalized (psbt-finalize-p2wpkh-input parsed 0))
+             (finalized (psbt-finalize-standard-input parsed 0))
              (extracted (psbt-extract-transaction finalized))
              (witness (txin-witness (car (transaction-inputs extracted)))))
         (assert-equal 1 (length (psbt-input-partial-sigs signed-input)))
