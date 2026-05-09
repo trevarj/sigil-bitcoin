@@ -4,6 +4,7 @@
   (import (sigil struct)
           (sigil math)
           (sigil crypto)
+          (sigil bitcoin utils)
           (sigil bitcoin primitives)
           (sigil bitcoin encoding)
           (sigil bitcoin keys)
@@ -956,18 +957,6 @@
       (: miniscript-fragment? -> boolean?)
       (and (miniscript-type fragment) #t))
 
-    (define (join-strings parts sep)
-      (cond ((null? parts)
-             "")
-            ((null? (cdr parts))
-             (car parts))
-            (else
-             (let loop ((xs (cdr parts))
-                        (out (car parts)))
-               (if (null? xs)
-                   out
-                   (loop (cdr xs) (string-append out sep (car xs))))))))
-
     (define (key-list->string keys)
       (join-strings
         (let loop ((xs keys)
@@ -1559,16 +1548,6 @@
       (unless (and (integer? n) (>= n 0) (< n #x80000000))
         (error (string-append who ": expected non-hardened child index")))
       n)
-
-    (define (u32-le n)
-      (let ((out (make-bytevector 4 0)))
-        (unless (and (integer? n) (>= n 0) (<= n #xffffffff))
-          (error "descriptor key origin path segment: expected u32"))
-        (bytevector-u8-set! out 0 (bitwise-and n #xff))
-        (bytevector-u8-set! out 1 (bitwise-and (arithmetic-shift n -8) #xff))
-        (bytevector-u8-set! out 2 (bitwise-and (arithmetic-shift n -16) #xff))
-        (bytevector-u8-set! out 3 (bitwise-and (arithmetic-shift n -24) #xff))
-        out))
 
     (define (path-segment->child-number segment)
       (let* ((len (string-length segment))

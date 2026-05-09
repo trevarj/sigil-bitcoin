@@ -5,6 +5,7 @@
           (sigil crypto)
           (sigil math)
           (sigil secp256k1)
+          (sigil bitcoin utils)
           (sigil bitcoin primitives)
           (sigil bitcoin encoding)
           (sigil bitcoin bip39-words))
@@ -105,13 +106,6 @@
       (path list?))
 
     (define %hardened-offset #x80000000)
-
-    (define (require-bytevector-length who bytes len)
-      (unless (and (bytevector? bytes) (= len (bytevector-length bytes)))
-        (error (string-append who ": expected "
-                              (number->string len)
-                              "-byte bytevector")))
-      bytes)
 
     (define (require-private-key key)
       (require-bytevector-length "private key" key 32)
