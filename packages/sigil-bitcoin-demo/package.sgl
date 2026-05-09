@@ -18,6 +18,8 @@
                package: "sigil-crypto")
     (from-path dir: "../sigil-secp256k1"
                package: "sigil-secp256k1")
+    (from-path dir: "../sigil-bitcoin-utils"
+               package: "sigil-bitcoin-utils")
     (from-path dir: "../sigil-bitcoin-primitives"
                package: "sigil-bitcoin-primitives")
     (from-path dir: "../sigil-bitcoin-encoding"

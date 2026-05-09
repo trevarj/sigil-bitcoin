@@ -13,6 +13,8 @@
   dependencies: (list
     (from-path dir: "../../../sigil-crypto"
                package: "sigil-crypto")
+    (from-path dir: "../sigil-bitcoin-utils"
+               package: "sigil-bitcoin-utils")
     (from-path dir: "../sigil-bitcoin-primitives"
                package: "sigil-bitcoin-primitives")
     (from-path dir: "../sigil-bitcoin-encoding"

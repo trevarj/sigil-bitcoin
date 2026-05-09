@@ -2,7 +2,8 @@
 
 (define-library (sigil bitcoin script)
   (import (sigil struct)
-          (sigil math))
+          (sigil math)
+          (sigil bitcoin utils))
   (export
     op-0 op-pushdata1 op-pushdata2 op-pushdata4
     op-1 op-2 op-3 op-4 op-5 op-6 op-7 op-8
@@ -89,19 +90,6 @@
       (opcode integer?)
       (data any?))
 
-    (define (require-bytevector who bytes)
-      (unless (bytevector? bytes)
-        (error (string-append who ": expected bytevector")))
-      bytes)
-
-    (define (require-bytevector-length who bytes len)
-      (require-bytevector who bytes)
-      (unless (= len (bytevector-length bytes))
-        (error (string-append who ": expected "
-                              (number->string len)
-                              "-byte bytevector")))
-      bytes)
-
     (define (require-u8 who value)
       (unless (and (integer? value) (<= 0 value 255))
         (error (string-append who ": expected byte value")))
@@ -128,62 +116,6 @@
               (bytevector-copy! out offset part)
               (set! offset (+ offset (bytevector-length part))))))))
 
-    (define (le16-bytevector n)
-      (let ((out (make-bytevector 2 0)))
-        (bytevector-u8-set! out 0 (bitwise-and n #xff))
-        (bytevector-u8-set! out 1 (bitwise-and (arithmetic-shift n -8) #xff))
-        out))
-
-    (define (le32-bytevector n)
-      (let ((out (make-bytevector 4 0)))
-        (bytevector-u8-set! out 0 (bitwise-and n #xff))
-        (bytevector-u8-set! out 1 (bitwise-and (arithmetic-shift n -8) #xff))
-        (bytevector-u8-set! out 2 (bitwise-and (arithmetic-shift n -16) #xff))
-        (bytevector-u8-set! out 3 (bitwise-and (arithmetic-shift n -24) #xff))
-        out))
-
-    (define (le16-ref bytes offset)
-      (bitwise-ior
-        (bytevector-u8-ref bytes offset)
-        (arithmetic-shift (bytevector-u8-ref bytes (+ offset 1)) 8)))
-
-    (define (le32-ref bytes offset)
-      (bitwise-ior
-        (bytevector-u8-ref bytes offset)
-        (arithmetic-shift (bytevector-u8-ref bytes (+ offset 1)) 8)
-        (arithmetic-shift (bytevector-u8-ref bytes (+ offset 2)) 16)
-        (arithmetic-shift (bytevector-u8-ref bytes (+ offset 3)) 24)))
-
-    (define (bytes-prefix? bytes prefix)
-      (and (>= (bytevector-length bytes) (bytevector-length prefix))
-           (let loop ((i 0))
-             (if (>= i (bytevector-length prefix))
-                 #t
-                 (and (= (bytevector-u8-ref bytes i)
-                         (bytevector-u8-ref prefix i))
-                      (loop (+ i 1)))))))
-
-    (define (bytes-suffix? bytes suffix)
-      (let ((blen (bytevector-length bytes))
-            (slen (bytevector-length suffix)))
-        (and (>= blen slen)
-             (let loop ((i 0))
-               (if (>= i slen)
-                   #t
-                   (and (= (bytevector-u8-ref bytes (+ (- blen slen) i))
-                           (bytevector-u8-ref suffix i))
-                        (loop (+ i 1))))))))
-
-    (define (byte-list->bytevector bytes)
-      (let* ((len (length bytes))
-             (out (make-bytevector len 0)))
-        (let loop ((xs bytes) (i 0))
-          (if (null? xs)
-              out
-              (begin
-                (bytevector-u8-set! out i (car xs))
-                (loop (cdr xs) (+ i 1)))))))
-
     (define (last-item xs)
       (if (null? (cdr xs))
           (car xs)
@@ -193,28 +125,6 @@
       (if (null? (cdr xs))
           (list value)
           (cons (car xs) (replace-last (cdr xs) value))))
-
-    (define (join-strings strings sep)
-      (cond ((null? strings) "")
-            ((null? (cdr strings)) (car strings))
-            (else
-             (let loop ((xs (cdr strings))
-                        (out (car strings)))
-               (if (null? xs)
-                   out
-                   (loop (cdr xs) (string-append out sep (car xs))))))))
-
-    (define (hex-encode-local bytes)
-      (let* ((len (bytevector-length bytes))
-             (hex "0123456789abcdef")
-             (out (make-string (* 2 len))))
-        (do ((i 0 (+ i 1)))
-            ((>= i len) out)
-          (let* ((b (bytevector-u8-ref bytes i))
-                 (hi (arithmetic-shift b -4))
-                 (lo (bitwise-and b #x0f)))
-            (string-set! out (* 2 i) (string-ref hex hi))
-            (string-set! out (+ 1 (* 2 i)) (string-ref hex lo))))))
 
     ;;; Encode a minimally-sized pushdata operation for a bytevector.
     (define (script-push-data data)
@@ -229,11 +139,11 @@
                               data))
               ((<= len #xffff)
                (script-append (script-op op-pushdata2)
-                              (le16-bytevector len)
+                              (u16-le len)
                               data))
               ((<= len #xffffffff)
                (script-append (script-op op-pushdata4)
-                              (le32-bytevector len)
+                              (u32-le len)
                               data))
               (else
                (error "script-push-data: pushdata too large")))))
@@ -327,7 +237,7 @@
                       ((= opcode op-pushdata2)
                        (when (> (+ offset 3) len)
                          (error "script-parse: truncated OP_PUSHDATA2 length"))
-                       (let* ((size (le16-ref script (+ offset 1)))
+                       (let* ((size (read-u16-le script (+ offset 1) "script-parse"))
                               (start (+ offset 3))
                               (end (+ start size)))
                          (when (> end len)
@@ -339,7 +249,7 @@
                       ((= opcode op-pushdata4)
                        (when (> (+ offset 5) len)
                          (error "script-parse: truncated OP_PUSHDATA4 length"))
-                       (let* ((size (le32-ref script (+ offset 1)))
+                       (let* ((size (read-u32-le script (+ offset 1) "script-parse"))
                               (start (+ offset 5))
                               (end (+ start size)))
                          (when (> end len)
@@ -433,7 +343,7 @@
             ((= opcode op-checklocktimeverify) "OP_CHECKLOCKTIMEVERIFY")
             ((= opcode op-checksequenceverify) "OP_CHECKSEQUENCEVERIFY")
             (else
-             (string-append "OP_UNKNOWN_" (hex-encode-local (script-op opcode))))))
+             (string-append "OP_UNKNOWN_" (hex-encode-bytes (script-op opcode))))))
 
     (define (script-chunk->asm chunk)
       (let ((opcode (script-chunk-opcode chunk))
@@ -441,7 +351,7 @@
         (if (bytevector? data)
             (if (and (= opcode op-0) (= 0 (bytevector-length data)))
                 "OP_0"
-                (hex-encode-local data))
+                (hex-encode-bytes data))
             (opcode-name opcode))))
 
     ;;; Decompile raw script bytes to a simple Bitcoin Core-style ASM string.

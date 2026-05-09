@@ -10,7 +10,9 @@
   url: "https://codeberg.org/sigil/sigil-bitcoin"
   license: "BSD-3-Clause"
 
-  dependencies: (list)
+  dependencies: (list
+    (from-path dir: "../sigil-bitcoin-utils"
+               package: "sigil-bitcoin-utils"))
 
   tasks: (list
     (task

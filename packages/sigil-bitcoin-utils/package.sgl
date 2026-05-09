@@ -1,0 +1,21 @@
+;;; sigil-bitcoin-utils — Internal Bitcoin package utilities
+;;;
+;;; Shared pure Sigil helpers for bytevectors, endian encodings, and strings.
+
+(package
+  name: "sigil-bitcoin-utils"
+  version: "0.1.0"
+  sigil: "^0.16"
+  description: "Shared internal helpers for sigil-bitcoin packages"
+  url: "https://codeberg.org/sigil/sigil-bitcoin"
+  license: "BSD-3-Clause"
+
+  dependencies: (list)
+
+  tasks: (list
+    (task
+      name: 'build
+      description: "Build sigil-bitcoin-utils"
+      steps: (list
+        (compile-sigil-modules
+          sources: "src/**/*.sgl")))))

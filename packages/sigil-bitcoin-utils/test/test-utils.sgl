@@ -1,0 +1,28 @@
+(import (sigil test)
+        (sigil bitcoin utils))
+
+(test-group "bytevector utilities"
+  (test "validates bytevector length"
+    (assert-equal #u8(#x01 #x02)
+                  (require-bytevector-length "test" #u8(#x01 #x02) 2))
+    (assert-error
+      (require-bytevector-length "test" #u8(#x01) 2)))
+
+  (test "encodes and reads little-endian integers"
+    (assert-equal #u8(#x34 #x12) (u16-le #x1234))
+    (assert-equal #u8(#x78 #x56 #x34 #x12) (u32-le #x12345678))
+    (assert-equal #x1234 (read-u16-le #u8(#x34 #x12) 0 "test"))
+    (assert-equal #x12345678
+                  (read-u32-le #u8(#x78 #x56 #x34 #x12) 0 "test")))
+
+  (test "checks prefixes and suffixes"
+    (assert-true (bytes-prefix? #u8(#x01 #x02 #x03) #u8(#x01 #x02)))
+    (assert-true (bytes-suffix? #u8(#x01 #x02 #x03) #u8(#x02 #x03)))
+    (assert-false (bytes-prefix? #u8(#x01 #x02 #x03) #u8(#x02)))
+    (assert-false (bytes-suffix? #u8(#x01 #x02 #x03) #u8(#x01))))
+
+  (test "formats bytes and strings"
+    (assert-equal "deadbeef" (hex-encode-bytes #u8(#xde #xad #xbe #xef)))
+    (assert-equal "a/b/c" (join-strings (list "a" "b" "c") "/"))))
+
+(run-tests)
