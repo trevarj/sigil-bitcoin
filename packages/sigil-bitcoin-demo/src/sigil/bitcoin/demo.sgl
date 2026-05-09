@@ -8,6 +8,7 @@
           (sigil bitcoin keys)
           (sigil bitcoin script)
           (sigil bitcoin tx)
+          (sigil bitcoin psbt)
           (sigil bitcoin miniscript))
   (export demo-dispatch demo-tools-json main)
   (begin

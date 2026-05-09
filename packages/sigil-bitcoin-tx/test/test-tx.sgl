@@ -4,7 +4,8 @@
         (sigil bitcoin encoding)
         (sigil bitcoin primitives)
         (sigil bitcoin script)
-        (sigil bitcoin tx))
+        (sigil bitcoin tx)
+        (sigil bitcoin psbt))
 
 (define %native-secp256k1? (procedure? secp256k1-seckey-verify?))
 

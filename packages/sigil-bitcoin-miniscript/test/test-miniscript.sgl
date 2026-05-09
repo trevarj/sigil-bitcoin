@@ -4,6 +4,7 @@
         (sigil bitcoin script)
         (sigil bitcoin keys)
         (sigil bitcoin tx)
+        (sigil bitcoin psbt)
         (sigil bitcoin miniscript)
         (sigil secp256k1))
 

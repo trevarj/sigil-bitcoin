@@ -10,6 +10,7 @@
           (sigil bitcoin keys)
           (sigil bitcoin script)
           (sigil bitcoin tx)
+          (sigil bitcoin psbt)
           (sigil secp256k1))
   (export
     miniscript-fragment miniscript-fragment?
