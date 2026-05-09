@@ -145,6 +145,103 @@
     (map (lambda (path) (cons path (guide-title path)))
          (glob (path-join %docs-dir "*.md")))))
 
+(define %tools
+  (list
+    #{ id: "hash.hash160" title: "HASH160" group: "Hashing"
+       summary: "Compute RIPEMD160(SHA256(bytes)), the 20-byte hash used by P2PKH, P2SH, and P2WPKH address flows."
+       usage: "Paste hex-encoded bytes. The result is a 20-byte hash encoded as hex."
+       example: "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798" }
+    #{ id: "hash.hash256" title: "HASH256" group: "Hashing"
+       summary: "Compute double SHA256, the hash construction used for transaction IDs, block IDs, and checksums."
+       usage: "Paste hex-encoded bytes. The result is a 32-byte hash encoded as hex."
+       example: "0000000000000000000000000000000000000000000000000000000000000000" }
+    #{ id: "hash.tagged" title: "Tagged hash" group: "Hashing"
+       summary: "Compute a BIP340-style tagged hash for Taproot and Schnorr related domains."
+       usage: "Paste message bytes as hex and provide the tag string, such as TapTweak or BIP0340/challenge."
+       example: "Tag: TapTweak; bytes: 32 zero bytes" }
+    #{ id: "encoding.hex" title: "Hex decode" group: "Encoding"
+       summary: "Validate and normalize hex data."
+       usage: "Paste a hex string. The result shows normalized lowercase hex and decoded byte count."
+       example: "deadbeef" }
+    #{ id: "encoding.base58.encode" title: "Base58 encode" group: "Encoding"
+       summary: "Encode raw bytes with Bitcoin's Base58 alphabet."
+       usage: "Paste hex bytes. Leading zero bytes are preserved as leading 1 characters."
+       example: "00000000000000000000" }
+    #{ id: "encoding.base58.decode" title: "Base58 decode" group: "Encoding"
+       summary: "Decode a Bitcoin Base58 string into raw bytes."
+       usage: "Paste Base58 text. The result is the decoded payload as hex."
+       example: "1111111111" }
+    #{ id: "encoding.base58check.encode" title: "Base58Check encode" group: "Encoding"
+       summary: "Encode a version byte plus payload with a HASH256 checksum."
+       usage: "Paste payload hex and set the integer version byte. Version 0 is mainnet P2PKH."
+       example: "Version 0; payload 751e76e8199196d454941c45d1b3a323f1433bd6" }
+    #{ id: "encoding.base58check.decode" title: "Base58Check decode" group: "Encoding"
+       summary: "Decode and verify a Base58Check string."
+       usage: "Paste a Base58Check value. The result shows the version byte and payload hex."
+       example: "1BgGZ9tcN4rm9KBzDn7KprQz87SZ26SAMH" }
+    #{ id: "encoding.segwit.encode" title: "SegWit encode" group: "Encoding"
+       summary: "Encode a native SegWit address using Bech32 or Bech32m as required by witness version."
+       usage: "Paste witness program hex, set the HRP, and set the witness version."
+       example: "HRP bc; version 0; program 751e76e8199196d454941c45d1b3a323f1433bd6" }
+    #{ id: "encoding.segwit.decode" title: "SegWit decode" group: "Encoding"
+       summary: "Decode and validate a native SegWit address."
+       usage: "Paste a Bech32 or Bech32m address. The result shows HRP, witness version, and program hex."
+       example: "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4" }
+    #{ id: "keys.private" title: "Private key to addresses" group: "Keys"
+       summary: "Derive a compressed public key, WIF, and standard address forms from a 32-byte private key."
+       usage: "Paste private key hex and choose mainnet or testnet."
+       example: "Private key 1 on mainnet" }
+    #{ id: "keys.wif.decode" title: "WIF decode" group: "Keys"
+       summary: "Decode a Wallet Import Format private key."
+       usage: "Paste WIF text. The result shows private key hex, network, and compression flag."
+       example: "KwDiBf89QgGbjEhKnhXJuH7LrciVrZi3qYjgd9M7rFU73sVHnoWn" }
+    #{ id: "keys.bip39.entropy" title: "BIP39 entropy" group: "Keys"
+       summary: "Convert BIP39 entropy bytes into a mnemonic phrase."
+       usage: "Paste 128, 160, 192, 224, or 256 bits of entropy as hex."
+       example: "00000000000000000000000000000000" }
+    #{ id: "keys.bip39.mnemonic" title: "BIP39 mnemonic" group: "Keys"
+       summary: "Validate a BIP39 mnemonic and derive entropy plus seed bytes."
+       usage: "Paste a mnemonic and optional passphrase. The result includes entropy and seed hex."
+       example: "abandon ... about with passphrase TREZOR" }
+    #{ id: "keys.bip32" title: "BIP32 derive" group: "Keys"
+       summary: "Derive an extended private key, xpub, public key, and addresses from a seed and derivation path."
+       usage: "Paste seed hex, set a BIP32 path, and choose mainnet or testnet."
+       example: "Seed 000102030405060708090a0b0c0d0e0f; path m/84'/0'/0'/0/0" }
+    #{ id: "script.template" title: "Script template" group: "Script"
+       summary: "Build standard scriptPubKey templates or pushdata scripts from raw hex."
+       usage: "Paste the hash, witness program, x-only key, or data bytes and choose a template."
+       example: "P2WPKH for 751e76e8199196d454941c45d1b3a323f1433bd6" }
+    #{ id: "tx.parse" title: "Parse transaction" group: "Transactions"
+       summary: "Deserialize a raw Bitcoin transaction and summarize its IDs, counts, locktime, witness status, and canonical hex."
+       usage: "Paste raw transaction hex."
+       example: "The demo transaction hex from Build demo transaction." }
+    #{ id: "tx.demo" title: "Build demo transaction" group: "Transactions"
+       summary: "Construct a small synthetic P2WPKH output transaction for serialization and txid inspection."
+       usage: "Run the example. The input field is ignored."
+       example: "One zero-prevout input and one 1000 sat P2WPKH output." }
+    #{ id: "psbt.parse" title: "Parse PSBT" group: "PSBT"
+       summary: "Deserialize a PSBT and summarize its unsigned transaction and map counts."
+       usage: "Paste PSBT hex. Use the P2WPKH demo signer to produce a sample PSBT."
+       example: "PSBT hex from Sign P2WPKH demo PSBT." }
+    #{ id: "psbt.demo-p2wpkh" title: "Sign P2WPKH demo PSBT" group: "PSBT"
+       summary: "Build, sign, finalize, and extract a synthetic P2WPKH PSBT."
+       usage: "Run the example. The input field is ignored."
+       example: "Private key 1 signs a one-input P2WPKH PSBT." }
+    #{ id: "miniscript.compile" title: "Compile Miniscript" group: "Miniscript"
+       summary: "Parse Miniscript, inspect its type flags, and compile it to script bytes."
+       usage: "Paste a Miniscript expression using supported fragments such as pk, older, and_v, multi, and thresh."
+       example: "and_v(v:pk(generator),older(12960))" }
+    #{ id: "descriptor.inspect" title: "Inspect descriptor" group: "Descriptors"
+       summary: "Parse a descriptor, compute its checksum, and try compiling or deriving its scriptPubKey."
+       usage: "Paste a descriptor. Optional branch and index fields are used for derivable descriptors."
+       example: "wpkh(0279be66...f81798)" } ))
+
+(define (tool-slug id)
+  (string-replace id "." "-"))
+
+(define (tool-url tool)
+  (string-append "tools/" (tool-slug (dict-ref tool id: "")) ".html"))
+
 (define (nav-html modules root active)
   (let* ((api-items
            (string-join
@@ -166,6 +263,19 @@
                  (string-append "<a href=\"" root (guide-url (car g)) "\">"
                                 (html-escape (cdr g)) "</a>"))
                (load-guides))
+             ""))
+         (tool-items
+           (string-join
+             (cons
+               (string-append "<a href=\"" root "index.html#tools\">Live Toolbench</a>")
+               (map
+                 (lambda (tool)
+                   (let ((active-id (string-append "tool:" (dict-ref tool id: ""))))
+                     (string-append "<a"
+                                    (if (string=? active active-id) " class=\"active\"" "")
+                                    " href=\"" root (tool-url tool) "\">"
+                                    (html-escape (dict-ref tool title: "")) "</a>")))
+                 %tools))
              "")))
     (string-append
       "<aside class=\"sidebar\">"
@@ -175,6 +285,7 @@
       "<label class=\"search\"><span>Search</span>"
       "<input id=\"search\" type=\"search\" placeholder=\"Function or module\"></label>"
       "<div id=\"search-results\" class=\"search-results\"></div>"
+      "<h2>Tools</h2><nav>" tool-items "</nav>"
       "<h2>Guides</h2><nav>" guide-items "</nav>"
       "<h2>API Reference</h2><nav>" api-items "</nav>"
       "</aside>")))
@@ -186,6 +297,7 @@
     "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
     "<title>" (html-escape title) " - " %site-title "</title>"
     "<link rel=\"stylesheet\" href=\"" root "assets/style.css\">"
+    "<link rel=\"stylesheet\" href=\"" root "assets/toolbench.css?v=3\">"
     "<link rel=\"icon\" href=\"" root %logo-path "\">"
     "</head><body>"
     (nav-html modules root active)
@@ -194,6 +306,7 @@
     "</main>"
     "<script>window.SIGIL_DOCS_SEARCH=\"" root "search-index.json\";</script>"
     "<script src=\"" root "assets/search.js\"></script>"
+    "<script type=\"module\" src=\"" root "assets/toolbench.js?v=3\"></script>"
     "</body></html>"))
 
 (define (export-description export)
@@ -320,6 +433,32 @@
     (write-page (path-join %out-dir (guide-url path))
                 (page-html title "../" "" modules body))))
 
+(define (tool-info-html label value)
+  (string-append
+    "<section class=\"tool-doc-block\"><h2>" (html-escape label) "</h2>"
+    "<p>" (html-escape value) "</p></section>"))
+
+(define (tool-page tool modules)
+  (let* ((title (dict-ref tool title: "Tool"))
+         (id (dict-ref tool id: ""))
+         (active (string-append "tool:" id))
+         (body
+           (string-append
+             "<header><p class=\"eyebrow\">" (html-escape (dict-ref tool group: "Tool")) "</p>"
+             "<h1>" (html-escape title) "</h1>"
+             "<p class=\"lead\">" (html-escape (dict-ref tool summary: "")) "</p></header>"
+             "<section class=\"tool-doc\">"
+             (tool-info-html "How To Use It" (dict-ref tool usage: ""))
+             (tool-info-html "Example" (dict-ref tool example: ""))
+             "</section>"
+             "<section class=\"toolbench\"><div class=\"section-head\">"
+             "<div><p class=\"eyebrow\">Runs locally in WebAssembly</p><h2>Live Tool</h2></div>"
+             "<p class=\"muted\">Inputs stay in this browser tab. No transaction broadcast or remote Bitcoin API calls are used.</p>"
+             "</div><div id=\"toolbench\" data-wasm-root=\"../assets/wasm/\" data-tool=\""
+             (attr-escape id) "\" data-tools-root=\"\"></div></section>")))
+    (write-page (path-join %out-dir (tool-url tool))
+                (page-html title "../" active modules body))))
+
 (define (landing-page modules guides)
   (let* ((module-cards
            (string-join
@@ -350,9 +489,13 @@
           "<img class=\"hero-logo\" src=\"" %logo-path "\" alt=\"Sigil Bitcoin logo\" width=\"96\" height=\"96\">"
           "<div><p class=\"eyebrow\">Bitcoin libraries for Sigil</p>"
           "<h1>Sigil Bitcoin</h1>"
-          "<p class=\"lead\">API reference and package guides for keys, addresses, scripts, transactions, PSBTs, Miniscript, and secp256k1 bindings.</p></div>"
+          "<p class=\"lead\">Live browser tools, API reference, and package guides for keys, addresses, scripts, transactions, PSBTs, Miniscript, and secp256k1 bindings.</p></div>"
           "</div>"
           "</section>"
+          "<section id=\"tools\" class=\"toolbench\"><div class=\"section-head\">"
+          "<div><p class=\"eyebrow\">Runs locally in WebAssembly</p><h2>Bitcoin Toolbench</h2></div>"
+          "<p class=\"muted\">Tools share one browser runtime. No transaction broadcast or remote Bitcoin API calls are used.</p>"
+          "</div><div id=\"toolbench\" data-wasm-root=\"assets/wasm/\" data-tools-root=\"tools/\"></div></section>"
           "<section><h2>Guides</h2><div class=\"guide-grid\">" guide-cards "</div></section>"
           "<section><h2>API Modules</h2><div class=\"module-grid\">" module-cards "</div></section>")))))
 
@@ -373,8 +516,19 @@
        url: (module-url module)
        summary: (first-line (dict-ref module description: "")) }))
 
+(define (tool-search-entry tool)
+  #{ name: (dict-ref tool title: "")
+     kind: "tool"
+     module: (dict-ref tool group: "Tool")
+     url: (tool-url tool)
+     summary: (dict-ref tool summary: "") })
+
 (define (search-index modules)
   (let ((entries '()))
+    (for-each
+      (lambda (tool)
+        (set! entries (cons (tool-search-entry tool) entries)))
+      %tools)
     (for-each
       (lambda (module)
         (set! entries (cons (module-search-entry module) entries))
@@ -399,8 +553,12 @@
 (define (write-assets)
   (write-page (path-join %out-dir "assets/style.css") %style-css)
   (write-page (path-join %out-dir "assets/search.js") %search-js)
-  (copy-file (path-join %docs-dir %logo-path)
-             (path-join %out-dir %logo-path)))
+  (for-each
+    (lambda (asset)
+      (let ((dest (path-join %out-dir "assets" (path-basename asset))))
+        (ensure-directory (path-dirname dest))
+        (copy-file asset dest)))
+    (glob (path-join %docs-dir "assets/*"))))
 
 (define (build-site)
   (let ((modules (load-modules))
@@ -409,6 +567,7 @@
       (error "docs-site: no sigil-bitcoin module JSON found; run sigil build first"))
     (write-assets)
     (landing-page modules guides)
+    (for-each (lambda (tool) (tool-page tool modules)) %tools)
     (api-index modules)
     (for-each (lambda (m)
                 (module-page m modules))

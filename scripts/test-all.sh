@@ -48,3 +48,5 @@ cd "$ROOT/packages/sigil-bitcoin-miniscript"
 guix shell -m ../../manifest.scm -- \
   sigil test test/test-miniscript.sgl \
     --redirects ../../dev-redirects.sgl --no-color
+
+"$ROOT/scripts/wasm-test.sh"

@@ -48,6 +48,12 @@
     transaction-serialize
     transaction-parse
     transaction-base-serialize
+    transaction-stripped-size
+    transaction-total-size
+    transaction-weight
+    transaction-vsize
+    transaction-output-value
+    transaction-fee
     transaction-txid
     transaction-wtxid
     transaction-sighash-legacy
@@ -569,6 +575,60 @@
     (define (transaction-base-serialize tx)
       (: transaction? -> bytevector?)
       (transaction-serialize tx #f))
+
+    ;;; Return the transaction's non-witness serialized size in bytes.
+    (define (transaction-stripped-size tx)
+      (: transaction? -> integer?)
+      (bytevector-length (transaction-base-serialize tx)))
+
+    ;;; Return the transaction's full serialized size in bytes.
+    (define (transaction-total-size tx)
+      (: transaction? -> integer?)
+      (bytevector-length (transaction-serialize tx #t)))
+
+    ;;; Return the transaction weight units defined by BIP141.
+    (define (transaction-weight tx)
+      (: transaction? -> integer?)
+      (+ (* 3 (transaction-stripped-size tx))
+         (transaction-total-size tx)))
+
+    ;;; Return the transaction virtual size in vbytes.
+    (define (transaction-vsize tx)
+      (: transaction? -> integer?)
+      (let ((weight (transaction-weight tx)))
+        (quotient (+ weight 3) 4)))
+
+    (define (sum-txout-values who outputs)
+      (let loop ((xs outputs) (total 0))
+        (if (null? xs)
+            total
+            (let ((output (car xs)))
+              (validate-txout output)
+              (loop (cdr xs) (+ total (txout-value output)))))))
+
+    ;;; Return the sum of this transaction's output values in satoshis.
+    (define (transaction-output-value tx)
+      (: transaction? -> integer?)
+      (validate-transaction tx)
+      (sum-txout-values "transaction-output-value"
+                        (transaction-outputs tx)))
+
+    (define (require-prevout-count tx prevouts)
+      (unless (= (length (transaction-inputs tx)) (length prevouts))
+        (error "transaction-fee: prevout count mismatch")))
+
+    ;;; Return input value minus output value for a transaction.
+    ;;;
+    ;;; `prevouts` must contain one `txout` for each transaction input.
+    (define (transaction-fee tx prevouts)
+      (: transaction? list? -> integer?)
+      (validate-transaction tx)
+      (require-prevout-count tx prevouts)
+      (let ((fee (- (sum-txout-values "transaction-fee" prevouts)
+                    (transaction-output-value tx))))
+        (when (< fee 0)
+          (error "transaction-fee: output value exceeds input value"))
+        fee))
 
     ;;; Return the transaction ID bytevector for a transaction.
     (define (transaction-txid tx)

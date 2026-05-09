@@ -20,7 +20,8 @@
     "packages/sigil-bitcoin-keys"
     "packages/sigil-bitcoin-script"
     "packages/sigil-bitcoin-tx"
-    "packages/sigil-bitcoin-miniscript")
+    "packages/sigil-bitcoin-miniscript"
+    "packages/sigil-bitcoin-demo")
 
   configs: (list
     (config
@@ -28,4 +29,23 @@
       output-dir: "build/dev"
       debug?: #t
       optimize: 0
-      bundle?: #f)))
+      bundle?: #f)
+
+    (config
+      name: 'web
+      output-dir: "build/web"
+      toolchain: 'zig
+      target: "wasm32-wasi"
+      deploy-dir: "www"
+      debug?: #f
+      optimize: 2
+      c-flags: (with-sigil-c-flags
+        '("-std=c99" "-D_GNU_SOURCE" "-D__SIGIL_WEB__" "-Wall" "-O2"))
+      link-flags: '("-Wl,--export=sigil_web_init"
+                    "-Wl,--export=sigil_web_start"
+                    "-Wl,--export=sigil_web_eval"
+                    "-Wl,--export=sigil_web_input"
+                    "-Wl,--export=malloc"
+                    "-Wl,--export=free"
+                    "-lc")
+      features: '(web wasm))))

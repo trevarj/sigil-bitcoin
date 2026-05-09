@@ -358,6 +358,42 @@
     (assert-false (equal? (transaction-txid %witness-tx)
                           (transaction-wtxid %witness-tx)))))
 
+(test-group "transaction metrics"
+  (test "reports stripped and total serialized sizes"
+    (assert-equal (bytevector-length %legacy-serialized)
+                  (transaction-stripped-size %legacy-tx))
+    (assert-equal (bytevector-length %legacy-serialized)
+                  (transaction-total-size %legacy-tx))
+    (assert-equal (bytevector-length %witness-base-serialized)
+                  (transaction-stripped-size %witness-tx))
+    (assert-equal (bytevector-length %witness-serialized)
+                  (transaction-total-size %witness-tx)))
+
+  (test "computes weight and virtual size"
+    (assert-equal (* 4 (bytevector-length %legacy-serialized))
+                  (transaction-weight %legacy-tx))
+    (assert-equal (bytevector-length %legacy-serialized)
+                  (transaction-vsize %legacy-tx))
+    (assert-equal 337 (transaction-weight %witness-tx))
+    (assert-equal 85 (transaction-vsize %witness-tx)))
+
+  (test "sums output value and computes fees"
+    (assert-equal 1000 (transaction-output-value %witness-tx))
+    (assert-equal 500
+                  (transaction-fee
+                    %witness-tx
+                    (list (txout value: 1500 script-pubkey: %p2wpkh-script)))))
+
+  (test "fee calculation rejects prevout count mismatch"
+    (assert-error
+      (transaction-fee %witness-tx '())))
+
+  (test "fee calculation rejects negative fees"
+    (assert-error
+      (transaction-fee
+        %witness-tx
+        (list (txout value: 999 script-pubkey: %p2wpkh-script))))))
+
 (test-group "Bitcoin Core rawtx fixtures"
   (test "round-trips tx_valid raw transactions"
     (do ((xs %bitcoin-core-rawtx-fixtures (cdr xs)))

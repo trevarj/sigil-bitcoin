@@ -1,0 +1,341 @@
+;;; (sigil bitcoin demo) - Browser dispatcher for the static toolbench.
+
+(define-library (sigil bitcoin demo)
+  (import (sigil crypto)
+          (sigil secp256k1)
+          (sigil bitcoin primitives)
+          (sigil bitcoin encoding)
+          (sigil bitcoin keys)
+          (sigil bitcoin script)
+          (sigil bitcoin tx)
+          (sigil bitcoin miniscript))
+  (export demo-dispatch demo-tools-json main)
+  (begin
+
+    (define %empty "")
+
+    (define %one
+      (hex-decode "0000000000000000000000000000000000000000000000000000000000000001"))
+
+    (define %generator-pub
+      (hex-decode "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"))
+
+    (define %generator-xonly
+      (hex-decode "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"))
+
+    (define %zero32 (make-bytevector 32 0))
+
+    (define (blank? s)
+      (or (not s) (string=? s "")))
+
+    (define (string->bool s)
+      (or (string=? s "true") (string=? s "1") (string=? s "yes")))
+
+    (define (u32 n)
+      (bitwise-and n #xffffffff))
+
+    (define (json-escape s)
+      (let loop ((i 0) (out ""))
+        (if (>= i (string-length s))
+            out
+            (let ((c (string-ref s i)))
+              (loop (+ i 1)
+                    (string-append out
+                      (cond ((char=? c #\") "\\\"")
+                            ((char=? c #\\) "\\\\")
+                            ((char=? c #\newline) "\\n")
+                            ((char=? c #\return) "\\r")
+                            ((char=? c #\tab) "\\t")
+                            (else (string c)))))))))
+
+    (define (json-string s)
+      (string-append "\"" (json-escape s) "\""))
+
+    (define (json-bool value)
+      (if value "true" "false"))
+
+    (define (json-value value)
+      (cond ((string? value) (json-string value))
+            ((number? value) (number->string value))
+            ((boolean? value) (json-bool value))
+            ((null? value) "null")
+            (else (json-string (format "~s" value)))))
+
+    (define (json-member pair)
+      (string-append (json-string (car pair)) ":" (json-value (cdr pair))))
+
+    (define (json-object pairs)
+      (string-append "{"
+        (string-join (map json-member pairs) ",")
+        "}"))
+
+    (define (ok pairs)
+      (string-append "{\"ok\":true,\"result\":" (json-object pairs) "}"))
+
+    (define (fail message)
+      (string-append "{\"ok\":false,\"error\":" (json-string message) "}"))
+
+    (define (print-json json)
+      (display "__SIGIL_BITCOIN_RESULT__")
+      (display json)
+      (display "__END_SIGIL_BITCOIN_RESULT__")
+      (newline))
+
+    (define (wasm-secp-unavailable tool)
+      (fail (string-append tool ": secp256k1 native bindings are not available in the current WASM demo runtime")))
+
+    (define (parse-int who s fallback)
+      (if (blank? s)
+          fallback
+          (let ((n (string->number s)))
+            (if n n (error (string-append who ": expected integer"))))))
+
+    (define (network-from-name name)
+      (if (string=? name "testnet") bitcoin-testnet bitcoin-mainnet))
+
+    (define (wif-decode-for-demo wif)
+      (let* ((decoded (base58check-decode wif))
+             (version (car decoded))
+             (payload (cadr decoded))
+             (plen (bytevector-length payload))
+             (network (cond ((= version (bitcoin-network-wif bitcoin-mainnet)) bitcoin-mainnet)
+                            ((= version (bitcoin-network-wif bitcoin-testnet)) bitcoin-testnet)
+                            (else #f))))
+        (unless network
+          (error "wif-decode: unknown WIF version"))
+        (cond ((= plen 32)
+               (list (bytevector-copy payload) network #f))
+              ((and (= plen 33) (= 1 (bytevector-u8-ref payload 32)))
+               (list (bytevector-copy payload 0 32) network #t))
+              (else
+               (error "wif-decode: invalid payload length")))))
+
+    (define (count-list xs)
+      (let loop ((ys xs) (n 0))
+        (if (null? ys) n (loop (cdr ys) (+ n 1)))))
+
+    (define (tool-names)
+      '("hash.hash160"
+        "hash.hash256"
+        "hash.tagged"
+        "encoding.hex"
+        "encoding.base58.encode"
+        "encoding.base58.decode"
+        "encoding.base58check.encode"
+        "encoding.base58check.decode"
+        "encoding.segwit.encode"
+        "encoding.segwit.decode"
+        "keys.private"
+        "keys.wif.decode"
+        "keys.bip39.entropy"
+        "keys.bip39.mnemonic"
+        "keys.bip32"
+        "script.template"
+        "tx.parse"
+        "tx.demo"
+        "psbt.parse"
+        "psbt.demo-p2wpkh"
+        "miniscript.compile"
+        "descriptor.inspect"))
+
+    (define (demo-tools-json)
+      (string-append "{\"ok\":true,\"tools\":["
+        (string-join (map json-string (tool-names)) ",")
+        "]}"))
+
+    (define (hash-tool tool input a b c)
+      (cond ((string=? tool "hash.hash160")
+             (ok (list (cons "hex" (hex-encode (hash160 (hex-decode input)))))))
+            ((string=? tool "hash.hash256")
+             (ok (list (cons "hex" (hex-encode (hash256 (hex-decode input)))))))
+            ((string=? tool "hash.tagged")
+             (ok (list (cons "hex" (hex-encode (tagged-hash a (hex-decode input))))
+                       (cons "tag" a))))
+            (else #f)))
+
+    (define (encoding-tool tool input a b c)
+      (cond ((string=? tool "encoding.hex")
+             (let ((bytes (hex-decode input)))
+               (ok (list (cons "hex" (hex-encode bytes))
+                         (cons "bytes" (bytevector-length bytes))))))
+            ((string=? tool "encoding.base58.encode")
+             (ok (list (cons "base58" (base58-encode (hex-decode input))))))
+            ((string=? tool "encoding.base58.decode")
+             (ok (list (cons "hex" (hex-encode (base58-decode input))))))
+            ((string=? tool "encoding.base58check.encode")
+             (ok (list (cons "base58check"
+                             (base58check-encode
+                               (parse-int "base58check version" a 0)
+                               (hex-decode input))))))
+            ((string=? tool "encoding.base58check.decode")
+             (let ((decoded (base58check-decode input)))
+               (ok (list (cons "version" (car decoded))
+                         (cons "payload" (hex-encode (cadr decoded)))))))
+            ((string=? tool "encoding.segwit.encode")
+             (ok (list (cons "address"
+                             (segwit-encode
+                               (if (blank? a) "bc" a)
+                               (parse-int "witness version" b 0)
+                               (hex-decode input))))))
+            ((string=? tool "encoding.segwit.decode")
+             (let ((decoded (segwit-decode input)))
+               (if decoded
+                   (ok (list (cons "hrp" (car decoded))
+                             (cons "version" (cadr decoded))
+                             (cons "program" (hex-encode (caddr decoded)))))
+                   (fail "segwit-decode: invalid address"))))
+            (else #f)))
+
+    (define (keys-tool tool input a b c)
+      (cond ((string=? tool "keys.private")
+             (wasm-secp-unavailable tool))
+            ((string=? tool "keys.wif.decode")
+             (let* ((decoded (wif-decode-for-demo input))
+                    (private-key (car decoded))
+                    (network (cadr decoded))
+                    (compressed? (caddr decoded)))
+               (ok (list (cons "privateKey" (hex-encode private-key))
+                         (cons "network" (symbol->string (bitcoin-network-name network)))
+                         (cons "compressed" compressed?)))))
+            ((string=? tool "keys.bip39.entropy")
+             (ok (list (cons "mnemonic" (bip39-entropy->mnemonic (hex-decode input))))))
+            ((string=? tool "keys.bip39.mnemonic")
+             (ok (list (cons "entropy" (hex-encode (bip39-mnemonic->entropy input)))
+                       (cons "seed" (hex-encode (bip39-mnemonic->seed input a))))))
+            ((string=? tool "keys.bip32")
+             (wasm-secp-unavailable tool))
+            (else #f)))
+
+    (define (script-tool tool input a b c)
+      (if (string=? tool "script.template")
+          (let* ((kind (if (blank? a) "p2wpkh" a))
+                 (bytes (hex-decode input))
+                 (script
+                   (cond ((string=? kind "p2pkh") (script-p2pkh bytes))
+                         ((string=? kind "p2sh") (script-p2sh bytes))
+                         ((string=? kind "p2wpkh") (script-p2wpkh bytes))
+                         ((string=? kind "p2wsh") (script-p2wsh bytes))
+                         ((string=? kind "p2tr") (script-p2tr bytes))
+                         ((string=? kind "push") (script-push-data bytes))
+                         (else (error "script.template: unknown template")))))
+            (ok (list (cons "script" (hex-encode script))
+                      (cons "template" kind))))
+          #f))
+
+    (define (tx-summary tx)
+      (list (cons "version" (transaction-version tx))
+            (cons "inputs" (count-list (transaction-inputs tx)))
+            (cons "outputs" (count-list (transaction-outputs tx)))
+            (cons "lockTime" (transaction-lock-time tx))
+            (cons "hasWitness" (transaction-has-witness? tx))
+            (cons "txid" (hex-encode (transaction-txid tx)))
+            (cons "wtxid" (hex-encode (transaction-wtxid tx)))
+            (cons "hex" (hex-encode (transaction-serialize tx)))))
+
+    (define (tx-tool tool input a b c)
+      (cond ((string=? tool "tx.parse")
+             (ok (tx-summary (transaction-parse (hex-decode input)))))
+            ((string=? tool "tx.demo")
+             (let* ((script (script-p2wpkh (hash160 %generator-pub)))
+                    (tx (transaction
+                          version: 2
+                          inputs: (list
+                            (txin
+                              previous-output: (outpoint txid: %zero32 index: 0)
+                              script-sig: #u8()
+                              sequence: #xfffffffe
+                              witness: '()))
+                          outputs: (list (txout value: 1000 script-pubkey: script))
+                          lock-time: 0)))
+               (ok (tx-summary tx))))
+            (else #f)))
+
+    (define (empty-psbt-input witness-utxo)
+      (psbt-input
+        non-witness-utxo: #f
+        witness-utxo: witness-utxo
+        partial-sigs: '()
+        sighash-type: #f
+        final-script-sig: #u8()
+        final-script-witness: '()
+        taproot-key-sig: #f
+        taproot-script-sigs: '()
+        taproot-leaf-scripts: '()
+        redeem-script: #f
+        witness-script: #f
+        bip32-derivations: '()
+        taproot-bip32-derivations: '()
+        unknowns: '()))
+
+    (define (empty-psbt-output)
+      (psbt-output
+        bip32-derivations: '()
+        taproot-bip32-derivations: '()
+        unknowns: '()))
+
+    (define (psbt-tool tool input a b c)
+      (cond ((string=? tool "psbt.parse")
+             (let ((parsed (psbt-parse (hex-decode input))))
+               (ok (list (cons "inputs" (count-list (psbt-inputs parsed)))
+                         (cons "outputs" (count-list (psbt-outputs parsed)))
+                         (cons "unsignedTx" (hex-encode
+                                              (transaction-serialize
+                                                (psbt-unsigned-tx parsed))))
+                         (cons "hex" (hex-encode (psbt-serialize parsed)))))))
+            ((string=? tool "psbt.demo-p2wpkh")
+             (wasm-secp-unavailable tool))
+            (else #f)))
+
+    (define (miniscript-tool tool input a b c)
+      (if (string=? tool "miniscript.compile")
+          (let* ((fragment (miniscript-parse input))
+                 (info (miniscript-type-info fragment))
+                 (script (miniscript-compile fragment)))
+            (ok (list (cons "miniscript" (miniscript->string fragment))
+                      (cons "type" (symbol->string (miniscript-type fragment)))
+                      (cons "requiresSignature" (miniscript-type-info-requires-signature info))
+                      (cons "requiresPreimage" (miniscript-type-info-requires-preimage info))
+                      (cons "hasTimelock" (miniscript-type-info-has-timelock info))
+                      (cons "script" (hex-encode script))
+                      (cons "tapscript"
+                            (guard (err (else "unsupported"))
+                              (hex-encode (miniscript-compile-tapscript fragment)))))))
+          #f))
+
+    (define (descriptor-tool tool input a b c)
+      (if (string=? tool "descriptor.inspect")
+          (let* ((desc (descriptor-parse input))
+                 (branch (parse-int "descriptor branch" a 0))
+                 (index (parse-int "descriptor index" b 0)))
+            (ok (list (cons "descriptor" (descriptor->string desc))
+                      (cons "checksum" (descriptor-checksum (descriptor->string desc)))
+                      (cons "withChecksum" (descriptor-add-checksum (descriptor->string desc)))
+                      (cons "scriptPubKey"
+                            (guard (err (else "unsupported"))
+                              (hex-encode (descriptor-script-pubkey desc))))
+                      (cons "derivedScriptPubKey"
+                            (guard (err (else "unsupported"))
+                              (hex-encode
+                                (descriptor-derive-script-pubkey desc branch index)))))))
+          #f))
+
+    (define (dispatch-json tool input a b c)
+      (let ((result (or (hash-tool tool input a b c)
+                        (encoding-tool tool input a b c)
+                        (keys-tool tool input a b c)
+                        (script-tool tool input a b c)
+                        (tx-tool tool input a b c)
+                        (psbt-tool tool input a b c)
+                        (miniscript-tool tool input a b c)
+                        (descriptor-tool tool input a b c))))
+        (or result (fail (string-append "unknown tool: " tool)))))
+
+    (define (demo-dispatch tool input a b c)
+      (print-json
+        (guard (err
+                 (else (fail (format "~a" err))))
+          (dispatch-json tool input a b c))))
+
+    (define (main)
+      (display "sigil-bitcoin demo runtime ready")
+      (newline))))

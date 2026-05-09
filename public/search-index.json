@@ -1,5 +1,159 @@
 [
   {
+    "name": "HASH160",
+    "kind": "tool",
+    "module": "Hashing",
+    "url": "tools/hash-hash160.html",
+    "summary": "Compute RIPEMD160(SHA256(bytes)), the 20-byte hash used by P2PKH, P2SH, and P2WPKH address flows."
+  },
+  {
+    "name": "HASH256",
+    "kind": "tool",
+    "module": "Hashing",
+    "url": "tools/hash-hash256.html",
+    "summary": "Compute double SHA256, the hash construction used for transaction IDs, block IDs, and checksums."
+  },
+  {
+    "name": "Tagged hash",
+    "kind": "tool",
+    "module": "Hashing",
+    "url": "tools/hash-tagged.html",
+    "summary": "Compute a BIP340-style tagged hash for Taproot and Schnorr related domains."
+  },
+  {
+    "name": "Hex decode",
+    "kind": "tool",
+    "module": "Encoding",
+    "url": "tools/encoding-hex.html",
+    "summary": "Validate and normalize hex data."
+  },
+  {
+    "name": "Base58 encode",
+    "kind": "tool",
+    "module": "Encoding",
+    "url": "tools/encoding-base58-encode.html",
+    "summary": "Encode raw bytes with Bitcoin's Base58 alphabet."
+  },
+  {
+    "name": "Base58 decode",
+    "kind": "tool",
+    "module": "Encoding",
+    "url": "tools/encoding-base58-decode.html",
+    "summary": "Decode a Bitcoin Base58 string into raw bytes."
+  },
+  {
+    "name": "Base58Check encode",
+    "kind": "tool",
+    "module": "Encoding",
+    "url": "tools/encoding-base58check-encode.html",
+    "summary": "Encode a version byte plus payload with a HASH256 checksum."
+  },
+  {
+    "name": "Base58Check decode",
+    "kind": "tool",
+    "module": "Encoding",
+    "url": "tools/encoding-base58check-decode.html",
+    "summary": "Decode and verify a Base58Check string."
+  },
+  {
+    "name": "SegWit encode",
+    "kind": "tool",
+    "module": "Encoding",
+    "url": "tools/encoding-segwit-encode.html",
+    "summary": "Encode a native SegWit address using Bech32 or Bech32m as required by witness version."
+  },
+  {
+    "name": "SegWit decode",
+    "kind": "tool",
+    "module": "Encoding",
+    "url": "tools/encoding-segwit-decode.html",
+    "summary": "Decode and validate a native SegWit address."
+  },
+  {
+    "name": "Private key to addresses",
+    "kind": "tool",
+    "module": "Keys",
+    "url": "tools/keys-private.html",
+    "summary": "Derive a compressed public key, WIF, and standard address forms from a 32-byte private key."
+  },
+  {
+    "name": "WIF decode",
+    "kind": "tool",
+    "module": "Keys",
+    "url": "tools/keys-wif-decode.html",
+    "summary": "Decode a Wallet Import Format private key."
+  },
+  {
+    "name": "BIP39 entropy",
+    "kind": "tool",
+    "module": "Keys",
+    "url": "tools/keys-bip39-entropy.html",
+    "summary": "Convert BIP39 entropy bytes into a mnemonic phrase."
+  },
+  {
+    "name": "BIP39 mnemonic",
+    "kind": "tool",
+    "module": "Keys",
+    "url": "tools/keys-bip39-mnemonic.html",
+    "summary": "Validate a BIP39 mnemonic and derive entropy plus seed bytes."
+  },
+  {
+    "name": "BIP32 derive",
+    "kind": "tool",
+    "module": "Keys",
+    "url": "tools/keys-bip32.html",
+    "summary": "Derive an extended private key, xpub, public key, and addresses from a seed and derivation path."
+  },
+  {
+    "name": "Script template",
+    "kind": "tool",
+    "module": "Script",
+    "url": "tools/script-template.html",
+    "summary": "Build standard scriptPubKey templates or pushdata scripts from raw hex."
+  },
+  {
+    "name": "Parse transaction",
+    "kind": "tool",
+    "module": "Transactions",
+    "url": "tools/tx-parse.html",
+    "summary": "Deserialize a raw Bitcoin transaction and summarize its IDs, counts, locktime, witness status, and canonical hex."
+  },
+  {
+    "name": "Build demo transaction",
+    "kind": "tool",
+    "module": "Transactions",
+    "url": "tools/tx-demo.html",
+    "summary": "Construct a small synthetic P2WPKH output transaction for serialization and txid inspection."
+  },
+  {
+    "name": "Parse PSBT",
+    "kind": "tool",
+    "module": "PSBT",
+    "url": "tools/psbt-parse.html",
+    "summary": "Deserialize a PSBT and summarize its unsigned transaction and map counts."
+  },
+  {
+    "name": "Sign P2WPKH demo PSBT",
+    "kind": "tool",
+    "module": "PSBT",
+    "url": "tools/psbt-demo-p2wpkh.html",
+    "summary": "Build, sign, finalize, and extract a synthetic P2WPKH PSBT."
+  },
+  {
+    "name": "Compile Miniscript",
+    "kind": "tool",
+    "module": "Miniscript",
+    "url": "tools/miniscript-compile.html",
+    "summary": "Parse Miniscript, inspect its type flags, and compile it to script bytes."
+  },
+  {
+    "name": "Inspect descriptor",
+    "kind": "tool",
+    "module": "Descriptors",
+    "url": "tools/descriptor-inspect.html",
+    "summary": "Parse a descriptor, compute its checksum, and try compiling or deriving its scriptPubKey."
+  },
+  {
     "name": "sigil bitcoin encoding",
     "kind": "module",
     "module": "(sigil bitcoin encoding)",
@@ -1792,6 +1946,41 @@
     "summary": "Get the `lock-time` field of a `transaction` struct."
   },
   {
+    "name": "psbt-taproot-leaf-script",
+    "kind": "procedure",
+    "module": "(sigil bitcoin tx)",
+    "url": "api/sigil/bitcoin/tx.html#psbt-taproot-leaf-script",
+    "summary": "BIP371 Taproot leaf script record for PSBT input maps."
+  },
+  {
+    "name": "psbt-taproot-leaf-script?",
+    "kind": "procedure",
+    "module": "(sigil bitcoin tx)",
+    "url": "api/sigil/bitcoin/tx.html#psbt-taproot-leaf-script?",
+    "summary": "Test if a value is a `psbt-taproot-leaf-script` struct."
+  },
+  {
+    "name": "psbt-taproot-leaf-script-control-block",
+    "kind": "procedure",
+    "module": "(sigil bitcoin tx)",
+    "url": "api/sigil/bitcoin/tx.html#psbt-taproot-leaf-script-control-block",
+    "summary": "Get the `control-block` field of a `psbt-taproot-leaf-script` struct."
+  },
+  {
+    "name": "psbt-taproot-leaf-script-script",
+    "kind": "procedure",
+    "module": "(sigil bitcoin tx)",
+    "url": "api/sigil/bitcoin/tx.html#psbt-taproot-leaf-script-script",
+    "summary": "Get the `script` field of a `psbt-taproot-leaf-script` struct."
+  },
+  {
+    "name": "psbt-taproot-leaf-script-leaf-version",
+    "kind": "procedure",
+    "module": "(sigil bitcoin tx)",
+    "url": "api/sigil/bitcoin/tx.html#psbt-taproot-leaf-script-leaf-version",
+    "summary": "Get the `leaf-version` field of a `psbt-taproot-leaf-script` struct."
+  },
+  {
     "name": "psbt-input",
     "kind": "procedure",
     "module": "(sigil bitcoin tx)",
@@ -1853,6 +2042,20 @@
     "module": "(sigil bitcoin tx)",
     "url": "api/sigil/bitcoin/tx.html#psbt-input-taproot-key-sig",
     "summary": "Get the `taproot-key-sig` field of a `psbt-input` struct."
+  },
+  {
+    "name": "psbt-input-taproot-script-sigs",
+    "kind": "procedure",
+    "module": "(sigil bitcoin tx)",
+    "url": "api/sigil/bitcoin/tx.html#psbt-input-taproot-script-sigs",
+    "summary": "Get the `taproot-script-sigs` field of a `psbt-input` struct."
+  },
+  {
+    "name": "psbt-input-taproot-leaf-scripts",
+    "kind": "procedure",
+    "module": "(sigil bitcoin tx)",
+    "url": "api/sigil/bitcoin/tx.html#psbt-input-taproot-leaf-scripts",
+    "summary": "Get the `taproot-leaf-scripts` field of a `psbt-input` struct."
   },
   {
     "name": "psbt-input-redeem-script",
@@ -2044,6 +2247,13 @@
     "summary": "Compute a BIP341 Taproot key-path signature hash."
   },
   {
+    "name": "transaction-sighash-taproot-scriptpath",
+    "kind": "procedure",
+    "module": "(sigil bitcoin tx)",
+    "url": "api/sigil/bitcoin/tx.html#transaction-sighash-taproot-scriptpath",
+    "summary": "Compute a BIP341/BIP342 Taproot script-path signature hash."
+  },
+  {
     "name": "transaction-sign-p2pkh-input",
     "kind": "procedure",
     "module": "(sigil bitcoin tx)",
@@ -2135,6 +2345,13 @@
     "summary": "Add a Taproot key-path signature to a PSBT input."
   },
   {
+    "name": "psbt-sign-p2tr-scriptpath-input",
+    "kind": "procedure",
+    "module": "(sigil bitcoin tx)",
+    "url": "api/sigil/bitcoin/tx.html#psbt-sign-p2tr-scriptpath-input",
+    "summary": "Add a Taproot script-path signature for a single-key checksig leaf."
+  },
+  {
     "name": "psbt-sign-standard-input",
     "kind": "procedure",
     "module": "(sigil bitcoin tx)",
@@ -2168,6 +2385,13 @@
     "module": "(sigil bitcoin tx)",
     "url": "api/sigil/bitcoin/tx.html#psbt-finalize-p2tr-keypath-input",
     "summary": "Finalize a signed Taproot key-path PSBT input."
+  },
+  {
+    "name": "psbt-finalize-p2tr-scriptpath-input",
+    "kind": "procedure",
+    "module": "(sigil bitcoin tx)",
+    "url": "api/sigil/bitcoin/tx.html#psbt-finalize-p2tr-scriptpath-input",
+    "summary": "Finalize a signed Taproot script-path PSBT input."
   },
   {
     "name": "psbt-finalize-standard-input",
