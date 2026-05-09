@@ -1,0 +1,259 @@
+;;; (sigil bitcoin psbt sign) — PSBT input signing
+
+(define-library (sigil bitcoin psbt sign)
+  (import (sigil crypto)
+          (sigil secp256k1)
+          (sigil bitcoin utils)
+          (sigil bitcoin tx types)
+          (sigil bitcoin tx wire)
+          (sigil bitcoin tx sighash)
+          (sigil bitcoin primitives)
+          (sigil bitcoin script)
+          (sigil bitcoin keys)
+          (sigil bitcoin psbt base))
+  (export
+    psbt-sign-p2pkh-input
+    psbt-sign-p2wpkh-input
+    psbt-sign-p2wsh-input
+    psbt-sign-p2tr-keypath-input
+    psbt-sign-p2tr-scriptpath-input
+    psbt-sign-standard-input)
+  (begin
+    ;;; Add a legacy P2PKH partial signature to a PSBT input.
+    ;;;
+    ;;; The input must contain the previous transaction as a non-witness UTXO.
+    (define (psbt-sign-p2pkh-input p input-index private-key)
+      (: psbt? integer? bytevector? -> psbt?)
+      (validate-psbt p)
+      (let* ((input (nth-item (psbt-inputs p) input-index "psbt-sign-p2pkh-input"))
+             (utxo (psbt-prevout-from-non-witness-utxo
+                     p input-index input "psbt-sign-p2pkh-input"))
+             (pubkey (private-key->public-key private-key))
+             (pubkey-hash (hash160 pubkey))
+             (expected-script (script-p2pkh pubkey-hash)))
+        (unless (equal? expected-script (txout-script-pubkey utxo))
+          (error "psbt-sign-p2pkh-input: non-witness UTXO is not P2PKH for key"))
+        (let* ((sighash-type (psbt-input-sighash-or-default input sighash-all))
+               (msghash (transaction-sighash-legacy
+                          (psbt-unsigned-tx p)
+                          input-index
+                          expected-script
+                          sighash-type))
+               (der (secp256k1-ecdsa-signature-serialize-der
+                      (secp256k1-ecdsa-sign private-key msghash)))
+               (sig (append-sighash-byte der sighash-type))
+               (signed-input
+                 (psbt-input
+                   non-witness-utxo: (psbt-input-non-witness-utxo input)
+                   witness-utxo: (psbt-input-witness-utxo input)
+                   partial-sigs: (append (psbt-input-partial-sigs input)
+                                         (list (cons pubkey sig)))
+                   sighash-type: sighash-type
+                   final-script-sig: (psbt-input-final-script-sig input)
+                   final-script-witness: (psbt-input-final-script-witness input)
+                   taproot-key-sig: (psbt-input-taproot-key-sig input)
+                           taproot-script-sigs: (psbt-input-taproot-script-sigs input)
+                           taproot-leaf-scripts: (psbt-input-taproot-leaf-scripts input)
+                   redeem-script: (psbt-input-redeem-script input)
+                   witness-script: (psbt-input-witness-script input)
+                   bip32-derivations: (psbt-input-bip32-derivations input)
+                   taproot-bip32-derivations: (psbt-input-taproot-bip32-derivations input)
+                   unknowns: (psbt-input-unknowns input))))
+          (psbt-update-input p input-index signed-input))))
+
+    ;;; Add a P2WPKH partial signature to a PSBT input.
+    ;;;
+    ;;; The input must contain a witness UTXO.
+    (define (psbt-sign-p2wpkh-input p input-index private-key)
+      (: psbt? integer? bytevector? -> psbt?)
+      (validate-psbt p)
+      (let* ((input (nth-item (psbt-inputs p) input-index "psbt-sign-p2wpkh-input"))
+             (utxo (psbt-input-witness-utxo input)))
+        (unless utxo
+          (error "psbt-sign-p2wpkh-input: missing witness UTXO"))
+        (let* ((pubkey (private-key->public-key private-key))
+               (pubkey-hash (hash160 pubkey))
+               (expected-script (script-p2wpkh pubkey-hash)))
+          (unless (equal? expected-script (txout-script-pubkey utxo))
+            (error "psbt-sign-p2wpkh-input: witness UTXO is not P2WPKH for key"))
+          (let* ((sighash-type (psbt-input-sighash-or-default input sighash-all))
+                 (script-code (script-p2pkh pubkey-hash))
+                 (msghash (transaction-sighash-segwit-v0
+                            (psbt-unsigned-tx p)
+                            input-index
+                            script-code
+                            (txout-value utxo)
+                            sighash-type))
+                 (der (secp256k1-ecdsa-signature-serialize-der
+                        (secp256k1-ecdsa-sign private-key msghash)))
+                 (sig (append-sighash-byte der sighash-type))
+                 (signed-input
+                   (psbt-input
+                     non-witness-utxo: (psbt-input-non-witness-utxo input)
+                     witness-utxo: utxo
+                     partial-sigs: (append (psbt-input-partial-sigs input)
+                                           (list (cons pubkey sig)))
+                     sighash-type: sighash-type
+                     final-script-sig: (psbt-input-final-script-sig input)
+                     final-script-witness: (psbt-input-final-script-witness input)
+                     taproot-key-sig: (psbt-input-taproot-key-sig input)
+                           taproot-script-sigs: (psbt-input-taproot-script-sigs input)
+                           taproot-leaf-scripts: (psbt-input-taproot-leaf-scripts input)
+                     redeem-script: (psbt-input-redeem-script input)
+                     witness-script: (psbt-input-witness-script input)
+                     bip32-derivations: (psbt-input-bip32-derivations input)
+                     taproot-bip32-derivations: (psbt-input-taproot-bip32-derivations input)
+                     unknowns: (psbt-input-unknowns input))))
+            (psbt-update-input p input-index signed-input)))))
+
+    ;;; Add a P2WSH partial signature for a single-key checksig witness script.
+    (define (psbt-sign-p2wsh-input p input-index private-key)
+      (: psbt? integer? bytevector? -> psbt?)
+      (validate-psbt p)
+      (let* ((input (nth-item (psbt-inputs p) input-index "psbt-sign-p2wsh-input"))
+             (utxo (psbt-input-witness-utxo input))
+             (witness-script (psbt-input-witness-script input)))
+        (unless utxo
+          (error "psbt-sign-p2wsh-input: missing witness UTXO"))
+        (unless witness-script
+          (error "psbt-sign-p2wsh-input: missing witness script"))
+        (let* ((pubkey (private-key->public-key private-key))
+               (script-pubkey (script-p2wsh (sha256-bytes witness-script)))
+               (script-pubkey-key (witness-script-pk-checksig-pubkey witness-script)))
+          (unless (equal? script-pubkey (txout-script-pubkey utxo))
+            (error "psbt-sign-p2wsh-input: witness UTXO is not P2WSH for witness script"))
+          (unless (and script-pubkey-key (equal? pubkey script-pubkey-key))
+            (error "psbt-sign-p2wsh-input: witness script is not single-key checksig for key"))
+          (let* ((sighash-type (psbt-input-sighash-or-default input sighash-all))
+                 (msghash (transaction-sighash-segwit-v0
+                            (psbt-unsigned-tx p)
+                            input-index
+                            witness-script
+                            (txout-value utxo)
+                            sighash-type))
+                 (der (secp256k1-ecdsa-signature-serialize-der
+                        (secp256k1-ecdsa-sign private-key msghash)))
+                 (sig (append-sighash-byte der sighash-type))
+                 (signed-input
+                   (psbt-input
+                     non-witness-utxo: (psbt-input-non-witness-utxo input)
+                     witness-utxo: utxo
+                     partial-sigs: (append (psbt-input-partial-sigs input)
+                                           (list (cons pubkey sig)))
+                     sighash-type: sighash-type
+                     final-script-sig: (psbt-input-final-script-sig input)
+                     final-script-witness: (psbt-input-final-script-witness input)
+                     taproot-key-sig: (psbt-input-taproot-key-sig input)
+                           taproot-script-sigs: (psbt-input-taproot-script-sigs input)
+                           taproot-leaf-scripts: (psbt-input-taproot-leaf-scripts input)
+                     redeem-script: (psbt-input-redeem-script input)
+                     witness-script: witness-script
+                     bip32-derivations: (psbt-input-bip32-derivations input)
+                     taproot-bip32-derivations: (psbt-input-taproot-bip32-derivations input)
+                     unknowns: (psbt-input-unknowns input))))
+            (psbt-update-input p input-index signed-input)))))
+
+    ;;; Add a Taproot key-path signature to a PSBT input.
+    (define (psbt-sign-p2tr-keypath-input p input-index private-key)
+      (: psbt? integer? bytevector? -> psbt?)
+      (validate-psbt p)
+      (let* ((input (nth-item (psbt-inputs p) input-index "psbt-sign-p2tr-keypath-input"))
+             (prevouts (psbt-prevouts p "psbt-sign-p2tr-keypath-input"))
+             (utxo (nth-item prevouts input-index "psbt-sign-p2tr-keypath-input"))
+             (sighash-type (psbt-input-sighash-or-default input sighash-default))
+             (tweaked-keypair (taproot-tweaked-keypair private-key))
+             (output-xonly (secp256k1-keypair-xonly-pub tweaked-keypair))
+             (expected-script (script-p2tr output-xonly)))
+        (unless (equal? expected-script (txout-script-pubkey utxo))
+          (error "psbt-sign-p2tr-keypath-input: UTXO is not BIP86 P2TR for key"))
+        (let* ((msghash (transaction-sighash-taproot-keypath
+                          (psbt-unsigned-tx p)
+                          input-index
+                          prevouts
+                          sighash-type))
+               (sig (taproot-keypath-signature tweaked-keypair msghash sighash-type))
+               (signed-input
+                 (psbt-input
+                   non-witness-utxo: (psbt-input-non-witness-utxo input)
+                   witness-utxo: (psbt-input-witness-utxo input)
+                   partial-sigs: (psbt-input-partial-sigs input)
+                   sighash-type: sighash-type
+                   final-script-sig: (psbt-input-final-script-sig input)
+                   final-script-witness: (psbt-input-final-script-witness input)
+                   taproot-key-sig: sig
+                  taproot-script-sigs: (psbt-input-taproot-script-sigs input)
+                  taproot-leaf-scripts: (psbt-input-taproot-leaf-scripts input)
+                   redeem-script: (psbt-input-redeem-script input)
+                   witness-script: (psbt-input-witness-script input)
+                   bip32-derivations: (psbt-input-bip32-derivations input)
+                   taproot-bip32-derivations: (psbt-input-taproot-bip32-derivations input)
+                   unknowns: (psbt-input-unknowns input))))
+          (psbt-update-input p input-index signed-input))))
+
+    ;;; Add a Taproot script-path signature for a single-key checksig leaf.
+    (define (psbt-sign-p2tr-scriptpath-input p input-index private-key)
+      (: psbt? integer? bytevector? -> psbt?)
+      (validate-psbt p)
+      (let* ((input (nth-item (psbt-inputs p) input-index "psbt-sign-p2tr-scriptpath-input"))
+             (prevouts (psbt-prevouts p "psbt-sign-p2tr-scriptpath-input"))
+             (utxo (nth-item prevouts input-index "psbt-sign-p2tr-scriptpath-input"))
+             (keypair (secp256k1-keypair-create private-key))
+             (xonly-pubkey (secp256k1-keypair-xonly-pub keypair))
+             (leaf-script (find-taproot-leaf-for-pubkey
+                            (psbt-input-taproot-leaf-scripts input)
+                            xonly-pubkey
+                            "psbt-sign-p2tr-scriptpath-input"))
+             (script (psbt-taproot-leaf-script-script leaf-script))
+             (leaf-version (psbt-taproot-leaf-script-leaf-version leaf-script))
+             (leaf-hash (taproot-leaf-script-hash leaf-script))
+             (sighash-type (psbt-input-sighash-or-default input sighash-default)))
+        (verify-taproot-leaf-prevout
+          utxo
+          leaf-script
+          leaf-hash
+          "psbt-sign-p2tr-scriptpath-input")
+        (let* ((msghash (transaction-sighash-taproot-scriptpath
+                          (psbt-unsigned-tx p)
+                          input-index
+                          prevouts
+                          script
+                          leaf-version
+                          sighash-type))
+               (sig (taproot-keypath-signature keypair msghash sighash-type))
+               (sig-key (bytevector-append xonly-pubkey leaf-hash))
+               (signed-input
+                 (psbt-input
+                   non-witness-utxo: (psbt-input-non-witness-utxo input)
+                   witness-utxo: (psbt-input-witness-utxo input)
+                   partial-sigs: (psbt-input-partial-sigs input)
+                   sighash-type: sighash-type
+                   final-script-sig: (psbt-input-final-script-sig input)
+                   final-script-witness: (psbt-input-final-script-witness input)
+                   taproot-key-sig: (psbt-input-taproot-key-sig input)
+                   taproot-script-sigs: (append (psbt-input-taproot-script-sigs input)
+                                                (list (cons sig-key sig)))
+                   taproot-leaf-scripts: (psbt-input-taproot-leaf-scripts input)
+                   redeem-script: (psbt-input-redeem-script input)
+                   witness-script: (psbt-input-witness-script input)
+                   bip32-derivations: (psbt-input-bip32-derivations input)
+                   taproot-bip32-derivations: (psbt-input-taproot-bip32-derivations input)
+                   unknowns: (psbt-input-unknowns input))))
+          (psbt-update-input p input-index signed-input))))
+
+    ;;; Sign a standard P2PKH, P2WPKH, or key-path P2TR PSBT input.
+    (define (psbt-sign-standard-input p input-index private-key)
+      (: psbt? integer? bytevector? -> psbt?)
+      (validate-psbt p)
+      (let* ((utxo (psbt-input-prevout p input-index "psbt-sign-standard-input"))
+             (script (txout-script-pubkey utxo)))
+        (cond ((script-p2pkh? script)
+               (psbt-sign-p2pkh-input p input-index private-key))
+              ((script-p2wpkh? script)
+               (psbt-sign-p2wpkh-input p input-index private-key))
+              ((script-p2wsh? script)
+               (psbt-sign-p2wsh-input p input-index private-key))
+              ((script-p2tr? script)
+               (psbt-sign-p2tr-keypath-input p input-index private-key))
+              (else
+               (error "psbt-sign-standard-input: unsupported prevout scriptPubKey")))))
+))
