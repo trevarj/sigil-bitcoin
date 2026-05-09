@@ -192,6 +192,31 @@
           (assert-equal xprv (bip32-xprv->string (string->bip32-xprv xprv)))
           (assert-equal xpub (bip32-xpub->string (string->bip32-xpub xpub)))))
 
+      (test "path and key origin helpers round-trip"
+        (let* ((path (bip32-path->list "m/84'/0'/0'/1/7"))
+               (origin (bip32-key-origin-parse "[d34db33f/84h/0h/0h]")))
+          (assert-equal (list #x80000054 #x80000000 #x80000000 1 7) path)
+          (assert-equal "m/84'/0'/0'/1/7" (bip32-path->string path))
+          (assert-equal #u8(#xd3 #x4d #xb3 #x3f)
+                        (bip32-key-origin-fingerprint origin))
+          (assert-equal (list #x80000054 #x80000000 #x80000000)
+                        (bip32-key-origin-path origin))
+          (assert-equal "[d34db33f/84'/0'/0']"
+                        (bip32-key-origin->string origin))))
+
+      (test "SLIP-132 extended keys round-trip"
+        (let* ((master (bip32-master-key %bip32-seed-1 bitcoin-mainnet))
+               (account (bip84-account-key master 0))
+               (account-pub (extended-private-key->public-key account))
+               (zprv (bip32-xprv->slip132-string account "zprv"))
+               (zpub (bip32-xpub->slip132-string account-pub "zpub")))
+          (assert-equal "zprv" (substring zprv 0 4))
+          (assert-equal "zpub" (substring zpub 0 4))
+          (assert-equal (bip32-xprv->string account)
+                        (bip32-xprv->string (string->bip32-slip132-xprv zprv)))
+          (assert-equal (bip32-xpub->string account-pub)
+                        (bip32-xpub->string (string->bip32-slip132-xpub zpub)))))
+
       (test "public derivation matches private derivation for non-hardened children"
         (let* ((master (bip32-master-key %bip32-seed-1 bitcoin-mainnet))
                (hardened (bip32-derive-path master "m/0'"))

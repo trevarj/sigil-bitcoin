@@ -26,6 +26,10 @@
     script-chunk script-chunk?
     script-chunk-opcode script-chunk-data
     script-parse
+    script-number-encode
+    script-number-decode
+    script->asm
+    script-decompile
     script-witness-program-decode
     script-classify
     script-standard-payload)
@@ -170,6 +174,48 @@
                            (bytevector-u8-ref suffix i))
                         (loop (+ i 1))))))))
 
+    (define (byte-list->bytevector bytes)
+      (let* ((len (length bytes))
+             (out (make-bytevector len 0)))
+        (let loop ((xs bytes) (i 0))
+          (if (null? xs)
+              out
+              (begin
+                (bytevector-u8-set! out i (car xs))
+                (loop (cdr xs) (+ i 1)))))))
+
+    (define (last-item xs)
+      (if (null? (cdr xs))
+          (car xs)
+          (last-item (cdr xs))))
+
+    (define (replace-last xs value)
+      (if (null? (cdr xs))
+          (list value)
+          (cons (car xs) (replace-last (cdr xs) value))))
+
+    (define (join-strings strings sep)
+      (cond ((null? strings) "")
+            ((null? (cdr strings)) (car strings))
+            (else
+             (let loop ((xs (cdr strings))
+                        (out (car strings)))
+               (if (null? xs)
+                   out
+                   (loop (cdr xs) (string-append out sep (car xs))))))))
+
+    (define (hex-encode-local bytes)
+      (let* ((len (bytevector-length bytes))
+             (hex "0123456789abcdef")
+             (out (make-string (* 2 len))))
+        (do ((i 0 (+ i 1)))
+            ((>= i len) out)
+          (let* ((b (bytevector-u8-ref bytes i))
+                 (hi (arithmetic-shift b -4))
+                 (lo (bitwise-and b #x0f)))
+            (string-set! out (* 2 i) (string-ref hex hi))
+            (string-set! out (+ 1 (* 2 i)) (string-ref hex lo))))))
+
     ;;; Encode a minimally-sized pushdata operation for a bytevector.
     (define (script-push-data data)
       (: bytevector? -> bytevector?)
@@ -306,6 +352,109 @@
                        (loop (+ offset 1)
                              (cons (script-chunk opcode: opcode data: #f)
                                    chunks)))))))))
+
+    ;;; Encode an integer using Bitcoin Script's little-endian signed-magnitude
+    ;;; number format.
+    (define (script-number-encode n)
+      (: integer? -> bytevector?)
+      (unless (integer? n)
+        (error "script-number-encode: expected integer"))
+      (if (= n 0)
+          #u8()
+          (let ((negative? (< n 0))
+                (value (if (< n 0) (- n) n)))
+            (let loop ((v value) (bytes '()))
+              (if (= v 0)
+                  (let* ((ordered (reverse bytes))
+                         (last (last-item ordered))
+                         (encoded
+                           (cond ((not (= 0 (bitwise-and last #x80)))
+                                  (append ordered (list (if negative? #x80 0))))
+                                 (negative?
+                                  (replace-last ordered (bitwise-ior last #x80)))
+                                 (else ordered))))
+                    (byte-list->bytevector encoded))
+                  (loop (quotient v 256)
+                        (cons (remainder v 256) bytes)))))))
+
+    ;;; Decode a Bitcoin Script little-endian signed-magnitude number.
+    (define (script-number-decode bytes)
+      (: bytevector? -> integer?)
+      (require-bytevector "script-number-decode" bytes)
+      (let ((len (bytevector-length bytes)))
+        (if (= len 0)
+            0
+            (let* ((last (bytevector-u8-ref bytes (- len 1)))
+                   (negative? (not (= 0 (bitwise-and last #x80)))))
+              (let loop ((i 0) (value 0))
+                (if (>= i len)
+                    (if negative? (- value) value)
+                    (let ((b (bytevector-u8-ref bytes i)))
+                      (loop (+ i 1)
+                            (+ value
+                               (arithmetic-shift
+                                 (if (= i (- len 1))
+                                     (bitwise-and b #x7f)
+                                     b)
+                                 (* 8 i)))))))))))
+
+    (define (small-int-opcode? opcode)
+      (and (>= opcode op-1) (<= opcode op-16)))
+
+    (define (opcode-name opcode)
+      (cond ((= opcode op-0) "OP_0")
+            ((= opcode op-pushdata1) "OP_PUSHDATA1")
+            ((= opcode op-pushdata2) "OP_PUSHDATA2")
+            ((= opcode op-pushdata4) "OP_PUSHDATA4")
+            ((small-int-opcode? opcode)
+             (string-append "OP_" (number->string (- opcode #x50))))
+            ((= opcode op-if) "OP_IF")
+            ((= opcode op-notif) "OP_NOTIF")
+            ((= opcode op-else) "OP_ELSE")
+            ((= opcode op-endif) "OP_ENDIF")
+            ((= opcode op-verify) "OP_VERIFY")
+            ((= opcode op-ifdup) "OP_IFDUP")
+            ((= opcode op-dup) "OP_DUP")
+            ((= opcode op-swap) "OP_SWAP")
+            ((= opcode op-size) "OP_SIZE")
+            ((= opcode op-ripemd160) "OP_RIPEMD160")
+            ((= opcode op-sha256) "OP_SHA256")
+            ((= opcode op-hash160) "OP_HASH160")
+            ((= opcode op-hash256) "OP_HASH256")
+            ((= opcode op-equal) "OP_EQUAL")
+            ((= opcode op-equalverify) "OP_EQUALVERIFY")
+            ((= opcode op-add) "OP_ADD")
+            ((= opcode op-booland) "OP_BOOLAND")
+            ((= opcode op-boolor) "OP_BOOLOR")
+            ((= opcode op-checksig) "OP_CHECKSIG")
+            ((= opcode op-checksigverify) "OP_CHECKSIGVERIFY")
+            ((= opcode op-checkmultisig) "OP_CHECKMULTISIG")
+            ((= opcode op-checkmultisigverify) "OP_CHECKMULTISIGVERIFY")
+            ((= opcode op-checklocktimeverify) "OP_CHECKLOCKTIMEVERIFY")
+            ((= opcode op-checksequenceverify) "OP_CHECKSEQUENCEVERIFY")
+            (else
+             (string-append "OP_UNKNOWN_" (hex-encode-local (script-op opcode))))))
+
+    (define (script-chunk->asm chunk)
+      (let ((opcode (script-chunk-opcode chunk))
+            (data (script-chunk-data chunk)))
+        (if (bytevector? data)
+            (if (and (= opcode op-0) (= 0 (bytevector-length data)))
+                "OP_0"
+                (hex-encode-local data))
+            (opcode-name opcode))))
+
+    ;;; Decompile raw script bytes to a simple Bitcoin Core-style ASM string.
+    (define (script->asm script)
+      (: bytevector? -> string?)
+      (join-strings
+        (map script-chunk->asm (script-parse script))
+        " "))
+
+    ;;; Alias for callers that use decompiler terminology.
+    (define (script-decompile script)
+      (: bytevector? -> string?)
+      (script->asm script))
 
     ;;; Decode a native witness program scriptPubKey.
     ;;;

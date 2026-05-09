@@ -358,6 +358,30 @@
     (assert-false (equal? (transaction-txid %witness-tx)
                           (transaction-wtxid %witness-tx)))))
 
+(test-group "transaction builder helpers"
+  (test "constructs a legacy transaction incrementally"
+    (let* ((tx0 (transaction-create 1 0))
+           (tx1 (transaction-add-input
+                  tx0
+                  (outpoint txid: %zero-txid index: #xffffffff)
+                  #xffffffff))
+           (tx2 (transaction-set-input-script-sig tx1 0 %coinbase-script))
+           (tx3 (transaction-add-output tx2 5000000000 %p2pkh-script)))
+      (assert-equal %legacy-serialized (transaction-serialize tx3))))
+
+  (test "sets witness data on an existing input"
+    (let* ((tx0 (transaction-create 2 0))
+           (tx1 (transaction-add-input
+                  tx0
+                  (outpoint txid: %zero-txid index: 0)
+                  #xfffffffe))
+           (tx2 (transaction-add-output tx1 1000 %p2wpkh-script))
+           (tx3 (transaction-set-input-witness
+                  tx2
+                  0
+                  (list #u8(#x30 #x01) #u8(#x02 #x79)))))
+      (assert-equal %witness-serialized (transaction-serialize tx3)))))
+
 (test-group "transaction metrics"
   (test "reports stripped and total serialized sizes"
     (assert-equal (bytevector-length %legacy-serialized)
@@ -381,6 +405,10 @@
     (assert-equal 1000 (transaction-output-value %witness-tx))
     (assert-equal 500
                   (transaction-fee
+                    %witness-tx
+                    (list (txout value: 1500 script-pubkey: %p2wpkh-script))))
+    (assert-equal (/ 500 85)
+                  (transaction-feerate
                     %witness-tx
                     (list (txout value: 1500 script-pubkey: %p2wpkh-script)))))
 

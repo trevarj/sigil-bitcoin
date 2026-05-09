@@ -24,6 +24,8 @@
     extended-public-key-parent-fingerprint
     extended-public-key-child-number extended-public-key-chain-code
     extended-public-key-public-key
+    bip32-key-origin bip32-key-origin?
+    bip32-key-origin-fingerprint bip32-key-origin-path
     private-key->wif wif->private-key
     private-key->public-key public-key? compressed-public-key?
     x-only-public-key
@@ -32,8 +34,12 @@
     x-only-public-key->p2tr-address
     bip32-master-key bip32-private-child bip32-public-child
     bip32-derive-path extended-private-key->public-key
+    bip32-path->list bip32-path->string
+    bip32-key-origin-parse bip32-key-origin->string
     bip32-xprv->string bip32-xpub->string
     string->bip32-xprv string->bip32-xpub
+    bip32-xprv->slip132-string bip32-xpub->slip132-string
+    string->bip32-slip132-xprv string->bip32-slip132-xpub
     bip32-hardened-index bip32-account-path
     bip44-account-path bip49-account-path
     bip84-account-path bip86-account-path
@@ -93,6 +99,11 @@
       (chain-code bytevector?)
       (public-key bytevector?))
 
+    ;;; BIP32 key-origin metadata used by descriptors and PSBT derivations.
+    (define-struct bip32-key-origin
+      (fingerprint bytevector?)
+      (path list?))
+
     (define %hardened-offset #x80000000)
 
     (define (require-bytevector-length who bytes len)
@@ -144,6 +155,46 @@
             ((and private? (= version (bitcoin-network-xprv bitcoin-testnet))) bitcoin-testnet)
             ((and (not private?) (= version (bitcoin-network-xpub bitcoin-mainnet))) bitcoin-mainnet)
             ((and (not private?) (= version (bitcoin-network-xpub bitcoin-testnet))) bitcoin-testnet)
+            (else #f)))
+
+    (define (slip132-version prefix private?)
+      (cond ((and private? (string=? prefix "yprv")) #x049d7878)
+            ((and (not private?) (string=? prefix "ypub")) #x049d7cb2)
+            ((and private? (string=? prefix "zprv")) #x04b2430c)
+            ((and (not private?) (string=? prefix "zpub")) #x04b24746)
+            ((and private? (string=? prefix "Yprv")) #x0295b005)
+            ((and (not private?) (string=? prefix "Ypub")) #x0295b43f)
+            ((and private? (string=? prefix "Zprv")) #x02aa7a99)
+            ((and (not private?) (string=? prefix "Zpub")) #x02aa7ed3)
+            ((and private? (string=? prefix "uprv")) #x044a4e28)
+            ((and (not private?) (string=? prefix "upub")) #x044a5262)
+            ((and private? (string=? prefix "vprv")) #x045f18bc)
+            ((and (not private?) (string=? prefix "vpub")) #x045f1cf6)
+            ((and private? (string=? prefix "Uprv")) #x024285b5)
+            ((and (not private?) (string=? prefix "Upub")) #x024289ef)
+            ((and private? (string=? prefix "Vprv")) #x02575048)
+            ((and (not private?) (string=? prefix "Vpub")) #x02575483)
+            (else #f)))
+
+    (define (slip132-network-version version private?)
+      (cond ((or (and private? (= version #x049d7878))
+                 (and (not private?) (= version #x049d7cb2))
+                 (and private? (= version #x04b2430c))
+                 (and (not private?) (= version #x04b24746))
+                 (and private? (= version #x0295b005))
+                 (and (not private?) (= version #x0295b43f))
+                 (and private? (= version #x02aa7a99))
+                 (and (not private?) (= version #x02aa7ed3)))
+             bitcoin-mainnet)
+            ((or (and private? (= version #x044a4e28))
+                 (and (not private?) (= version #x044a5262))
+                 (and private? (= version #x045f18bc))
+                 (and (not private?) (= version #x045f1cf6))
+                 (and private? (= version #x024285b5))
+                 (and (not private?) (= version #x024289ef))
+                 (and private? (= version #x02575048))
+                 (and (not private?) (= version #x02575483)))
+             bitcoin-testnet)
             (else #f)))
 
     (define (network-coin-type network)
@@ -354,7 +405,7 @@
           chain-code: ir
           public-key: child-pub)))
 
-    (define (path-segment->child-number segment)
+    (define (parse-path-segment who segment)
       (let* ((len (string-length segment))
              (last (if (> len 0) (string-ref segment (- len 1)) #\space))
              (hardened? (or (char=? last #\')
@@ -363,8 +414,11 @@
              (digits (if hardened? (substring segment 0 (- len 1)) segment))
              (n (string->number digits)))
         (when (or (not n) (< n 0) (>= n %hardened-offset))
-          (error "bip32-derive-path: invalid path segment"))
+          (error (string-append who ": invalid path segment")))
         (if hardened? (+ n %hardened-offset) n)))
+
+    (define (path-segment->child-number segment)
+      (parse-path-segment "bip32-derive-path" segment))
 
     (define (split-path path)
       (let ((len (string-length path)))
@@ -376,6 +430,107 @@
                        (cons (substring path start i) parts)))
                 (else
                  (loop (+ i 1) start parts))))))
+
+    (define (child-number->path-segment child)
+      (unless (and (integer? child) (>= child 0) (<= child #xffffffff))
+        (error "bip32-path->string: child number out of range"))
+      (if (>= child %hardened-offset)
+          (string-append (number->string (- child %hardened-offset)) "'")
+          (number->string child)))
+
+    (define (join-path-segments segments)
+      (if (null? segments)
+          ""
+          (let loop ((xs (cdr segments))
+                     (out (car segments)))
+            (if (null? xs)
+                out
+                (loop (cdr xs) (string-append out "/" (car xs)))))))
+
+    ;;; Parse an absolute BIP32 path into child numbers.
+    (define (bip32-path->list path)
+      (: string? -> list?)
+      (let ((parts (split-path path)))
+        (when (or (null? parts)
+                  (not (or (string=? (car parts) "m")
+                           (string=? (car parts) "M"))))
+          (error "bip32-path->list: path must start with m"))
+        (let loop ((xs (cdr parts)) (out '()))
+          (if (null? xs)
+              (reverse out)
+              (loop (cdr xs)
+                    (cons (parse-path-segment "bip32-path->list" (car xs))
+                          out))))))
+
+    ;;; Format child numbers as an absolute BIP32 path.
+    (define (bip32-path->string path)
+      (: list? -> string?)
+      (if (null? path)
+          "m"
+          (string-append
+            "m/"
+            (join-path-segments
+              (let loop ((xs path) (out '()))
+                (if (null? xs)
+                    (reverse out)
+                    (loop (cdr xs)
+                          (cons (child-number->path-segment (car xs)) out))))))))
+
+    (define (relative-path->list who path)
+      (if (string=? path "")
+          '()
+          (let ((parts (split-path path)))
+            (let loop ((xs parts) (out '()))
+              (if (null? xs)
+                  (reverse out)
+                  (loop (cdr xs)
+                        (cons (parse-path-segment who (car xs)) out)))))))
+
+    ;;; Parse `[fingerprint/path]` BIP32 key-origin text.
+    (define (bip32-key-origin-parse text)
+      (: string? -> bip32-key-origin?)
+      (let* ((len (string-length text))
+             (body (if (and (>= len 2)
+                            (char=? #\[ (string-ref text 0))
+                            (char=? #\] (string-ref text (- len 1))))
+                       (substring text 1 (- len 1))
+                       text))
+             (parts (split-path body))
+             (fingerprint-text (if (null? parts) "" (car parts))))
+        (unless (= 8 (string-length fingerprint-text))
+          (error "bip32-key-origin-parse: expected 4-byte fingerprint"))
+        (bip32-key-origin
+          fingerprint: (require-bytevector-length
+                         "bip32-key-origin-parse"
+                         (hex-decode fingerprint-text)
+                         4)
+          path: (relative-path->list
+                  "bip32-key-origin-parse"
+                  (if (null? (cdr parts))
+                      ""
+                      (join-path-segments (cdr parts)))))))
+
+    ;;; Format BIP32 key-origin metadata as `[fingerprint/path]`.
+    (define (bip32-key-origin->string origin)
+      (: bip32-key-origin? -> string?)
+      (let ((path (bip32-key-origin-path origin)))
+        (require-bytevector-length "bip32-key-origin->string"
+                                   (bip32-key-origin-fingerprint origin)
+                                   4)
+        (string-append
+          "["
+          (hex-encode (bip32-key-origin-fingerprint origin))
+          (if (null? path)
+              ""
+              (string-append
+                "/"
+                (join-path-segments
+                  (let loop ((xs path) (out '()))
+                    (if (null? xs)
+                        (reverse out)
+                        (loop (cdr xs)
+                              (cons (child-number->path-segment (car xs)) out)))))))
+          "]")))
 
     ;;; Derive a BIP32 path such as `m/84'/0'/0'/0/0`.
     ;;;
@@ -544,6 +699,37 @@
                         (extended-public-key-public-key key))))
         (base58check-encode-bytes payload)))
 
+    ;;; Serialize an extended private key with a SLIP-132 version prefix.
+    (define (bip32-xprv->slip132-string key prefix)
+      (: extended-private-key? string? -> string?)
+      (let ((version (slip132-version prefix #t)))
+        (unless version
+          (error "bip32-xprv->slip132-string: unsupported SLIP-132 private prefix"))
+        (base58check-encode-bytes
+          (xkey-payload
+            version
+            (extended-private-key-depth key)
+            (extended-private-key-parent-fingerprint key)
+            (extended-private-key-child-number key)
+            (extended-private-key-chain-code key)
+            (bytevector-append #u8(0)
+                               (extended-private-key-private-key key))))))
+
+    ;;; Serialize an extended public key with a SLIP-132 version prefix.
+    (define (bip32-xpub->slip132-string key prefix)
+      (: extended-public-key? string? -> string?)
+      (let ((version (slip132-version prefix #f)))
+        (unless version
+          (error "bip32-xpub->slip132-string: unsupported SLIP-132 public prefix"))
+        (base58check-encode-bytes
+          (xkey-payload
+            version
+            (extended-public-key-depth key)
+            (extended-public-key-parent-fingerprint key)
+            (extended-public-key-child-number key)
+            (extended-public-key-chain-code key)
+            (extended-public-key-public-key key)))))
+
     ;;; Parse a Base58Check BIP32 extended private key.
     (define (string->bip32-xprv str)
       (: string? -> extended-private-key?)
@@ -578,6 +764,48 @@
             (error "string->bip32-xpub: unknown version"))
           (unless (public-key? pub)
             (error "string->bip32-xpub: invalid public key"))
+          (extended-public-key
+            network: network
+            depth: (bytevector-u8-ref payload 4)
+            parent-fingerprint: (bytevector-copy payload 5 9)
+            child-number: (bytevector->u32 payload 9)
+            chain-code: (bytevector-copy payload 13 45)
+            public-key: pub))))
+
+    ;;; Parse a SLIP-132 extended private key into the standard key record.
+    (define (string->bip32-slip132-xprv str)
+      (: string? -> extended-private-key?)
+      (let* ((payload (base58check-decode-bytes str)))
+        (require-bytevector-length "string->bip32-slip132-xprv" payload 78)
+        (validate-xkey-depth-fields "string->bip32-slip132-xprv" payload)
+        (let* ((version (bytevector->u32 payload 0))
+               (network (slip132-network-version version #t))
+               (key-data (bytevector-copy payload 45 78)))
+          (unless network
+            (error "string->bip32-slip132-xprv: unknown version"))
+          (unless (= 0 (bytevector-u8-ref key-data 0))
+            (error "string->bip32-slip132-xprv: invalid private key marker"))
+          (extended-private-key
+            network: network
+            depth: (bytevector-u8-ref payload 4)
+            parent-fingerprint: (bytevector-copy payload 5 9)
+            child-number: (bytevector->u32 payload 9)
+            chain-code: (bytevector-copy payload 13 45)
+            private-key: (require-private-key (bytevector-copy key-data 1 33))))))
+
+    ;;; Parse a SLIP-132 extended public key into the standard key record.
+    (define (string->bip32-slip132-xpub str)
+      (: string? -> extended-public-key?)
+      (let* ((payload (base58check-decode-bytes str)))
+        (require-bytevector-length "string->bip32-slip132-xpub" payload 78)
+        (validate-xkey-depth-fields "string->bip32-slip132-xpub" payload)
+        (let* ((version (bytevector->u32 payload 0))
+               (network (slip132-network-version version #f))
+               (pub (bytevector-copy payload 45 78)))
+          (unless network
+            (error "string->bip32-slip132-xpub: unknown version"))
+          (unless (public-key? pub)
+            (error "string->bip32-slip132-xpub: invalid public key"))
           (extended-public-key
             network: network
             depth: (bytevector-u8-ref payload 4)

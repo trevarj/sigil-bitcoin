@@ -57,6 +57,7 @@
     taproot-leaf-hash
     taproot-branch-hash
     taproot-tree-root
+    taproot-output-xonly
     descriptor-derive
     descriptor-script-pubkey
     descriptor-derive-script-pubkey

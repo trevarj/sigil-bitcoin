@@ -82,6 +82,31 @@
     (assert-error (script-parse #u8(#x4d #x01)))
     (assert-error (script-parse #u8(#x4d #x02 #x00 #x01)))))
 
+(test-group "script numbers and ASM"
+  (test "encodes and decodes script numbers"
+    (assert-equal #u8() (script-number-encode 0))
+    (assert-equal #u8(#x01) (script-number-encode 1))
+    (assert-equal #u8(#x81) (script-number-encode -1))
+    (assert-equal #u8(#x80 #x00) (script-number-encode 128))
+    (assert-equal #u8(#x80 #x80) (script-number-encode -128))
+    (assert-equal 0 (script-number-decode #u8()))
+    (assert-equal 1 (script-number-decode #u8(#x01)))
+    (assert-equal -1 (script-number-decode #u8(#x81)))
+    (assert-equal 128 (script-number-decode #u8(#x80 #x00)))
+    (assert-equal -128 (script-number-decode #u8(#x80 #x80))))
+
+  (test "formats standard scripts as ASM"
+    (assert-equal
+      (string-append
+        "OP_DUP OP_HASH160 "
+        "751e76e8199196d454941c45d1b3a323f1433bd6 "
+        "OP_EQUALVERIFY OP_CHECKSIG")
+      (script->asm (script-p2pkh %pubkey-hash)))
+    (assert-equal "OP_1 OP_CHECKSIG"
+                  (script-decompile
+                    (script-append (script-op op-1)
+                                   (script-op op-checksig))))))
+
 (test-group "standard scriptPubKey templates"
   (test "P2PKH"
     (assert-equal

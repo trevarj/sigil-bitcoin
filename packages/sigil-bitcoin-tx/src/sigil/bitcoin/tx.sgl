@@ -20,6 +20,11 @@
     transaction transaction?
     transaction-version transaction-inputs transaction-outputs
     transaction-lock-time
+    transaction-create
+    transaction-add-input
+    transaction-add-output
+    transaction-set-input-script-sig
+    transaction-set-input-witness
     psbt psbt?
     psbt-unsigned-tx psbt-inputs psbt-outputs
     psbt-taproot-leaf-script psbt-taproot-leaf-script?
@@ -54,6 +59,7 @@
     transaction-vsize
     transaction-output-value
     transaction-fee
+    transaction-feerate
     transaction-txid
     transaction-wtxid
     transaction-sighash-legacy
@@ -361,6 +367,81 @@
           ((null? xs) tx)
         (validate-txout (car xs))))
 
+    ;;; Create an empty transaction suitable for incremental construction.
+    (define (transaction-create version lock-time)
+      (: integer? integer? -> transaction?)
+      (let ((tx (transaction version: version
+                             inputs: '()
+                             outputs: '()
+                             lock-time: lock-time)))
+        (validate-transaction tx)))
+
+    ;;; Append a new input with empty scriptSig and witness.
+    (define (transaction-add-input tx previous-output sequence)
+      (: transaction? outpoint? integer? -> transaction?)
+      (validate-transaction tx)
+      (validate-outpoint previous-output)
+      (let ((input (txin previous-output: previous-output
+                         script-sig: #u8()
+                         sequence: sequence
+                         witness: '())))
+        (validate-txin input)
+        (transaction version: (transaction-version tx)
+                     inputs: (append (transaction-inputs tx) (list input))
+                     outputs: (transaction-outputs tx)
+                     lock-time: (transaction-lock-time tx))))
+
+    ;;; Append a new transaction output.
+    (define (transaction-add-output tx value script-pubkey)
+      (: transaction? integer? bytevector? -> transaction?)
+      (validate-transaction tx)
+      (let ((output (txout value: value script-pubkey: script-pubkey)))
+        (validate-txout output)
+        (transaction version: (transaction-version tx)
+                     inputs: (transaction-inputs tx)
+                     outputs: (append (transaction-outputs tx) (list output))
+                     lock-time: (transaction-lock-time tx))))
+
+    ;;; Replace an input's scriptSig.
+    (define (transaction-set-input-script-sig tx input-index script-sig)
+      (: transaction? integer? bytevector? -> transaction?)
+      (validate-transaction tx)
+      (require-bytevector "transaction-set-input-script-sig" script-sig)
+      (let* ((input (nth-item (transaction-inputs tx)
+                              input-index
+                              "transaction-set-input-script-sig"))
+             (updated (txin previous-output: (txin-previous-output input)
+                            script-sig: script-sig
+                            sequence: (txin-sequence input)
+                            witness: (txin-witness input))))
+        (transaction version: (transaction-version tx)
+                     inputs: (replace-nth (transaction-inputs tx)
+                                          input-index
+                                          updated
+                                          "transaction-set-input-script-sig")
+                     outputs: (transaction-outputs tx)
+                     lock-time: (transaction-lock-time tx))))
+
+    ;;; Replace an input's witness stack.
+    (define (transaction-set-input-witness tx input-index witness)
+      (: transaction? integer? list? -> transaction?)
+      (validate-transaction tx)
+      (validate-witness witness)
+      (let* ((input (nth-item (transaction-inputs tx)
+                              input-index
+                              "transaction-set-input-witness"))
+             (updated (txin previous-output: (txin-previous-output input)
+                            script-sig: (txin-script-sig input)
+                            sequence: (txin-sequence input)
+                            witness: witness)))
+        (transaction version: (transaction-version tx)
+                     inputs: (replace-nth (transaction-inputs tx)
+                                          input-index
+                                          updated
+                                          "transaction-set-input-witness")
+                     outputs: (transaction-outputs tx)
+                     lock-time: (transaction-lock-time tx))))
+
     (define (serialize-outpoint op)
       (validate-outpoint op)
       (bytevector-append
@@ -629,6 +710,12 @@
         (when (< fee 0)
           (error "transaction-fee: output value exceeds input value"))
         fee))
+
+    ;;; Return the fee rate in satoshis per virtual byte.
+    (define (transaction-feerate tx prevouts)
+      (: transaction? list? -> number?)
+      (/ (transaction-fee tx prevouts)
+         (transaction-vsize tx)))
 
     ;;; Return the transaction ID bytevector for a transaction.
     (define (transaction-txid tx)

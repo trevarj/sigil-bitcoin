@@ -558,9 +558,13 @@
              (tweak (tagged-hash
                       "TapTweak"
                       (bytevector-append internal-xonly leaf-root)))
+             (output-xonly (taproot-output-xonly internal-xonly leaf-root))
              (expected (script-p2tr
                          (secp256k1-pubkey-xonly
                            (secp256k1-xonly-pubkey-tweak-add internal-xonly tweak)))))
+        (assert-equal output-xonly
+                      (secp256k1-pubkey-xonly
+                        (secp256k1-xonly-pubkey-tweak-add internal-xonly tweak)))
         (assert-equal expected (descriptor-script-pubkey leaf-desc)))
       (let ((left-first (descriptor-parse
                           (string-append
