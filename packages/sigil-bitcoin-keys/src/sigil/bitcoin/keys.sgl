@@ -912,10 +912,61 @@
                 (error "bip39-mnemonic->entropy: checksum mismatch")))))
         entropy))
 
+    (define (bytevector-xor! target source)
+      (: bytevector? bytevector? -> bytevector?)
+      (let ((len (bytevector-length target)))
+        (do ((i 0 (+ i 1)))
+            ((>= i len) target)
+          (bytevector-u8-set! target i
+            (bitwise-xor (bytevector-u8-ref target i)
+                         (bytevector-u8-ref source i))))))
+
+    (define (copy-block! target offset source count)
+      (: bytevector? integer? bytevector? integer? -> bytevector?)
+      (do ((i 0 (+ i 1)))
+          ((>= i count) target)
+        (bytevector-u8-set! target (+ offset i)
+          (bytevector-u8-ref source i))))
+
+    (define (ascii-string->bytevector str)
+      (: string? -> bytevector?)
+      (let* ((len (string-length str))
+             (out (make-bytevector len 0)))
+        (do ((i 0 (+ i 1)))
+            ((>= i len) out)
+          (bytevector-u8-set! out i (char->integer (string-ref str i))))))
+
+    (define (hmac-input->bytevector data)
+      (: any? -> bytevector?)
+      (if (bytevector? data)
+          data
+          (ascii-string->bytevector data)))
+
+    (define (pbkdf2-hmac-sha512 password salt iterations key-length)
+      (: any? any? integer? integer? -> bytevector?)
+      (when (or (< iterations 1) (< key-length 0))
+        (error "pbkdf2-hmac-sha512: invalid iterations or key length"))
+      (let ((salt-bytes (hmac-input->bytevector salt))
+            (out (make-bytevector key-length 0))
+            (blocks (quotient (+ key-length 63) 64)))
+        (do ((block-index 1 (+ block-index 1))
+             (offset 0 (+ offset 64)))
+            ((> block-index blocks) out)
+          (let* ((u (hmac-sha512-bytes password
+                      (bytevector-append salt-bytes (u32->bytevector block-index))))
+                 (t (bytevector-copy u))
+                 (remaining (- key-length offset))
+                 (count (if (< remaining 64) remaining 64)))
+            (do ((round 2 (+ round 1)))
+                ((> round iterations))
+              (set! u (hmac-sha512-bytes password u))
+              (bytevector-xor! t u))
+            (copy-block! out offset t count)))))
+
     ;;; Derive a 64-byte BIP39 seed from a mnemonic and optional passphrase.
     (define (bip39-mnemonic->seed mnemonic . maybe-passphrase)
       (: string? string? ... -> bytevector?)
       (let ((passphrase (if (null? maybe-passphrase) "" (car maybe-passphrase))))
-        (pbkdf2-sha512 mnemonic (string-append "mnemonic" passphrase) 2048 64)))
+        (pbkdf2-hmac-sha512 mnemonic (string-append "mnemonic" passphrase) 2048 64)))
 
     ))

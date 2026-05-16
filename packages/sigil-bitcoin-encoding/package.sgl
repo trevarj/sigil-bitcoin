@@ -12,7 +12,7 @@
 
   dependencies: (list
     "sigil-bitcoin-primitives"
-    "sigil-crypto")
+    (from-git url: "codeberg:sigil/sigil-crypto" version: "^0.16.1"))
 
   tasks: (list
     (task

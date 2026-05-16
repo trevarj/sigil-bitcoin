@@ -25,17 +25,17 @@
 - `./scripts/docs-build.sh` rebuilds generated public docs.
 - `./scripts/standards-check.sh` reports standards audit counters.
 
-## Phase 1 (next) — Unblock primitives in sigil-crypto
+## Phase 1 — Complete
 
-Three native additions to `~/Workspace/sigil/sigil-crypto/`:
+The required native additions were upstreamed to `sigil-crypto`:
 
-1. **RIPEMD-160**: Add `MBEDTLS_RIPEMD160_C` to `vendor/mbedtls/sigil_mbedtls_config.h`,
-   add `native_ripemd160` to `native/crypto.c`, register in `sigil__init_sigil_crypto_module`.
+- **RIPEMD-160**: `ripemd160`
+- **HMAC-SHA512**: `hmac-sha512-bytes`
+- **Bignums (mbedTLS mpi)**: `mpi-add`, `mpi-sub`, `mpi-mul`,
+  `mpi-div`, `mpi-mod`, `mpi-mod-add`, `mpi-inv-mod`, `mpi-cmp`,
+  `mpi-is-zero?`, `mpi-shift-l`, and `mpi-shift-r`
 
-2. **HMAC-SHA512**: Add `native_hmac_sha512_bytes` to `native/crypto.c` following the pattern
-   of `native_hmac_sha256_bytes`. Config already has `MBEDTLS_SHA512_C`.
-
-3. **Bignums (mbedTLS mpi)**: Expose `mbedtls_mpi_*` operations as native functions.
-   Config already has `MBEDTLS_BIGNUM_C`. Need: bv->mpi, mpi->bv (32-byte), add/sub/mul/div/mod/inv/cmp.
-
-After Phase 1, all remaining layers can be built in pure Sigil.
+`sigil-bitcoin-primitives` now depends on upstream `sigil-crypto` and uses the
+native `ripemd160` binding for `HASH160` when the current runtime links it,
+with a private compatibility fallback for direct test runners using stale
+bundled crypto natives.

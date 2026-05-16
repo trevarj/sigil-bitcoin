@@ -1,7 +1,6 @@
 ;;; sigil-bitcoin — Bitcoin Libraries for Sigil
 ;;;
 ;;; Workspace providing a rust-bitcoin-like ecosystem in Sigil.
-;;; Includes sigil-crypto from the local sibling checkout.
 
 (workspace
   name: "sigil-bitcoin"
@@ -11,8 +10,6 @@
   license: "BSD-3-Clause"
 
   packages: (list
-    ;; Local sibling checkout (v0.16.0 with ripemd160 + mpi)
-    "../sigil-crypto"
     ;; Bitcoin packages
     "packages/sigil-bitcoin-utils"
     "packages/sigil-secp256k1"

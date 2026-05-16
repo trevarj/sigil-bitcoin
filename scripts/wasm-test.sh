@@ -7,10 +7,28 @@ WWW="$DEMO/build/web/www"
 WASM="$WWW/sigil-bitcoin-demo.wasm"
 BUNDLE="$WWW/lib.bundle"
 
+refresh_package_deps() {
+  mkdir -p "$DEMO/.sigil"
+
+  if [ -L "$DEMO/.sigil/deps" ]; then
+    return 0
+  fi
+
+  if [ -d "$DEMO/.sigil/deps" ]; then
+    for dep in "$ROOT"/.sigil/deps/*; do
+      ln -sfn "$dep" "$DEMO/.sigil/deps/$(basename "$dep")"
+    done
+  else
+    ln -sfn "../../../.sigil/deps" "$DEMO/.sigil/deps"
+  fi
+}
+
 printf '\n==> sigil-bitcoin-demo wasm build\n'
 build_log=$(mktemp "${TMPDIR:-/tmp}/sigil-bitcoin-wasm-build.XXXXXX")
 dump=""
 trap 'rm -f "$build_log" "$dump"' EXIT
+
+refresh_package_deps
 
 if ! (
   cd "$DEMO"

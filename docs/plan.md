@@ -1,15 +1,15 @@
 # Sigil Bitcoin Libraries — Implementation Plan
 
-Goal: build a rust-bitcoin-like ecosystem in Sigil. LLM-driven development, targeting
-upstream contribution to sigil/sigil-crypto for missing primitives.
+Goal: build a rust-bitcoin-like ecosystem in Sigil. LLM-driven development,
+using upstream `sigil-crypto` primitives where available.
 
 ## Architecture
 
 ```
-Layer 0 — Primitives (extend sigil-crypto)
-├── bignums (mbedTLS mpi exposure)
+Layer 0 — Primitives
+├── bignums (mbedTLS mpi exposure through sigil-crypto)
 ├── secp256k1 (native package linked to libsecp256k1)
-├── RIPEMD-160, HMAC-SHA512 (extend crypto.c)
+├── RIPEMD-160, HMAC-SHA512 (native sigil-crypto bindings)
 └── HASH160, HASH256, tagged hashes (pure Sigil combinators)
 
 Layer 1 — Encoding (pure Sigil, sigil-bitcoin-encoding)
@@ -60,14 +60,14 @@ Layer 6 — Networking (sigil-bitcoin-p2p)
 | Gap | Solution | Effort |
 |-----|----------|--------|
 | secp256k1 curve | Native package linked to libsecp256k1 0.7.1 (available in Guix) | Done |
-| Big integers (bignums) | Expose mbedTLS mpi in sigil-crypto (already compiled, unreachable) | Medium |
-| RIPEMD-160 | Add `MBEDTLS_RIPEMD160_C` to mbedTLS config + native binding | Low |
-| HMAC-SHA512 | Add native binding to sigil-crypto (~15 lines C) | Trivial |
+| Big integers (bignums) | Exposed through upstream `sigil-crypto` mpi bindings | Done |
+| RIPEMD-160 | Exposed through upstream `sigil-crypto` native binding | Done |
+| HMAC-SHA512 | Exposed through upstream `sigil-crypto` native binding | Done |
 
 ## What Already Works in Pure Sigil Today
 
 - SHA-256d (two `sha256-bytes` calls)
-- RIPEMD-160 fallback in `sigil-bitcoin-primitives` for HASH160
+- RIPEMD-160 via upstream `sigil-crypto`
 - Hex encoding (trivial byte-to-hex)
 - VarInt (switch on u8 prefix)
 - Bech32/Bech32m (polynomial-over-GF32, no bigints needed)
@@ -94,9 +94,12 @@ Layer 6 — Networking (sigil-bitcoin-p2p)
 - `sigil-bitcoin-tx` provides transaction structs, compactSize encoding/decoding, legacy/SegWit parsing and serialization, Bitcoin Core raw transaction round-trip coverage, txid/wtxid helpers, `SIGHASH_ALL` legacy/BIP143 hashes, BIP341 key-path and script-path sighashes, P2PKH/P2WPKH/P2WSH single-key/P2TR key-path signing, and PSBT v0 support for witness UTXOs, non-witness UTXOs, redeem/witness scripts, partial signatures, input/output BIP32/Taproot derivation records, unknown/proprietary key preservation, Taproot key and script signatures, Taproot leaf scripts, finalization, and extraction.
 - `sigil-bitcoin-miniscript` provides fragment ASTs, parsing, canonical strings, type/signing metadata, hash-lock and boolean combinator script compilation, descriptor parsing/checksums, descriptor key derivation, descriptor scriptPubKey compilation including Taproot script-tree output keys, `multi_a`/`CHECKSIGADD` Tapscript compilation, descriptor and wallet-policy PSBT planning records with WSH and single-leaf Taproot script material, descriptor-plan PSBT annotation and standard P2PKH/P2WPKH/P2TR key-path/script-path signing/finalization wrappers, concrete BIP327 `musig(...)` Taproot key aggregation, and BIP388 wallet policy descriptor expansion with BIP390 `musig(...)` placeholders.
 - `sigil-bitcoin` has a standalone documentation site generator that reads compiler JSON docs, emits a docs.rs-inspired static site to `public/`, and includes concise guide pages under `docs/site/`.
-- `hash160` currently uses a pure Sigil RIPEMD-160 fallback. The local `sigil-crypto` source and build metadata expose `ripemd160`; package-native harnesses that depend on the sibling checkout bind it correctly, but the root direct runner imports the host/bundled crypto module and leaves newer native bindings unbound.
+- `hash160` uses upstream `sigil-crypto`'s native `ripemd160` binding when it
+  is linked in the current runtime, with a private compatibility fallback for
+  direct test runners using stale bundled crypto natives.
 - Root workspace tests pass under the direct runner. The secp and keys test files record skip markers there because multi-package workspace tests do not currently build a native harness.
-- `sigil-crypto` now exposes `pbkdf2-sha512`, used by BIP39 seed derivation.
+- BIP39 seed derivation implements PBKDF2-HMAC-SHA512 in `sigil-bitcoin-keys`
+  on top of upstream `sigil-crypto`'s `hmac-sha512-bytes`.
 - The `sigil-secp256k1` package harness covers invalid input lengths, type errors, public-key parse failures, invalid DER, and invalid key material.
 
 Known-good root verification command:
@@ -147,11 +150,9 @@ or pure Sigil code. No changes to the Sigil VM or compiler are required.
 - `manifest.scm` for Guix shell with sigil + libsecp256k1 + build tools
 - Directory scaffolding for sigil-bitcoin monorepo
 
-### Phase 1: Unblock Crypto Primitives (PR to sigil/sigil-crypto)
+### Phase 1: Unblock Crypto Primitives
 
-- 1a. RIPEMD-160: add to mbedTLS config + expose in crypto.c
-- 1b. HMAC-SHA512: native binding in crypto.c
-- 1c. Bignums: expose mbedTLS mpi (add, sub, mul, div, mod, inv, cmp, shift)
+- RIPEMD-160, HMAC-SHA512, and mpi bindings are upstreamed in `sigil-crypto`.
 
 ### Phase 2: sigil-secp256k1 Native Bindings
 
@@ -180,9 +181,8 @@ or pure Sigil code. No changes to the Sigil VM or compiler are required.
 
 ## Path to Upstream
 
-1. PR to sigil/sigil-crypto with RIPEMD-160 + HMAC-SHA512 + mpi exposure
-2. Propose sigil-bitcoin as official project under sigil/ org
-3. Submit individual packages incrementally (encoding first, then keys, then tx)
+1. Propose sigil-bitcoin as official project under sigil/ org
+2. Submit individual packages incrementally (encoding first, then keys, then tx)
 
 ## Task Board
 
@@ -194,11 +194,12 @@ or pure Sigil code. No changes to the Sigil VM or compiler are required.
 - [x] Add hex, Base58, Base58Check, Bech32, Bech32m, and SegWit address tests.
 - [x] Fix Bech32 charset length bug (`a7l`, not `a7wl`).
 - [x] Add exact BIP173/BIP350 SegWit encode assertions.
-- [x] Add pure Sigil RIPEMD-160 fallback for HASH160 while native binding visibility is unresolved.
+- [x] Add private RIPEMD-160 compatibility fallback for direct runners whose bundled crypto native is stale.
+- [x] Replace the HASH160 fallback with upstream `sigil-crypto` `ripemd160`.
 - [x] Replace `sigil-secp256k1` dynamic FFI with a native C module.
 - [x] Add native harness dependencies and redirects for `sigil-secp256k1`.
 - [x] Gate secp256k1 tests under the direct workspace runner while keeping full assertions in the native harness.
-- [x] Add `pbkdf2-sha512` to `sigil-crypto` for BIP39 seed derivation.
+- [x] Implement BIP39 PBKDF2-HMAC-SHA512 on top of upstream `hmac-sha512-bytes`.
 - [x] Expand Bech32/Bech32m coverage with the full BIP173/BIP350 valid and invalid checksum vector sets.
 - [x] Add `sigil-bitcoin-keys` with native-secp package harness.
 - [x] Add network structs, WIF encode/decode, and public-key predicates.

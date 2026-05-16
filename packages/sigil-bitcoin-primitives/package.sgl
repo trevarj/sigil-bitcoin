@@ -1,7 +1,7 @@
 ;;; sigil-bitcoin-primitives — Bitcoin hash combinators
 ;;;
-;;; Pure Sigil library providing HASH160, HASH256, and BIP-340 tagged hashes.
-;;; Depends only on sigil-crypto for raw SHA256 and RIPEMD-160.
+;;; Library providing HASH160, HASH256, and BIP-340 tagged hashes.
+;;; Uses upstream sigil-crypto for raw SHA256 and native RIPEMD-160 when linked.
 
 (package
   name: "sigil-bitcoin-primitives"
@@ -12,7 +12,7 @@
   license: "BSD-3-Clause"
 
   dependencies: (list
-    "sigil-crypto")
+    (from-git url: "codeberg:sigil/sigil-crypto" version: "^0.16.1"))
 
   tasks: (list
     (task

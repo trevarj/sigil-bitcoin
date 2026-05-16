@@ -14,8 +14,7 @@
                package: "sigil-lib")
     (from-path dir: "../../../sigil"
                package: "sigil-stdlib")
-    (from-path dir: "../../../sigil-crypto"
-               package: "sigil-crypto")
+    (from-git url: "codeberg:sigil/sigil-crypto" version: "^0.16.1")
     (from-path dir: "../sigil-secp256k1"
                package: "sigil-secp256k1")
     (from-path dir: "../sigil-bitcoin-utils"

@@ -19,13 +19,19 @@ link_package_deps() {
   package_dir=$1
   mkdir -p "$package_dir/.sigil"
 
-  if [ -e "$package_dir/.sigil/deps" ] && [ ! -L "$package_dir/.sigil/deps" ]; then
-    # Keep package-local caches produced by `sigil deps install`.
+  if [ -L "$package_dir/.sigil/deps" ]; then
     return 0
   fi
 
-  # Package-local native test runs use the workspace dependency cache.
-  ln -sfn "../../../.sigil/deps" "$package_dir/.sigil/deps"
+  if [ -d "$package_dir/.sigil/deps" ]; then
+    # Keep package-local caches but refresh links from the workspace cache.
+    for dep in "$ROOT"/.sigil/deps/*; do
+      ln -sfn "$dep" "$package_dir/.sigil/deps/$(basename "$dep")"
+    done
+  else
+    # Package-local native test runs use the workspace dependency cache.
+    ln -sfn "../../../.sigil/deps" "$package_dir/.sigil/deps"
+  fi
 }
 
 setup_native_library_path

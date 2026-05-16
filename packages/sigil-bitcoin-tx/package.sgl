@@ -11,8 +11,7 @@
   license: "BSD-3-Clause"
 
   dependencies: (list
-    (from-path dir: "../../../sigil-crypto"
-               package: "sigil-crypto")
+    (from-git url: "codeberg:sigil/sigil-crypto" version: "^0.16.1")
     (from-path dir: "../sigil-bitcoin-utils"
                package: "sigil-bitcoin-utils")
     (from-path dir: "../sigil-bitcoin-primitives"

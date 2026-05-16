@@ -25,8 +25,7 @@
                package: "sigil-bitcoin-tx")
     (from-path dir: "../sigil-secp256k1"
                package: "sigil-secp256k1")
-    (from-path dir: "../../../sigil-crypto"
-               package: "sigil-crypto"))
+    (from-git url: "codeberg:sigil/sigil-crypto" version: "^0.16.1"))
 
   dev-dependencies: (list
     (from-git url: "codeberg:sigil/sigil"

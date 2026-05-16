@@ -1,6 +1,6 @@
 ;;; (sigil bitcoin primitives) — Bitcoin hash combinators
 ;;;
-;;; Pure Sigil library providing HASH160, HASH256, and BIP-340 tagged hashes.
+;;; Bitcoin HASH160, HASH256, and BIP-340 tagged hash helpers.
 ;;;
 ;;; ```scheme
 ;;; (import (sigil bitcoin primitives))
@@ -129,7 +129,7 @@
         (bytevector-u8-set! bytes (+ offset 2) (bitwise-and (arithmetic-shift w -16) #xff))
         (bytevector-u8-set! bytes (+ offset 3) (bitwise-and (arithmetic-shift w -24) #xff))))
 
-    (define (ripemd160-bytes data)
+    (define (ripemd160-fallback data)
       (let* ((msg (ripemd160-pad (data->bytevector data)))
              (words (make-vector 16 0))
              (h0 #x67452301)
@@ -181,6 +181,12 @@
           (le32-set! out 12 h3)
           (le32-set! out 16 h4)
           out)))
+
+    (define (ripemd160-bytes data)
+      (let ((native-ripemd160 (module-ref (find-module '(sigil crypto)) 'ripemd160)))
+        (if (procedure? native-ripemd160)
+            (native-ripemd160 data)
+            (ripemd160-fallback data))))
 
     ;;; Compute HASH160 = RIPEMD160(SHA256(data)).
     ;;;

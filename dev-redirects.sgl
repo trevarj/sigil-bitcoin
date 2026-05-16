@@ -8,13 +8,6 @@
         ((directory? (car paths)) (car paths))
         (else (first-existing (cdr paths)))))
 
-(define (workspace-sibling name)
-  (or (first-existing
-        (list
-          (string-append "../" name)
-          (string-append "../../../" name)))
-      (error "dev-redirects: missing workspace sibling" name)))
-
 (define (workspace-dep name)
   (or (first-existing
         (list
@@ -29,10 +22,6 @@
     use: (from-path dir: (workspace-dep name))))
 
 (redirects
-  repos: (list
-    (for-repo
-      url: "codeberg:sigil/sigil-crypto"
-      use: (from-path dir: (workspace-sibling "sigil-crypto"))))
   packages: (list
     (dep "sigil-lib")
     (dep "sigil-stdlib")
