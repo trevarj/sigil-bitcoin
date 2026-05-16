@@ -1,0 +1,15 @@
+;;; sigil-bitcoin-press-docs — Press dependency sandbox for docs migration.
+
+(package
+  name: "sigil-bitcoin-press-docs"
+  version: "0.1.0"
+  sigil: "^0.16"
+  description: "Tool package for building sigil-bitcoin docs with Press"
+  url: "https://codeberg.org/sigil/sigil-bitcoin"
+  license: "BSD-3-Clause"
+
+  dependencies: (list
+    (from-git url: "codeberg:sigil/sigil" package: "sigil-stdlib" version: "^0.16")
+    (from-git url: "codeberg:sigil/press" version: "^0.1.0"))
+
+  tasks: (list))

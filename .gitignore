@@ -1,6 +1,7 @@
 # Build artifacts
 /build/
 **/build/
+public-press/
 /.sigil/
 **/.sigil/
 

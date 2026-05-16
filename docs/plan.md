@@ -247,4 +247,4 @@ or pure Sigil code. No changes to the Sigil VM or compiler are required.
 - [x] Compile Taproot descriptor script trees into Taproot output keys.
 - [x] Add Taproot script-path PSBT fields, sighashes, and single-key checksig signing/finalization helpers.
 - [x] Add Tapscript `multi_a`/`CHECKSIGADD` compilation and descriptor PSBT integration for multi-key Taproot script-path spends.
-- [ ] Replace the repo-local docs generator with Press/`sigil-publish` once the site generation package is available in this workspace.
+- [x] Replace the repo-local docs generator with Press.

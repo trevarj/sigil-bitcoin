@@ -1,0 +1,422 @@
+;;; Press site configuration for the sigil-bitcoin documentation prototype.
+
+(import (sigil core)
+        (sigil fs)
+        (sigil path)
+        (sigil string)
+        (sigil list)
+        (sigil json)
+        (press)
+        (press docs))
+
+(define %api-lib-dir
+  "packages/sigil-bitcoin-miniscript/build/dev/lib")
+
+(define %public-library-paths
+  '("sigil/bitcoin/primitives"
+    "sigil/bitcoin/encoding"
+    "sigil/bitcoin/keys"
+    "sigil/bitcoin/script"
+    "sigil/bitcoin/tx"
+    "sigil/bitcoin/psbt"
+    "sigil/bitcoin/miniscript"
+    "sigil/secp256k1"))
+
+(define (string-member? value values)
+  (: string? list? -> boolean?)
+  (cond ((null? values) #f)
+        ((string=? value (car values)) #t)
+        (else (string-member? value (cdr values)))))
+
+(define (public-library-path? path)
+  (: string? -> boolean?)
+  (string-member? path %public-library-paths))
+
+(define %out-dir "public")
+(define %site-title "Sigil Bitcoin")
+(define %logo-path "assets/sigil-bitcoin-logo.png")
+
+(define %tools
+  (list
+    #{ id: "hash.hash160" title: "HASH160" group: "Hashing"
+       summary: "Compute RIPEMD160(SHA256(bytes)), the 20-byte hash used by P2PKH, P2SH, and P2WPKH address flows."
+       usage: "Paste hex-encoded bytes. The result is a 20-byte hash encoded as hex."
+       example: "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798" }
+    #{ id: "hash.hash256" title: "HASH256" group: "Hashing"
+       summary: "Compute double SHA256, the hash construction used for transaction IDs, block IDs, and checksums."
+       usage: "Paste hex-encoded bytes. The result is a 32-byte hash encoded as hex."
+       example: "0000000000000000000000000000000000000000000000000000000000000000" }
+    #{ id: "hash.tagged" title: "Tagged hash" group: "Hashing"
+       summary: "Compute a BIP340-style tagged hash for Taproot and Schnorr related domains."
+       usage: "Paste message bytes as hex and provide the tag string, such as TapTweak or BIP0340/challenge."
+       example: "Tag: TapTweak; bytes: 32 zero bytes" }
+    #{ id: "encoding.hex" title: "Hex decode" group: "Encoding"
+       summary: "Validate and normalize hex data."
+       usage: "Paste a hex string. The result shows normalized lowercase hex and decoded byte count."
+       example: "deadbeef" }
+    #{ id: "encoding.base58.encode" title: "Base58 encode" group: "Encoding"
+       summary: "Encode raw bytes with Bitcoin's Base58 alphabet."
+       usage: "Paste hex bytes. Leading zero bytes are preserved as leading 1 characters."
+       example: "00000000000000000000" }
+    #{ id: "encoding.base58.decode" title: "Base58 decode" group: "Encoding"
+       summary: "Decode a Bitcoin Base58 string into raw bytes."
+       usage: "Paste Base58 text. The result is the decoded payload as hex."
+       example: "1111111111" }
+    #{ id: "encoding.base58check.encode" title: "Base58Check encode" group: "Encoding"
+       summary: "Encode a version byte plus payload with a HASH256 checksum."
+       usage: "Paste payload hex and set the integer version byte. Version 0 is mainnet P2PKH."
+       example: "Version 0; payload 751e76e8199196d454941c45d1b3a323f1433bd6" }
+    #{ id: "encoding.base58check.decode" title: "Base58Check decode" group: "Encoding"
+       summary: "Decode and verify a Base58Check string."
+       usage: "Paste a Base58Check value. The result shows the version byte and payload hex."
+       example: "1BgGZ9tcN4rm9KBzDn7KprQz87SZ26SAMH" }
+    #{ id: "encoding.segwit.encode" title: "SegWit encode" group: "Encoding"
+       summary: "Encode a native SegWit address using Bech32 or Bech32m as required by witness version."
+       usage: "Paste witness program hex, set the HRP, and set the witness version."
+       example: "HRP bc; version 0; program 751e76e8199196d454941c45d1b3a323f1433bd6" }
+    #{ id: "encoding.segwit.decode" title: "SegWit decode" group: "Encoding"
+       summary: "Decode and validate a native SegWit address."
+       usage: "Paste a Bech32 or Bech32m address. The result shows HRP, witness version, and program hex."
+       example: "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4" }
+    #{ id: "keys.private" title: "Private key to addresses" group: "Keys"
+       summary: "Derive a compressed public key, WIF, and standard address forms from a 32-byte private key."
+       usage: "Paste private key hex and choose mainnet or testnet."
+       example: "Private key 1 on mainnet" }
+    #{ id: "keys.wif.decode" title: "WIF decode" group: "Keys"
+       summary: "Decode a Wallet Import Format private key."
+       usage: "Paste WIF text. The result shows private key hex, network, and compression flag."
+       example: "KwDiBf89QgGbjEhKnhXJuH7LrciVrZi3qYjgd9M7rFU73sVHnoWn" }
+    #{ id: "keys.bip39.entropy" title: "BIP39 entropy" group: "Keys"
+       summary: "Convert BIP39 entropy bytes into a mnemonic phrase."
+       usage: "Paste 128, 160, 192, 224, or 256 bits of entropy as hex."
+       example: "00000000000000000000000000000000" }
+    #{ id: "keys.bip39.mnemonic" title: "BIP39 mnemonic" group: "Keys"
+       summary: "Validate a BIP39 mnemonic and derive entropy plus seed bytes."
+       usage: "Paste a mnemonic and optional passphrase. The result includes entropy and seed hex."
+       example: "abandon ... about with passphrase TREZOR" }
+    #{ id: "keys.bip32" title: "BIP32 derive" group: "Keys"
+       summary: "Derive an extended private key, xpub, public key, and addresses from a seed and derivation path."
+       usage: "Paste seed hex, set a BIP32 path, and choose mainnet or testnet."
+       example: "Seed 000102030405060708090a0b0c0d0e0f; path m/84'/0'/0'/0/0" }
+    #{ id: "script.template" title: "Script template" group: "Script"
+       summary: "Build standard scriptPubKey templates or pushdata scripts from raw hex."
+       usage: "Paste the hash, witness program, x-only key, or data bytes and choose a template."
+       example: "P2WPKH for 751e76e8199196d454941c45d1b3a323f1433bd6" }
+    #{ id: "tx.parse" title: "Parse transaction" group: "Transactions"
+       summary: "Deserialize a raw Bitcoin transaction and summarize its IDs, counts, locktime, witness status, and canonical hex."
+       usage: "Paste raw transaction hex."
+       example: "The demo transaction hex from Build demo transaction." }
+    #{ id: "tx.demo" title: "Build demo transaction" group: "Transactions"
+       summary: "Construct a small synthetic P2WPKH output transaction for serialization and txid inspection."
+       usage: "Run the example. The input field is ignored."
+       example: "One zero-prevout input and one 1000 sat P2WPKH output." }
+    #{ id: "psbt.parse" title: "Parse PSBT" group: "PSBT"
+       summary: "Deserialize a PSBT and summarize its unsigned transaction and map counts."
+       usage: "Paste PSBT hex. Use the P2WPKH demo signer to produce a sample PSBT."
+       example: "PSBT hex from Sign P2WPKH demo PSBT." }
+    #{ id: "psbt.demo-p2wpkh" title: "Sign P2WPKH demo PSBT" group: "PSBT"
+       summary: "Build, sign, finalize, and extract a synthetic P2WPKH PSBT."
+       usage: "Run the example. The input field is ignored."
+       example: "Private key 1 signs a one-input P2WPKH PSBT." }
+    #{ id: "miniscript.compile" title: "Compile Miniscript" group: "Miniscript"
+       summary: "Parse Miniscript, inspect its type flags, and compile it to script bytes."
+       usage: "Paste a Miniscript expression using supported fragments such as pk, older, and_v, multi, thresh, and Taproot-only multi_a."
+       example: "multi_a(1,0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798,03f028892bad7ed57d2fb57bf33081d5cfcf6f9ed3d3d7f159c2e2fff579dc341a)" }
+    #{ id: "descriptor.inspect" title: "Inspect descriptor" group: "Descriptors"
+       summary: "Parse a descriptor, compute its checksum, and try compiling or deriving its scriptPubKey."
+       usage: "Paste a descriptor. Optional branch and index fields are used for derivable descriptors. Taproot script leaves can use pk or multi_a."
+       example: "tr(0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798,multi_a(1,0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798,03f028892bad7ed57d2fb57bf33081d5cfcf6f9ed3d3d7f159c2e2fff579dc341a))" } ))
+
+(define (write-page path content)
+  (: string? string? -> void?)
+  (ensure-directory (path-dirname path))
+  (write-file-string path content))
+
+(define (html-escape str)
+  (: string? -> string?)
+  (let loop ((i 0) (out ""))
+    (if (>= i (string-length str))
+        out
+        (let ((c (string-ref str i)))
+          (loop (+ i 1)
+                (string-append out
+                  (cond ((char=? c #\<) "&lt;")
+                        ((char=? c #\>) "&gt;")
+                        ((char=? c #\&) "&amp;")
+                        ((char=? c #\") "&quot;")
+                        (else (string c)))))))))
+
+(define (tool-slug id)
+  (: string? -> string?)
+  (string-replace id "." "-"))
+
+(define (tool-url tool)
+  (: any? -> string?)
+  (string-append "tools/" (tool-slug (dict-ref tool id: "")) ".html"))
+
+(define (module-display-name mod-name)
+  (: string? -> string?)
+  (string-replace (string-replace mod-name "(" "") ")" ""))
+
+(define (module-url module)
+  (: any? -> string?)
+  (let* ((name (dict-ref module module: ""))
+         (slug (string-replace
+                 (string-replace
+                   (string-replace name "(" "")
+                   ")" "")
+                 " " "-")))
+    (string-append "api/" slug "/")))
+
+(define (first-line str)
+  (: string? -> string?)
+  (let ((pos (string-find str "\n")))
+    (if pos (substring str 0 pos) str)))
+
+(define (public-export? export)
+  (: any? -> boolean?)
+  (not (string-starts-with? (dict-ref export name: "") "%")))
+
+(define (documented-exports module)
+  (: any? -> list?)
+  (filter public-export? (array->list (dict-ref module exports: #[]))))
+
+(define (allowed-module? mod-name)
+  (: string? -> boolean?)
+  (or (string=? mod-name "(sigil bitcoin primitives)")
+      (string=? mod-name "(sigil bitcoin encoding)")
+      (string=? mod-name "(sigil bitcoin keys)")
+      (string=? mod-name "(sigil bitcoin script)")
+      (string=? mod-name "(sigil bitcoin tx)")
+      (string=? mod-name "(sigil bitcoin psbt)")
+      (string=? mod-name "(sigil bitcoin miniscript)")
+      (string=? mod-name "(sigil secp256k1)")))
+
+(define (read-module-json path)
+  (: string? -> any?)
+  (let ((data (json-decode (read-file-string path))))
+    (if (allowed-module? (dict-ref data module: ""))
+        data
+        #f)))
+
+(define (load-modules)
+  (: -> list?)
+  (list-sort
+    (lambda (a b)
+      (string<? (dict-ref a module: "") (dict-ref b module: "")))
+    (filter-map read-module-json
+      (glob (string-append %api-lib-dir "/**/*.json")))))
+
+(define (guide-path->url path)
+  (: string? -> string?)
+  (string-append "guide/" (path-stem (path-basename path)) "/"))
+
+(define (guide-title path)
+  (: string? -> string?)
+  (let ((lines (string-split (read-file-string path) "\n")))
+    (if (and (not (null? lines))
+             (string-starts-with? (car lines) "# "))
+        (substring (car lines) 2 (string-length (car lines)))
+        (path-stem (path-basename path)))))
+
+(define (load-guides)
+  (: -> list?)
+  (list-sort
+    (lambda (a b) (string<? (car a) (car b)))
+    (map (lambda (path) (cons path (guide-title path)))
+         (glob "docs/site/*.md"))))
+
+(define %tool-page-css
+  "*{box-sizing:border-box}body{margin:0;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,\"Segoe UI\",sans-serif;color:#17202a;background:#f7f8fa}.wrap{max-width:1120px;margin:0 auto;padding:36px 24px 80px}.top{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:28px}.brand{display:flex;align-items:center;gap:12px;color:#17202a;text-decoration:none;font-weight:700}.brand img{width:40px;height:40px;border-radius:8px}.nav{display:flex;gap:12px;flex-wrap:wrap}.nav a{color:#2d3748;text-decoration:none}.hero,header{border-bottom:1px solid #d8dee8;margin-bottom:28px;padding-bottom:28px}.hero-heading{display:flex;align-items:center;gap:22px}.hero-logo{width:96px;height:96px;border-radius:18px}.eyebrow{font-size:13px;text-transform:uppercase;letter-spacing:0;color:#596579;margin:0 0 8px}h1{font-size:42px;line-height:1.1;margin:0 0 14px}h2{font-size:24px;margin:28px 0 14px}.lead{font-size:18px;line-height:1.6;color:#425066;max-width:780px}.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:14px}.card{display:block;background:#fff;border:1px solid #d8dee8;border-radius:8px;padding:18px;text-decoration:none;color:#17202a}.card:hover{border-color:#7a8ca6}.card h2{font-size:18px;margin:0 0 8px}.card p{margin:0;color:#596579;line-height:1.5}.tool-doc{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px;margin-bottom:28px}.tool-doc-block{background:#fff;border:1px solid #d8dee8;border-radius:8px;padding:18px}.muted{color:#7a8699}p,li{line-height:1.65}@media(max-width:760px){.top{align-items:flex-start;flex-direction:column}.hero-heading{align-items:flex-start}.hero-logo{width:72px;height:72px;border-radius:14px}h1{font-size:34px}}")
+
+(define %search-js
+  "(function(){const input=document.getElementById('search');const box=document.getElementById('search-results');if(!input||!box)return;let index=[];fetch('/search-index.json').then(r=>r.json()).then(data=>{index=data}).catch(()=>{});input.addEventListener('input',()=>{const q=input.value.trim().toLowerCase();box.innerHTML='';if(q.length<2)return;index.filter(item=>(item.name+' '+item.module+' '+item.summary).toLowerCase().includes(q)).slice(0,8).forEach(item=>{const a=document.createElement('a');a.href='/'+item.url;a.innerHTML='<strong>'+item.name+'</strong><br><span>'+item.module+'</span>';box.appendChild(a);});});})();")
+
+(define (site-shell title body)
+  (: string? string? -> string?)
+  (string-append
+    "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
+    "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+    "<title>" (html-escape title) " - " %site-title "</title>"
+    "<link rel=\"stylesheet\" href=\"/assets/style.css\">"
+    "<link rel=\"stylesheet\" href=\"/assets/toolbench.css?v=3\">"
+    "<link rel=\"icon\" href=\"/" %logo-path "\"></head><body>"
+    "<div class=\"wrap\"><div class=\"top\"><a class=\"brand\" href=\"/\">"
+    "<img src=\"/" %logo-path "\" alt=\"\"><span>" %site-title "</span></a>"
+    "<nav class=\"nav\"><a href=\"/api/\">API</a><a href=\"/guide/overview/\">Guides</a><a href=\"/#tools\">Tools</a></nav></div>"
+    body
+    "</div><script src=\"/assets/search.js\"></script>"
+    "<script type=\"module\" src=\"/assets/toolbench.js?v=3\"></script>"
+    "</body></html>"))
+
+(define (tool-info-html label value)
+  (: string? string? -> string?)
+  (string-append
+    "<section class=\"tool-doc-block\"><h2>" (html-escape label) "</h2>"
+    "<p>" (html-escape value) "</p></section>"))
+
+(define (tool-page tool)
+  (: any? -> void?)
+  (let* ((title (dict-ref tool title: "Tool"))
+         (id (dict-ref tool id: ""))
+         (body
+           (string-append
+             "<header><p class=\"eyebrow\">" (html-escape (dict-ref tool group: "Tool")) "</p>"
+             "<h1>" (html-escape title) "</h1>"
+             "<p class=\"lead\">" (html-escape (dict-ref tool summary: "")) "</p></header>"
+             "<section class=\"tool-doc\">"
+             (tool-info-html "How To Use It" (dict-ref tool usage: ""))
+             (tool-info-html "Example" (dict-ref tool example: ""))
+             "</section><section class=\"toolbench\"><div class=\"section-head\">"
+             "<div><p class=\"eyebrow\">Runs locally in WebAssembly</p><h2>Live Tool</h2></div>"
+             "<p class=\"muted\">Inputs stay in this browser tab. No transaction broadcast or remote Bitcoin API calls are used.</p>"
+             "</div><div id=\"toolbench\" data-wasm-root=\"../assets/wasm/\" data-tool=\""
+             (html-escape id) "\" data-tools-root=\"\"></div></section>")))
+    (write-page (path-join %out-dir (tool-url tool))
+                (site-shell title body))))
+
+(define (landing-page modules guides)
+  (: list? list? -> void?)
+  (let* ((tool-cards
+           (string-join
+             (map (lambda (tool)
+                    (string-append "<a class=\"card\" href=\"/"
+                                   (tool-url tool) "\"><h2>"
+                                   (html-escape (dict-ref tool title: ""))
+                                   "</h2><p>"
+                                   (html-escape (dict-ref tool summary: ""))
+                                   "</p></a>"))
+                  %tools)
+             ""))
+         (guide-cards
+           (string-join
+             (map (lambda (g)
+                    (string-append "<a class=\"card\" href=\"/"
+                                   (guide-path->url (car g)) "\">"
+                                   (html-escape (cdr g)) "</a>"))
+                  guides)
+             ""))
+         (module-cards
+           (string-join
+             (map (lambda (m)
+                    (string-append "<a class=\"card\" href=\"/"
+                                   (module-url m) "\"><h2>"
+                                   (html-escape (module-display-name (dict-ref m module: "")))
+                                   "</h2><p>"
+                                   (html-escape (first-line (dict-ref m description: "")))
+                                   "</p></a>"))
+                  modules)
+             "")))
+    (write-page
+      (path-join %out-dir "index.html")
+      (site-shell "Documentation"
+        (string-append
+          "<section class=\"hero\"><div class=\"hero-heading\">"
+          "<img class=\"hero-logo\" src=\"/" %logo-path "\" alt=\"Sigil Bitcoin logo\">"
+          "<div><p class=\"eyebrow\">Bitcoin libraries for Sigil</p><h1>Sigil Bitcoin</h1>"
+          "<p class=\"lead\">Live browser tools, API reference, and package guides for keys, addresses, scripts, transactions, PSBTs, Miniscript, and secp256k1 bindings.</p></div></div></section>"
+          "<section id=\"tools\" class=\"toolbench\"><div class=\"section-head\">"
+          "<div><p class=\"eyebrow\">Runs locally in WebAssembly</p><h2>Bitcoin Toolbench</h2></div>"
+          "<p class=\"muted\">Tools share one browser runtime. No transaction broadcast or remote Bitcoin API calls are used.</p>"
+          "</div><div id=\"toolbench\" data-wasm-root=\"assets/wasm/\" data-tools-root=\"tools/\"></div></section>"
+          "<section><h2>Tools</h2><div class=\"grid\">" tool-cards "</div></section>"
+          "<section><h2>Guides</h2><div class=\"grid\">" guide-cards "</div></section>"
+          "<section><h2>API Modules</h2><div class=\"grid\">" module-cards "</div></section>")))))
+
+(define (tool-search-entry tool)
+  (: any? -> any?)
+  #{ name: (dict-ref tool title: "")
+     kind: "tool"
+     module: (dict-ref tool group: "Tool")
+     url: (tool-url tool)
+     summary: (dict-ref tool summary: "") })
+
+(define (module-search-entry module)
+  (: any? -> any?)
+  #{ name: (module-display-name (dict-ref module module: ""))
+     kind: "module"
+     module: (dict-ref module module: "")
+     url: (module-url module)
+     summary: (first-line (dict-ref module description: "")) })
+
+(define (export-search-entry module export)
+  (: any? any? -> any?)
+  #{ name: (dict-ref export name: "")
+     kind: (dict-ref export kind: "value")
+     module: (dict-ref module module: "")
+     url: (string-append (module-url module) "#"
+                         (dict-ref export name: ""))
+     summary: (first-line (dict-ref export description: "")) })
+
+(define (entry-json entry)
+  (: any? -> string?)
+  (json-encode entry indent: #t))
+
+(define (append-all lists)
+  (: list? -> list?)
+  (if (null? lists)
+      '()
+      (append (car lists) (append-all (cdr lists)))))
+
+(define (module-search-entries module)
+  (: any? -> list?)
+  (cons (module-search-entry module)
+        (map (lambda (export) (export-search-entry module export))
+             (documented-exports module))))
+
+(define (write-search-index modules)
+  (: list? -> void?)
+  (let ((entries
+          (append (map tool-search-entry %tools)
+                  (append-all (map module-search-entries modules)))))
+    (write-page (path-join %out-dir "search-index.json")
+                (string-append "[\n"
+                               (string-join (map entry-json entries) ",\n")
+                               "\n]"))))
+
+(define (copy-extra-assets)
+  (: -> void?)
+  (write-page (path-join %out-dir "assets/style.css") %tool-page-css)
+  (write-page (path-join %out-dir "assets/search.js") %search-js)
+  (for-each
+    (lambda (asset)
+      (let ((dest (path-join %out-dir "assets" (path-basename asset))))
+        (ensure-directory (path-dirname dest))
+        (copy-file asset dest)))
+    (glob "docs/site/assets/*")))
+
+(define (write-extra-pages)
+  (: -> void?)
+  (let ((modules (load-modules))
+        (guides (load-guides)))
+    ;; Create the file early so static search fetches never 404, even if a
+    ;; future entry shape trips JSON serialization.
+    (write-page (path-join %out-dir "search-index.json") "[]")
+    (copy-extra-assets)
+    (landing-page modules guides)
+    (for-each tool-page %tools)
+    (write-search-index modules)))
+
+(define site-spec
+  (docs-site
+    title: "Sigil Bitcoin"
+    content: "docs/site/*.md"
+    content-url-path: "/guide/"
+    assets: "docs/static/**/*"
+    output-dir: "public"
+    lib-dir: %api-lib-dir
+    lib-url-path: "/api/"
+    lib-filter: public-library-path?
+    packages-dir: "packages"))
+
+(let* ((config (dict-ref site-spec config:))
+       (pipeline (dict-ref site-spec pipeline:))
+       (graph (build-graph config pipeline)))
+  (display "Press scanned content items: ")
+  (display (length (state-items graph)))
+  (newline)
+  (display "Press scanned assets: ")
+  (display (length (state-assets graph)))
+  (newline)
+  (execute-graph graph)
+  (write-extra-pages))
