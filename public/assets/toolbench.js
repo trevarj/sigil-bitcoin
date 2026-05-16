@@ -159,14 +159,14 @@ const TOOLS = [
     title: "Compile Miniscript",
     tool: "miniscript.compile",
     inputLabel: "Miniscript",
-    input: "and_v(v:pk(0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798),older(12960))"
+    input: "multi_a(1,0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798,03f028892bad7ed57d2fb57bf33081d5cfcf6f9ed3d3d7f159c2e2fff579dc341a)"
   },
   {
     group: "Descriptors",
     title: "Inspect descriptor",
     tool: "descriptor.inspect",
     inputLabel: "Descriptor",
-    input: "wpkh(0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798)"
+    input: "tr(0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798,multi_a(1,0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798,03f028892bad7ed57d2fb57bf33081d5cfcf6f9ed3d3d7f159c2e2fff579dc341a))"
   }
 ];
 

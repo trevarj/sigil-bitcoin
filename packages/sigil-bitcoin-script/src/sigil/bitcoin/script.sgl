@@ -11,8 +11,8 @@
     op-if op-notif op-else op-endif op-verify
     op-ifdup op-dup op-size op-ripemd160 op-sha256 op-hash160
     op-hash256 op-equal op-equalverify op-swap
-    op-add op-booland op-boolor op-checksig op-checksigverify
-    op-checkmultisig op-checkmultisigverify
+    op-add op-booland op-boolor op-numequal op-checksig op-checksigverify
+    op-checkmultisig op-checkmultisigverify op-checksigadd
     op-checklocktimeverify op-checksequenceverify
     script-empty
     script-op
@@ -74,10 +74,12 @@
     (define op-add #x93)
     (define op-booland #x9a)
     (define op-boolor #x9b)
+    (define op-numequal #x9c)
     (define op-checksig #xac)
     (define op-checksigverify #xad)
     (define op-checkmultisig #xae)
     (define op-checkmultisigverify #xaf)
+    (define op-checksigadd #xba)
     (define op-checklocktimeverify #xb1)
     (define op-checksequenceverify #xb2)
 
@@ -336,10 +338,12 @@
             ((= opcode op-add) "OP_ADD")
             ((= opcode op-booland) "OP_BOOLAND")
             ((= opcode op-boolor) "OP_BOOLOR")
+            ((= opcode op-numequal) "OP_NUMEQUAL")
             ((= opcode op-checksig) "OP_CHECKSIG")
             ((= opcode op-checksigverify) "OP_CHECKSIGVERIFY")
             ((= opcode op-checkmultisig) "OP_CHECKMULTISIG")
             ((= opcode op-checkmultisigverify) "OP_CHECKMULTISIGVERIFY")
+            ((= opcode op-checksigadd) "OP_CHECKSIGADD")
             ((= opcode op-checklocktimeverify) "OP_CHECKLOCKTIMEVERIFY")
             ((= opcode op-checksequenceverify) "OP_CHECKSEQUENCEVERIFY")
             (else

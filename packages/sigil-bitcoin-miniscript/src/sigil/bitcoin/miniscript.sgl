@@ -26,6 +26,7 @@
     miniscript-hash160
     miniscript-multi
     miniscript-sortedmulti
+    miniscript-multi-a
     miniscript-and-v
     miniscript-and-b
     miniscript-andor
@@ -70,6 +71,7 @@
     descriptor-psbt-plan-script-pubkey
     descriptor-psbt-plan-redeem-script
     descriptor-psbt-plan-witness-script
+    descriptor-psbt-plan-taproot-leaf-scripts
     descriptor-psbt-plan-bip32-derivations
     descriptor-psbt-plan-taproot-bip32-derivations
     descriptor-psbt-plan-change?
@@ -121,6 +123,7 @@
       (script-pubkey bytevector?)
       (redeem-script any?)
       (witness-script any?)
+      (taproot-leaf-scripts list?)
       (bip32-derivations list?)
       (taproot-bip32-derivations list?)
       (change? boolean?))
@@ -507,6 +510,14 @@
              (output-pubkey (secp256k1-xonly-pubkey-tweak-add internal-xonly tweak)))
         (secp256k1-pubkey-xonly output-pubkey)))
 
+    (define (taproot-control-block internal-xonly merkle-root)
+      (let* ((tweak (tagged-hash "TapTweak" (bytevector-append internal-xonly merkle-root)))
+             (output-pubkey (secp256k1-xonly-pubkey-tweak-add internal-xonly tweak))
+             (parity (if (= #x03 (bytevector-u8-ref output-pubkey 0)) 1 0)))
+        (bytevector-append
+          (make-bytevector 1 (+ %taproot-leaf-version parity))
+          internal-xonly)))
+
     (define (parse-non-musig-key-expression who s)
       (let ((key (parse-key-expression s)))
         (when (musig-key? key)
@@ -598,6 +609,16 @@
           ((null? xs))
         (require-key "miniscript-sortedmulti" (car xs)))
       (miniscript-fragment kind: 'sortedmulti args: keys data: threshold))
+
+    ;;; Construct a `multi_a(k, keys...)` Tapscript CHECKSIGADD fragment.
+    (define (miniscript-multi-a threshold keys)
+      (: integer? list? -> miniscript-fragment?)
+      (unless (and (integer? threshold) (> threshold 0) (<= threshold (length keys)) (<= (length keys) 999))
+        (error "miniscript-multi-a: invalid threshold or key count"))
+      (do ((xs keys (cdr xs)))
+          ((null? xs))
+        (require-key "miniscript-multi-a" (car xs)))
+      (miniscript-fragment kind: 'multi-a args: keys data: threshold))
 
     ;;; Construct an `and_v(left, right)` fragment.
     (define (miniscript-and-v left right)
@@ -746,6 +767,11 @@
                    (let ((args (split-top-level-commas (function-inner "sortedmulti" "sortedmulti(" s))))
                      (miniscript-sortedmulti
                        (parse-decimal (car args) "sortedmulti")
+                       (parse-key-list (cdr args)))))
+                  ((string-prefix? "multi_a(" s)
+                   (let ((args (split-top-level-commas (function-inner "multi_a" "multi_a(" s))))
+                     (miniscript-multi-a
+                       (parse-decimal (car args) "multi_a")
                        (parse-key-list (cdr args)))))
                   ((string-prefix? "and_v(" s)
                    (let ((parts (split-top-level-comma (function-inner "and_v" "and_v(" s))))
@@ -909,7 +935,7 @@
                    (eq? kind 'ripemd160)
                    (eq? kind 'hash160))
                (make-type-info 'B #t #t 1 #f #t #f #t))
-              ((or (eq? kind 'multi) (eq? kind 'sortedmulti))
+              ((or (eq? kind 'multi) (eq? kind 'sortedmulti) (eq? kind 'multi-a))
                (make-type-info 'B #t #t (+ 1 (miniscript-fragment-data fragment)) #t #f #f #t))
               ((eq? kind 'wrapper)
                (let* ((child (car (miniscript-fragment-args fragment)))
@@ -1019,6 +1045,12 @@
                               ","
                               (key-list->string (miniscript-fragment-args fragment))
                               ")"))
+              ((eq? kind 'multi-a)
+               (string-append "multi_a("
+                              (number->string (miniscript-fragment-data fragment))
+                              ","
+                              (key-list->string (miniscript-fragment-args fragment))
+                              ")"))
               ((eq? kind 'and-v)
                (string-append "and_v(" (fragment-list->string (miniscript-fragment-args fragment)) ")"))
               ((eq? kind 'and-b)
@@ -1076,17 +1108,35 @@
             (key->bytevector "miniscript-compile" key))))
 
     (define (compile-multisig fragment verify? tapscript?)
-      (when tapscript?
-        (error "miniscript-compile-tapscript: multi/sortedmulti needs tapscript CHECKSIGADD support"))
       (let ((keys (miniscript-fragment-args fragment))
             (threshold (miniscript-fragment-data fragment)))
-        (let ((script (script-push-int threshold)))
-          (do ((xs keys (cdr xs)))
-              ((null? xs))
-            (set! script (script-append script (compile-key-push (car xs) tapscript?))))
-          (script-append script
-                         (script-push-int (length keys))
-                         (script-op (if verify? op-checkmultisigverify op-checkmultisig))))))
+        (if tapscript?
+            (begin
+              (when (or verify?
+                        (not (eq? 'multi-a (miniscript-fragment-kind fragment))))
+                (error "miniscript-compile-tapscript: use multi_a for Tapscript multisig"))
+              (let ((script (script-append
+                              (compile-key-push (car keys) #t)
+                              (script-op op-checksig))))
+                (do ((xs (cdr keys) (cdr xs)))
+                    ((null? xs))
+                  (set! script
+                    (script-append script
+                                   (compile-key-push (car xs) #t)
+                                   (script-op op-checksigadd))))
+                (script-append script
+                               (script-push-int threshold)
+                               (script-op op-numequal))))
+            (begin
+              (when (eq? 'multi-a (miniscript-fragment-kind fragment))
+                (error "miniscript-compile: multi_a is only valid in Tapscript"))
+              (let ((script (script-push-int threshold)))
+                (do ((xs keys (cdr xs)))
+                    ((null? xs))
+                  (set! script (script-append script (compile-key-push (car xs) tapscript?))))
+                (script-append script
+                               (script-push-int (length keys))
+                               (script-op (if verify? op-checkmultisigverify op-checkmultisig))))))))
 
     (define (compile-hashlock opcode expected)
       (script-append
@@ -1173,7 +1223,7 @@
                (compile-hashlock op-ripemd160 (miniscript-fragment-data fragment)))
               ((eq? kind 'hash160)
                (compile-hashlock op-hash160 (miniscript-fragment-data fragment)))
-              ((or (eq? kind 'multi) (eq? kind 'sortedmulti))
+              ((or (eq? kind 'multi) (eq? kind 'sortedmulti) (eq? kind 'multi-a))
                (compile-multisig fragment #f tapscript?))
               ((eq? kind 'and-v)
                (script-append
@@ -1734,7 +1784,7 @@
                          (miniscript-fragment-data fragment)
                          branch
                          index)))
-              ((or (eq? kind 'multi) (eq? kind 'sortedmulti))
+              ((or (eq? kind 'multi) (eq? kind 'sortedmulti) (eq? kind 'multi-a))
                (miniscript-fragment
                  kind: kind
                  args: (derive-key-list (miniscript-fragment-args fragment) branch index)
@@ -1873,7 +1923,7 @@
       (let ((kind (miniscript-fragment-kind fragment)))
         (cond ((or (eq? kind 'pk-k) (eq? kind 'pk-h) (eq? kind 'pk))
                (key-origin-entries (miniscript-fragment-data fragment) branch index taproot?))
-              ((or (eq? kind 'multi) (eq? kind 'sortedmulti))
+              ((or (eq? kind 'multi) (eq? kind 'sortedmulti) (eq? kind 'multi-a))
                (key-list-origin-entries (miniscript-fragment-args fragment) branch index taproot?))
               (else
                (let loop ((xs (miniscript-fragment-args fragment))
@@ -1927,6 +1977,22 @@
               (else
                #f))))
 
+    (define (descriptor-plan-taproot-leaf-scripts desc)
+      (if (and (eq? (descriptor-kind desc) 'tr)
+               (not (null? (descriptor-args desc)))
+               (miniscript-fragment? (car (descriptor-args desc))))
+          (let* ((script (miniscript-compile-tapscript (car (descriptor-args desc))))
+                 (leaf-hash (taproot-leaf-hash script))
+                 (internal-xonly (key->xonly-bytevector
+                                  "descriptor PSBT plan"
+                                  (descriptor-data desc))))
+            (list
+              (psbt-taproot-leaf-script
+                control-block: (taproot-control-block internal-xonly leaf-hash)
+                script: script
+                leaf-version: %taproot-leaf-version)))
+          '()))
+
     ;;; Build a derived descriptor plan containing script and PSBT key-origin data.
     (define (descriptor-derive-psbt-plan desc branch index)
       (: descriptor? integer? integer? -> descriptor-psbt-plan?)
@@ -1938,6 +2004,7 @@
           script-pubkey: script
           redeem-script: (descriptor-plan-redeem-script derived)
           witness-script: (descriptor-plan-witness-script derived)
+          taproot-leaf-scripts: (descriptor-plan-taproot-leaf-scripts derived)
           bip32-derivations: (if taproot?
                                  '()
                                  (reverse (descriptor-origin-entries desc branch index #f)))
@@ -2152,16 +2219,20 @@
     ;;; Attach descriptor-derived metadata to a PSBT input.
     (define (descriptor-psbt-plan-annotate-input p input-index plan)
       (: psbt? integer? descriptor-psbt-plan? -> psbt?)
-      (psbt-annotate-input-scripts
-        (psbt-annotate-input
-          p
-          input-index
-          (descriptor-psbt-plan-script-pubkey plan)
-          (descriptor-psbt-plan-bip32-derivations plan)
-          (descriptor-psbt-plan-taproot-bip32-derivations plan))
-        input-index
-        (descriptor-psbt-plan-redeem-script plan)
-        (descriptor-psbt-plan-witness-script plan)))
+      (let* ((base (psbt-annotate-input-scripts
+                     (psbt-annotate-input
+                       p
+                       input-index
+                       (descriptor-psbt-plan-script-pubkey plan)
+                       (descriptor-psbt-plan-bip32-derivations plan)
+                       (descriptor-psbt-plan-taproot-bip32-derivations plan))
+                     input-index
+                     (descriptor-psbt-plan-redeem-script plan)
+                     (descriptor-psbt-plan-witness-script plan)))
+             (leaf-scripts (descriptor-psbt-plan-taproot-leaf-scripts plan)))
+        (if (null? leaf-scripts)
+            base
+            (psbt-annotate-input-taproot-leaf-scripts base input-index leaf-scripts))))
 
     ;;; Attach descriptor-derived metadata to a PSBT output.
     (define (descriptor-psbt-plan-annotate-output p output-index plan)
@@ -2176,14 +2247,15 @@
     ;;; Annotate and sign a standard descriptor PSBT input.
     (define (descriptor-psbt-plan-sign-input p input-index plan private-key)
       (: psbt? integer? descriptor-psbt-plan? bytevector? -> psbt?)
-      (psbt-sign-standard-input
-        (descriptor-psbt-plan-annotate-input p input-index plan)
-        input-index
-        private-key))
+      (let ((annotated (descriptor-psbt-plan-annotate-input p input-index plan)))
+        (if (null? (descriptor-psbt-plan-taproot-leaf-scripts plan))
+            (psbt-sign-standard-input annotated input-index private-key)
+            (psbt-sign-p2tr-scriptpath-input annotated input-index private-key))))
 
     ;;; Finalize a standard descriptor PSBT input.
     (define (descriptor-psbt-plan-finalize-input p input-index plan)
       (: psbt? integer? descriptor-psbt-plan? -> psbt?)
-      (psbt-finalize-standard-input
-        (descriptor-psbt-plan-annotate-input p input-index plan)
-        input-index))))
+      (let ((annotated (descriptor-psbt-plan-annotate-input p input-index plan)))
+        (if (null? (descriptor-psbt-plan-taproot-leaf-scripts plan))
+            (psbt-finalize-standard-input annotated input-index)
+            (psbt-finalize-p2tr-scriptpath-input annotated input-index))))))

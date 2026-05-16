@@ -8,6 +8,7 @@
   (export
     psbt-annotate-input
     psbt-annotate-input-scripts
+    psbt-annotate-input-taproot-leaf-scripts
     psbt-annotate-output)
   (begin
     (define (psbt-annotate-input p input-index script-pubkey bip32-derivations taproot-bip32-derivations)
@@ -74,6 +75,34 @@
                            taproot-leaf-scripts: (psbt-input-taproot-leaf-scripts input)
             redeem-script: (if redeem-script redeem-script (psbt-input-redeem-script input))
             witness-script: (if witness-script witness-script (psbt-input-witness-script input))
+            bip32-derivations: (psbt-input-bip32-derivations input)
+            taproot-bip32-derivations: (psbt-input-taproot-bip32-derivations input)
+            unknowns: (psbt-input-unknowns input)))))
+
+    ;;; Attach Taproot leaf scripts to a PSBT input map.
+    (define (psbt-annotate-input-taproot-leaf-scripts p input-index leaf-scripts)
+      (: psbt? integer? list? -> psbt?)
+      (validate-psbt p)
+      (validate-taproot-leaf-scripts
+        "psbt-annotate-input-taproot-leaf-scripts"
+        leaf-scripts)
+      (let ((input (nth-item (psbt-inputs p) input-index "psbt-annotate-input-taproot-leaf-scripts")))
+        (psbt-update-input
+          p
+          input-index
+          (psbt-input
+            non-witness-utxo: (psbt-input-non-witness-utxo input)
+            witness-utxo: (psbt-input-witness-utxo input)
+            partial-sigs: (psbt-input-partial-sigs input)
+            sighash-type: (psbt-input-sighash-type input)
+            final-script-sig: (psbt-input-final-script-sig input)
+            final-script-witness: (psbt-input-final-script-witness input)
+            taproot-key-sig: (psbt-input-taproot-key-sig input)
+            taproot-script-sigs: (psbt-input-taproot-script-sigs input)
+            taproot-leaf-scripts: (append (psbt-input-taproot-leaf-scripts input)
+                                          leaf-scripts)
+            redeem-script: (psbt-input-redeem-script input)
+            witness-script: (psbt-input-witness-script input)
             bip32-derivations: (psbt-input-bip32-derivations input)
             taproot-bip32-derivations: (psbt-input-taproot-bip32-derivations input)
             unknowns: (psbt-input-unknowns input)))))

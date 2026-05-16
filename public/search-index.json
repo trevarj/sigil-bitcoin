@@ -441,6 +441,34 @@
     "summary": "Get the `public-key` field of a `extended-public-key` struct."
   },
   {
+    "name": "bip32-key-origin",
+    "kind": "procedure",
+    "module": "(sigil bitcoin keys)",
+    "url": "api/sigil/bitcoin/keys.html#bip32-key-origin",
+    "summary": "BIP32 key-origin metadata used by descriptors and PSBT derivations."
+  },
+  {
+    "name": "bip32-key-origin?",
+    "kind": "procedure",
+    "module": "(sigil bitcoin keys)",
+    "url": "api/sigil/bitcoin/keys.html#bip32-key-origin?",
+    "summary": "Test if a value is a `bip32-key-origin` struct."
+  },
+  {
+    "name": "bip32-key-origin-fingerprint",
+    "kind": "procedure",
+    "module": "(sigil bitcoin keys)",
+    "url": "api/sigil/bitcoin/keys.html#bip32-key-origin-fingerprint",
+    "summary": "Get the `fingerprint` field of a `bip32-key-origin` struct."
+  },
+  {
+    "name": "bip32-key-origin-path",
+    "kind": "procedure",
+    "module": "(sigil bitcoin keys)",
+    "url": "api/sigil/bitcoin/keys.html#bip32-key-origin-path",
+    "summary": "Get the `path` field of a `bip32-key-origin` struct."
+  },
+  {
     "name": "private-key->wif",
     "kind": "procedure",
     "module": "(sigil bitcoin keys)",
@@ -551,6 +579,34 @@
     "module": "(sigil bitcoin keys)",
     "url": "api/sigil/bitcoin/keys.html#bip32-public-child",
     "summary": "Derive a non-hardened BIP32 public child key."
+  },
+  {
+    "name": "bip32-path->list",
+    "kind": "procedure",
+    "module": "(sigil bitcoin keys)",
+    "url": "api/sigil/bitcoin/keys.html#bip32-path->list",
+    "summary": "Parse an absolute BIP32 path into child numbers."
+  },
+  {
+    "name": "bip32-path->string",
+    "kind": "procedure",
+    "module": "(sigil bitcoin keys)",
+    "url": "api/sigil/bitcoin/keys.html#bip32-path->string",
+    "summary": "Format child numbers as an absolute BIP32 path."
+  },
+  {
+    "name": "bip32-key-origin-parse",
+    "kind": "procedure",
+    "module": "(sigil bitcoin keys)",
+    "url": "api/sigil/bitcoin/keys.html#bip32-key-origin-parse",
+    "summary": "Parse `[fingerprint/path]` BIP32 key-origin text."
+  },
+  {
+    "name": "bip32-key-origin->string",
+    "kind": "procedure",
+    "module": "(sigil bitcoin keys)",
+    "url": "api/sigil/bitcoin/keys.html#bip32-key-origin->string",
+    "summary": "Format BIP32 key-origin metadata as `[fingerprint/path]`."
   },
   {
     "name": "bip32-derive-path",
@@ -665,6 +721,20 @@
     "summary": "Serialize a BIP32 extended public key as Base58Check text."
   },
   {
+    "name": "bip32-xprv->slip132-string",
+    "kind": "procedure",
+    "module": "(sigil bitcoin keys)",
+    "url": "api/sigil/bitcoin/keys.html#bip32-xprv->slip132-string",
+    "summary": "Serialize an extended private key with a SLIP-132 version prefix."
+  },
+  {
+    "name": "bip32-xpub->slip132-string",
+    "kind": "procedure",
+    "module": "(sigil bitcoin keys)",
+    "url": "api/sigil/bitcoin/keys.html#bip32-xpub->slip132-string",
+    "summary": "Serialize an extended public key with a SLIP-132 version prefix."
+  },
+  {
     "name": "string->bip32-xprv",
     "kind": "procedure",
     "module": "(sigil bitcoin keys)",
@@ -677,6 +747,20 @@
     "module": "(sigil bitcoin keys)",
     "url": "api/sigil/bitcoin/keys.html#string->bip32-xpub",
     "summary": "Parse a Base58Check BIP32 extended public key."
+  },
+  {
+    "name": "string->bip32-slip132-xprv",
+    "kind": "procedure",
+    "module": "(sigil bitcoin keys)",
+    "url": "api/sigil/bitcoin/keys.html#string->bip32-slip132-xprv",
+    "summary": "Parse a SLIP-132 extended private key into the standard key record."
+  },
+  {
+    "name": "string->bip32-slip132-xpub",
+    "kind": "procedure",
+    "module": "(sigil bitcoin keys)",
+    "url": "api/sigil/bitcoin/keys.html#string->bip32-slip132-xpub",
+    "summary": "Parse a SLIP-132 extended public key into the standard key record."
   },
   {
     "name": "bip39-entropy->mnemonic",
@@ -938,6 +1022,13 @@
     "summary": "Get the `witness-script` field of a `descriptor-psbt-plan` struct."
   },
   {
+    "name": "descriptor-psbt-plan-taproot-leaf-scripts",
+    "kind": "procedure",
+    "module": "(sigil bitcoin miniscript)",
+    "url": "api/sigil/bitcoin/miniscript.html#descriptor-psbt-plan-taproot-leaf-scripts",
+    "summary": "Get the `taproot-leaf-scripts` field of a `descriptor-psbt-plan` struct."
+  },
+  {
     "name": "descriptor-psbt-plan-bip32-derivations",
     "kind": "procedure",
     "module": "(sigil bitcoin miniscript)",
@@ -1048,6 +1139,13 @@
     "module": "(sigil bitcoin miniscript)",
     "url": "api/sigil/bitcoin/miniscript.html#miniscript-sortedmulti",
     "summary": "Construct a `sortedmulti(k, keys...)` multisig fragment."
+  },
+  {
+    "name": "miniscript-multi-a",
+    "kind": "procedure",
+    "module": "(sigil bitcoin miniscript)",
+    "url": "api/sigil/bitcoin/miniscript.html#miniscript-multi-a",
+    "summary": "Construct a `multi_a(k, keys...)` Tapscript CHECKSIGADD fragment."
   },
   {
     "name": "miniscript-and-v",
@@ -1344,6 +1442,13 @@
     "summary": ""
   },
   {
+    "name": "taproot-output-xonly",
+    "kind": "variable",
+    "module": "(sigil bitcoin miniscript)",
+    "url": "api/sigil/bitcoin/miniscript.html#taproot-output-xonly",
+    "summary": ""
+  },
+  {
     "name": "sigil bitcoin primitives",
     "kind": "module",
     "module": "(sigil bitcoin primitives)",
@@ -1400,6 +1505,377 @@
     "summary": "Compute a BIP-340 tagged hash."
   },
   {
+    "name": "sigil bitcoin psbt",
+    "kind": "module",
+    "module": "(sigil bitcoin psbt)",
+    "url": "api/sigil/bitcoin/psbt.html",
+    "summary": "(sigil bitcoin psbt) — Partially Signed Bitcoin Transactions"
+  },
+  {
+    "name": "psbt",
+    "kind": "variable",
+    "module": "(sigil bitcoin psbt)",
+    "url": "api/sigil/bitcoin/psbt.html#psbt",
+    "summary": ""
+  },
+  {
+    "name": "psbt?",
+    "kind": "variable",
+    "module": "(sigil bitcoin psbt)",
+    "url": "api/sigil/bitcoin/psbt.html#psbt?",
+    "summary": ""
+  },
+  {
+    "name": "psbt-unsigned-tx",
+    "kind": "variable",
+    "module": "(sigil bitcoin psbt)",
+    "url": "api/sigil/bitcoin/psbt.html#psbt-unsigned-tx",
+    "summary": ""
+  },
+  {
+    "name": "psbt-inputs",
+    "kind": "variable",
+    "module": "(sigil bitcoin psbt)",
+    "url": "api/sigil/bitcoin/psbt.html#psbt-inputs",
+    "summary": ""
+  },
+  {
+    "name": "psbt-outputs",
+    "kind": "variable",
+    "module": "(sigil bitcoin psbt)",
+    "url": "api/sigil/bitcoin/psbt.html#psbt-outputs",
+    "summary": ""
+  },
+  {
+    "name": "psbt-taproot-leaf-script",
+    "kind": "variable",
+    "module": "(sigil bitcoin psbt)",
+    "url": "api/sigil/bitcoin/psbt.html#psbt-taproot-leaf-script",
+    "summary": ""
+  },
+  {
+    "name": "psbt-taproot-leaf-script?",
+    "kind": "variable",
+    "module": "(sigil bitcoin psbt)",
+    "url": "api/sigil/bitcoin/psbt.html#psbt-taproot-leaf-script?",
+    "summary": ""
+  },
+  {
+    "name": "psbt-taproot-leaf-script-control-block",
+    "kind": "variable",
+    "module": "(sigil bitcoin psbt)",
+    "url": "api/sigil/bitcoin/psbt.html#psbt-taproot-leaf-script-control-block",
+    "summary": ""
+  },
+  {
+    "name": "psbt-taproot-leaf-script-script",
+    "kind": "variable",
+    "module": "(sigil bitcoin psbt)",
+    "url": "api/sigil/bitcoin/psbt.html#psbt-taproot-leaf-script-script",
+    "summary": ""
+  },
+  {
+    "name": "psbt-taproot-leaf-script-leaf-version",
+    "kind": "variable",
+    "module": "(sigil bitcoin psbt)",
+    "url": "api/sigil/bitcoin/psbt.html#psbt-taproot-leaf-script-leaf-version",
+    "summary": ""
+  },
+  {
+    "name": "psbt-input",
+    "kind": "variable",
+    "module": "(sigil bitcoin psbt)",
+    "url": "api/sigil/bitcoin/psbt.html#psbt-input",
+    "summary": ""
+  },
+  {
+    "name": "psbt-input?",
+    "kind": "variable",
+    "module": "(sigil bitcoin psbt)",
+    "url": "api/sigil/bitcoin/psbt.html#psbt-input?",
+    "summary": ""
+  },
+  {
+    "name": "psbt-input-non-witness-utxo",
+    "kind": "variable",
+    "module": "(sigil bitcoin psbt)",
+    "url": "api/sigil/bitcoin/psbt.html#psbt-input-non-witness-utxo",
+    "summary": ""
+  },
+  {
+    "name": "psbt-input-witness-utxo",
+    "kind": "variable",
+    "module": "(sigil bitcoin psbt)",
+    "url": "api/sigil/bitcoin/psbt.html#psbt-input-witness-utxo",
+    "summary": ""
+  },
+  {
+    "name": "psbt-input-partial-sigs",
+    "kind": "variable",
+    "module": "(sigil bitcoin psbt)",
+    "url": "api/sigil/bitcoin/psbt.html#psbt-input-partial-sigs",
+    "summary": ""
+  },
+  {
+    "name": "psbt-input-sighash-type",
+    "kind": "variable",
+    "module": "(sigil bitcoin psbt)",
+    "url": "api/sigil/bitcoin/psbt.html#psbt-input-sighash-type",
+    "summary": ""
+  },
+  {
+    "name": "psbt-input-final-script-sig",
+    "kind": "variable",
+    "module": "(sigil bitcoin psbt)",
+    "url": "api/sigil/bitcoin/psbt.html#psbt-input-final-script-sig",
+    "summary": ""
+  },
+  {
+    "name": "psbt-input-final-script-witness",
+    "kind": "variable",
+    "module": "(sigil bitcoin psbt)",
+    "url": "api/sigil/bitcoin/psbt.html#psbt-input-final-script-witness",
+    "summary": ""
+  },
+  {
+    "name": "psbt-input-taproot-key-sig",
+    "kind": "variable",
+    "module": "(sigil bitcoin psbt)",
+    "url": "api/sigil/bitcoin/psbt.html#psbt-input-taproot-key-sig",
+    "summary": ""
+  },
+  {
+    "name": "psbt-input-taproot-script-sigs",
+    "kind": "variable",
+    "module": "(sigil bitcoin psbt)",
+    "url": "api/sigil/bitcoin/psbt.html#psbt-input-taproot-script-sigs",
+    "summary": ""
+  },
+  {
+    "name": "psbt-input-taproot-leaf-scripts",
+    "kind": "variable",
+    "module": "(sigil bitcoin psbt)",
+    "url": "api/sigil/bitcoin/psbt.html#psbt-input-taproot-leaf-scripts",
+    "summary": ""
+  },
+  {
+    "name": "psbt-input-redeem-script",
+    "kind": "variable",
+    "module": "(sigil bitcoin psbt)",
+    "url": "api/sigil/bitcoin/psbt.html#psbt-input-redeem-script",
+    "summary": ""
+  },
+  {
+    "name": "psbt-input-witness-script",
+    "kind": "variable",
+    "module": "(sigil bitcoin psbt)",
+    "url": "api/sigil/bitcoin/psbt.html#psbt-input-witness-script",
+    "summary": ""
+  },
+  {
+    "name": "psbt-input-bip32-derivations",
+    "kind": "variable",
+    "module": "(sigil bitcoin psbt)",
+    "url": "api/sigil/bitcoin/psbt.html#psbt-input-bip32-derivations",
+    "summary": ""
+  },
+  {
+    "name": "psbt-input-taproot-bip32-derivations",
+    "kind": "variable",
+    "module": "(sigil bitcoin psbt)",
+    "url": "api/sigil/bitcoin/psbt.html#psbt-input-taproot-bip32-derivations",
+    "summary": ""
+  },
+  {
+    "name": "psbt-input-unknowns",
+    "kind": "variable",
+    "module": "(sigil bitcoin psbt)",
+    "url": "api/sigil/bitcoin/psbt.html#psbt-input-unknowns",
+    "summary": ""
+  },
+  {
+    "name": "psbt-output",
+    "kind": "variable",
+    "module": "(sigil bitcoin psbt)",
+    "url": "api/sigil/bitcoin/psbt.html#psbt-output",
+    "summary": ""
+  },
+  {
+    "name": "psbt-output?",
+    "kind": "variable",
+    "module": "(sigil bitcoin psbt)",
+    "url": "api/sigil/bitcoin/psbt.html#psbt-output?",
+    "summary": ""
+  },
+  {
+    "name": "psbt-output-bip32-derivations",
+    "kind": "variable",
+    "module": "(sigil bitcoin psbt)",
+    "url": "api/sigil/bitcoin/psbt.html#psbt-output-bip32-derivations",
+    "summary": ""
+  },
+  {
+    "name": "psbt-output-taproot-bip32-derivations",
+    "kind": "variable",
+    "module": "(sigil bitcoin psbt)",
+    "url": "api/sigil/bitcoin/psbt.html#psbt-output-taproot-bip32-derivations",
+    "summary": ""
+  },
+  {
+    "name": "psbt-output-unknowns",
+    "kind": "variable",
+    "module": "(sigil bitcoin psbt)",
+    "url": "api/sigil/bitcoin/psbt.html#psbt-output-unknowns",
+    "summary": ""
+  },
+  {
+    "name": "psbt-unknowns",
+    "kind": "variable",
+    "module": "(sigil bitcoin psbt)",
+    "url": "api/sigil/bitcoin/psbt.html#psbt-unknowns",
+    "summary": ""
+  },
+  {
+    "name": "psbt-create",
+    "kind": "variable",
+    "module": "(sigil bitcoin psbt)",
+    "url": "api/sigil/bitcoin/psbt.html#psbt-create",
+    "summary": ""
+  },
+  {
+    "name": "psbt-annotate-input",
+    "kind": "variable",
+    "module": "(sigil bitcoin psbt)",
+    "url": "api/sigil/bitcoin/psbt.html#psbt-annotate-input",
+    "summary": ""
+  },
+  {
+    "name": "psbt-annotate-input-scripts",
+    "kind": "variable",
+    "module": "(sigil bitcoin psbt)",
+    "url": "api/sigil/bitcoin/psbt.html#psbt-annotate-input-scripts",
+    "summary": ""
+  },
+  {
+    "name": "psbt-annotate-input-taproot-leaf-scripts",
+    "kind": "variable",
+    "module": "(sigil bitcoin psbt)",
+    "url": "api/sigil/bitcoin/psbt.html#psbt-annotate-input-taproot-leaf-scripts",
+    "summary": ""
+  },
+  {
+    "name": "psbt-annotate-output",
+    "kind": "variable",
+    "module": "(sigil bitcoin psbt)",
+    "url": "api/sigil/bitcoin/psbt.html#psbt-annotate-output",
+    "summary": ""
+  },
+  {
+    "name": "psbt-serialize",
+    "kind": "variable",
+    "module": "(sigil bitcoin psbt)",
+    "url": "api/sigil/bitcoin/psbt.html#psbt-serialize",
+    "summary": ""
+  },
+  {
+    "name": "psbt-parse",
+    "kind": "variable",
+    "module": "(sigil bitcoin psbt)",
+    "url": "api/sigil/bitcoin/psbt.html#psbt-parse",
+    "summary": ""
+  },
+  {
+    "name": "psbt-sign-p2pkh-input",
+    "kind": "variable",
+    "module": "(sigil bitcoin psbt)",
+    "url": "api/sigil/bitcoin/psbt.html#psbt-sign-p2pkh-input",
+    "summary": ""
+  },
+  {
+    "name": "psbt-sign-p2wpkh-input",
+    "kind": "variable",
+    "module": "(sigil bitcoin psbt)",
+    "url": "api/sigil/bitcoin/psbt.html#psbt-sign-p2wpkh-input",
+    "summary": ""
+  },
+  {
+    "name": "psbt-sign-p2wsh-input",
+    "kind": "variable",
+    "module": "(sigil bitcoin psbt)",
+    "url": "api/sigil/bitcoin/psbt.html#psbt-sign-p2wsh-input",
+    "summary": ""
+  },
+  {
+    "name": "psbt-sign-p2tr-keypath-input",
+    "kind": "variable",
+    "module": "(sigil bitcoin psbt)",
+    "url": "api/sigil/bitcoin/psbt.html#psbt-sign-p2tr-keypath-input",
+    "summary": ""
+  },
+  {
+    "name": "psbt-sign-p2tr-scriptpath-input",
+    "kind": "variable",
+    "module": "(sigil bitcoin psbt)",
+    "url": "api/sigil/bitcoin/psbt.html#psbt-sign-p2tr-scriptpath-input",
+    "summary": ""
+  },
+  {
+    "name": "psbt-sign-standard-input",
+    "kind": "variable",
+    "module": "(sigil bitcoin psbt)",
+    "url": "api/sigil/bitcoin/psbt.html#psbt-sign-standard-input",
+    "summary": ""
+  },
+  {
+    "name": "psbt-finalize-p2pkh-input",
+    "kind": "variable",
+    "module": "(sigil bitcoin psbt)",
+    "url": "api/sigil/bitcoin/psbt.html#psbt-finalize-p2pkh-input",
+    "summary": ""
+  },
+  {
+    "name": "psbt-finalize-p2wpkh-input",
+    "kind": "variable",
+    "module": "(sigil bitcoin psbt)",
+    "url": "api/sigil/bitcoin/psbt.html#psbt-finalize-p2wpkh-input",
+    "summary": ""
+  },
+  {
+    "name": "psbt-finalize-p2wsh-input",
+    "kind": "variable",
+    "module": "(sigil bitcoin psbt)",
+    "url": "api/sigil/bitcoin/psbt.html#psbt-finalize-p2wsh-input",
+    "summary": ""
+  },
+  {
+    "name": "psbt-finalize-p2tr-keypath-input",
+    "kind": "variable",
+    "module": "(sigil bitcoin psbt)",
+    "url": "api/sigil/bitcoin/psbt.html#psbt-finalize-p2tr-keypath-input",
+    "summary": ""
+  },
+  {
+    "name": "psbt-finalize-p2tr-scriptpath-input",
+    "kind": "variable",
+    "module": "(sigil bitcoin psbt)",
+    "url": "api/sigil/bitcoin/psbt.html#psbt-finalize-p2tr-scriptpath-input",
+    "summary": ""
+  },
+  {
+    "name": "psbt-finalize-standard-input",
+    "kind": "variable",
+    "module": "(sigil bitcoin psbt)",
+    "url": "api/sigil/bitcoin/psbt.html#psbt-finalize-standard-input",
+    "summary": ""
+  },
+  {
+    "name": "psbt-extract-transaction",
+    "kind": "variable",
+    "module": "(sigil bitcoin psbt)",
+    "url": "api/sigil/bitcoin/psbt.html#psbt-extract-transaction",
+    "summary": ""
+  },
+  {
     "name": "sigil bitcoin script",
     "kind": "module",
     "module": "(sigil bitcoin script)",
@@ -1412,6 +1888,34 @@
     "module": "(sigil bitcoin script)",
     "url": "api/sigil/bitcoin/script.html#script-empty",
     "summary": "Empty script bytevector."
+  },
+  {
+    "name": "script-chunk",
+    "kind": "procedure",
+    "module": "(sigil bitcoin script)",
+    "url": "api/sigil/bitcoin/script.html#script-chunk",
+    "summary": "Parsed script chunk. `data` is a bytevector for push operations and"
+  },
+  {
+    "name": "script-chunk?",
+    "kind": "procedure",
+    "module": "(sigil bitcoin script)",
+    "url": "api/sigil/bitcoin/script.html#script-chunk?",
+    "summary": "Test if a value is a `script-chunk` struct."
+  },
+  {
+    "name": "script-chunk-opcode",
+    "kind": "procedure",
+    "module": "(sigil bitcoin script)",
+    "url": "api/sigil/bitcoin/script.html#script-chunk-opcode",
+    "summary": "Get the `opcode` field of a `script-chunk` struct."
+  },
+  {
+    "name": "script-chunk-data",
+    "kind": "procedure",
+    "module": "(sigil bitcoin script)",
+    "url": "api/sigil/bitcoin/script.html#script-chunk-data",
+    "summary": "Get the `data` field of a `script-chunk` struct."
   },
   {
     "name": "script-op",
@@ -1475,6 +1979,62 @@
     "module": "(sigil bitcoin script)",
     "url": "api/sigil/bitcoin/script.html#script-p2tr",
     "summary": "Build a native P2TR scriptPubKey from a 32-byte x-only public key."
+  },
+  {
+    "name": "script-parse",
+    "kind": "procedure",
+    "module": "(sigil bitcoin script)",
+    "url": "api/sigil/bitcoin/script.html#script-parse",
+    "summary": "Parse raw script bytes into opcode/data chunks."
+  },
+  {
+    "name": "script-number-encode",
+    "kind": "procedure",
+    "module": "(sigil bitcoin script)",
+    "url": "api/sigil/bitcoin/script.html#script-number-encode",
+    "summary": "Encode an integer using Bitcoin Script's little-endian signed-magnitude"
+  },
+  {
+    "name": "script-number-decode",
+    "kind": "procedure",
+    "module": "(sigil bitcoin script)",
+    "url": "api/sigil/bitcoin/script.html#script-number-decode",
+    "summary": "Decode a Bitcoin Script little-endian signed-magnitude number."
+  },
+  {
+    "name": "script->asm",
+    "kind": "procedure",
+    "module": "(sigil bitcoin script)",
+    "url": "api/sigil/bitcoin/script.html#script->asm",
+    "summary": "Decompile raw script bytes to a simple Bitcoin Core-style ASM string."
+  },
+  {
+    "name": "script-decompile",
+    "kind": "procedure",
+    "module": "(sigil bitcoin script)",
+    "url": "api/sigil/bitcoin/script.html#script-decompile",
+    "summary": "Alias for callers that use decompiler terminology."
+  },
+  {
+    "name": "script-witness-program-decode",
+    "kind": "procedure",
+    "module": "(sigil bitcoin script)",
+    "url": "api/sigil/bitcoin/script.html#script-witness-program-decode",
+    "summary": "Decode a native witness program scriptPubKey."
+  },
+  {
+    "name": "script-classify",
+    "kind": "procedure",
+    "module": "(sigil bitcoin script)",
+    "url": "api/sigil/bitcoin/script.html#script-classify",
+    "summary": "Classify a standard scriptPubKey."
+  },
+  {
+    "name": "script-standard-payload",
+    "kind": "procedure",
+    "module": "(sigil bitcoin script)",
+    "url": "api/sigil/bitcoin/script.html#script-standard-payload",
+    "summary": "Extract the standard payload from a recognized scriptPubKey."
   },
   {
     "name": "op-0",
@@ -1743,6 +2303,13 @@
     "summary": "Bitcoin Script opcode constant."
   },
   {
+    "name": "op-numequal",
+    "kind": "variable",
+    "module": "(sigil bitcoin script)",
+    "url": "api/sigil/bitcoin/script.html#op-numequal",
+    "summary": "Bitcoin Script opcode constant."
+  },
+  {
     "name": "op-checksig",
     "kind": "variable",
     "module": "(sigil bitcoin script)",
@@ -1768,6 +2335,13 @@
     "kind": "variable",
     "module": "(sigil bitcoin script)",
     "url": "api/sigil/bitcoin/script.html#op-checkmultisigverify",
+    "summary": "Bitcoin Script opcode constant."
+  },
+  {
+    "name": "op-checksigadd",
+    "kind": "variable",
+    "module": "(sigil bitcoin script)",
+    "url": "api/sigil/bitcoin/script.html#op-checksigadd",
     "summary": "Bitcoin Script opcode constant."
   },
   {

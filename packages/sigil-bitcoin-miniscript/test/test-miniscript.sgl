@@ -143,6 +143,9 @@
   (test "constructs multisig fragments"
     (let ((fragment (miniscript-multi 2 (list %generator-pub %second-pub))))
       (assert-equal 'multi (miniscript-fragment-kind fragment))
+      (assert-equal 'B (miniscript-type fragment)))
+    (let ((fragment (miniscript-multi-a 2 (list %generator-pub %second-pub))))
+      (assert-equal 'multi-a (miniscript-fragment-kind fragment))
       (assert-equal 'B (miniscript-type fragment))))
 
   (test "derives type metadata for signing"
@@ -260,6 +263,23 @@
           (miniscript-parse
             (string-append "multi(2,0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798,"
                            %second-pub-text ")"))))))
+
+  (test "compiles multi_a tapscript"
+    (assert-equal
+      (string-append
+        "20" (substring %generator-pub-text 2 (string-length %generator-pub-text))
+        "ac"
+        "20" (substring %second-pub-text 2 (string-length %second-pub-text))
+        "ba"
+        "529c")
+      (hex-encode
+        (miniscript-compile-tapscript
+          (miniscript-parse
+            (string-append "multi_a(2," %generator-pub-text "," %second-pub-text ")")))))
+    (assert-error
+      (miniscript-compile
+        (miniscript-parse
+          (string-append "multi_a(1," %generator-pub-text ")")))))
 
   (test "compiles hash locks"
     (assert-equal
@@ -480,6 +500,27 @@
           (assert-equal 2 (length witness))
           (assert-equal (descriptor-psbt-plan-witness-script plan)
                         (cadr witness))))
+
+      (test "signs and finalizes Taproot multi_a descriptor PSBT plans"
+        (let* ((desc (descriptor-parse
+                       (string-append
+                         "tr(" %generator-pub-text ",multi_a(1,"
+                         %generator-pub-text ","
+                         %second-pub-text "))")))
+               (plan (descriptor-derive-psbt-plan desc 0 0))
+               (p (single-input-psbt (descriptor-psbt-plan-script-pubkey plan)))
+               (annotated (descriptor-psbt-plan-annotate-input p 0 plan))
+               (signed (descriptor-psbt-plan-sign-input annotated 0 plan %one))
+               (finalized (descriptor-psbt-plan-finalize-input signed 0 plan))
+               (extracted (psbt-extract-transaction finalized))
+               (input (car (psbt-inputs annotated)))
+               (witness (txin-witness (car (transaction-inputs extracted)))))
+          (assert-equal 1 (length (psbt-input-taproot-leaf-scripts input)))
+          (assert-equal 4 (length witness))
+          (assert-equal #u8() (car witness))
+          (assert-equal (psbt-taproot-leaf-script-script
+                          (car (descriptor-psbt-plan-taproot-leaf-scripts plan)))
+                        (caddr witness))))
 
       (test "derives xpub keys inside miniscript fragments"
         (let* ((desc (descriptor-parse

@@ -290,14 +290,15 @@
     (define (miniscript-tool tool input a b c)
       (if (string=? tool "miniscript.compile")
           (let* ((fragment (miniscript-parse input))
-                 (info (miniscript-type-info fragment))
-                 (script (miniscript-compile fragment)))
+                 (info (miniscript-type-info fragment)))
             (ok (list (cons "miniscript" (miniscript->string fragment))
                       (cons "type" (symbol->string (miniscript-type fragment)))
                       (cons "requiresSignature" (miniscript-type-info-requires-signature info))
                       (cons "requiresPreimage" (miniscript-type-info-requires-preimage info))
                       (cons "hasTimelock" (miniscript-type-info-has-timelock info))
-                      (cons "script" (hex-encode script))
+                      (cons "script"
+                            (guard (err (else "unsupported"))
+                              (hex-encode (miniscript-compile fragment))))
                       (cons "tapscript"
                             (guard (err (else "unsupported"))
                               (hex-encode (miniscript-compile-tapscript fragment)))))))

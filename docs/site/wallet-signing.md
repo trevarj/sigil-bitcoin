@@ -1,6 +1,6 @@
 # Wallet Signing Capability Map
 
-The current stack can build simple legacy, SegWit v0, and Taproot key-path signing flows.
+The current stack can build legacy, SegWit v0, and Taproot key-path or single-leaf script-path signing flows.
 
 - Generate or import BIP39 mnemonic entropy with `(sigil bitcoin keys)`.
 - Derive BIP32 private and public keys, including BIP44/49/84/86 account and address keys.
@@ -15,12 +15,13 @@ The current stack can build simple legacy, SegWit v0, and Taproot key-path signi
 - Preserve global, input, and output unknown/proprietary PSBT keys during parse and serialize.
 - Preserve input and output BIP32/Taproot derivation records for wallet coordination.
 - Derive descriptor and wallet-policy PSBT plans for input/output annotation.
-- Sign and finalize P2PKH, P2WPKH, single-key P2WSH, and BIP86-style Taproot key-path PSBT inputs.
-- Compute BIP341 key-path sighashes for Taproot spends.
+- Sign and finalize P2PKH, P2WPKH, single-key P2WSH, BIP86-style Taproot key-path, and single-leaf Taproot script-path PSBT inputs.
+- Compile Taproot descriptor leaves using `pk(...)` or `multi_a(...)`.
+- Compute BIP341 key-path and script-path sighashes for Taproot spends.
 - Extract finalized PSBTs into signed transactions.
 
-The complete PSBT signing/finalization paths are P2PKH, P2WPKH, single-key P2WSH with `SIGHASH_ALL`, and BIP86-style Taproot key-path spends with `SIGHASH_DEFAULT` or `SIGHASH_ALL`.
+The complete PSBT signing/finalization paths are P2PKH, P2WPKH, single-key P2WSH with `SIGHASH_ALL`, BIP86-style Taproot key-path spends with `SIGHASH_DEFAULT` or `SIGHASH_ALL`, and single-leaf Taproot script-path spends with `pk(...)` or `multi_a(...)` leaves.
 
 Still pending:
 
-- Taproot script-tree descriptor signing.
+- Taproot script-path descriptor signing for multi-branch trees with Merkle inclusion proofs.

@@ -36,6 +36,7 @@
     psbt-prevouts
     witness-script-pk-checksig-pubkey
     tapscript-pk-checksig-pubkey
+    tapscript-multi-a-pubkeys
     p2tr-script-xonly
     taproot-leaf-script-hash
     find-taproot-leaf-for-pubkey
@@ -339,6 +340,47 @@
           (bytevector-copy script 1 33)
           #f))
 
+    (define (read-script-small-int script offset who)
+      (let ((opcode (bytevector-u8-ref script offset)))
+        (cond ((= opcode op-0) 0)
+              ((and (>= opcode op-1) (<= opcode op-16)) (- opcode #x50))
+              ((<= opcode 75)
+               (script-number-decode
+                 (bytevector-copy script (+ offset 1) (+ offset 1 opcode))))
+              (else
+               (error (string-append who ": expected script number"))))))
+
+    (define (tapscript-multi-a-pubkeys script)
+      (let ((len (bytevector-length script)))
+        (if (< len 36)
+            #f
+            (let loop ((offset 0)
+                       (first? #t)
+                       (keys '()))
+              (cond ((>= offset len) #f)
+                    ((and (<= (+ offset 34) len)
+                          (= #x20 (bytevector-u8-ref script offset))
+                          (= (if first? op-checksig op-checksigadd)
+                             (bytevector-u8-ref script (+ offset 33))))
+                     (loop (+ offset 34)
+                           #f
+                           (cons (bytevector-copy script (+ offset 1) (+ offset 33)) keys)))
+                    ((and (not first?)
+                          (< (+ offset 1) len)
+                          (= op-numequal (bytevector-u8-ref script (- len 1)))
+                          (= (+ offset 2) len))
+                     (let ((threshold (read-script-small-int script offset "tapscript-multi-a-pubkeys"))
+                           (ordered (reverse keys)))
+                       (if (and (> threshold 0) (<= threshold (length ordered)))
+                           (cons threshold ordered)
+                           #f)))
+                    (else #f))))))
+
+    (define (bytevector-member? needle xs)
+      (cond ((null? xs) #f)
+            ((equal? needle (car xs)) #t)
+            (else (bytevector-member? needle (cdr xs)))))
+
     (define (p2tr-script-xonly script)
       (if (and (= 34 (bytevector-length script))
                (= op-1 (bytevector-u8-ref script 0))
@@ -357,8 +399,10 @@
                (error (string-append who ": missing Taproot leaf script for key")))
               ((let* ((leaf-script (car xs))
                       (script (psbt-taproot-leaf-script-script leaf-script))
-                      (script-key (tapscript-pk-checksig-pubkey script)))
-                 (and script-key (equal? script-key xonly-pubkey)))
+                      (script-key (tapscript-pk-checksig-pubkey script))
+                      (multi-a (tapscript-multi-a-pubkeys script)))
+                 (or (and script-key (equal? script-key xonly-pubkey))
+                     (and multi-a (bytevector-member? xonly-pubkey (cdr multi-a)))))
                (car xs))
               (else (loop (cdr xs))))))
 

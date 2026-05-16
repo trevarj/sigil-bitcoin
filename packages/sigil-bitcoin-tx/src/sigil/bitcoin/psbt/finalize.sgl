@@ -15,6 +15,27 @@
     psbt-finalize-standard-input
     psbt-extract-transaction)
   (begin
+    (define (find-taproot-script-sig-or-false script-sigs xonly-pubkey leaf-hash)
+      (let ((wanted-key (bytevector-append xonly-pubkey leaf-hash)))
+        (let loop ((xs script-sigs))
+          (cond ((null? xs) #f)
+                ((equal? wanted-key (car (car xs))) (cdr (car xs)))
+                (else (loop (cdr xs)))))))
+
+    (define (taproot-multi-a-witness-items script-sigs keys leaf-hash threshold)
+      (let loop ((xs keys)
+                 (signed-count 0)
+                 (out '()))
+        (if (null? xs)
+            (begin
+              (when (< signed-count threshold)
+                (error "psbt-finalize-p2tr-scriptpath-input: missing Taproot script signatures"))
+              out)
+            (let ((sig (find-taproot-script-sig-or-false script-sigs (car xs) leaf-hash)))
+              (loop (cdr xs)
+                    (if sig (+ signed-count 1) signed-count)
+                    (cons (if sig sig #u8()) out))))))
+
     ;;; Finalize a signed P2PKH PSBT input.
     (define (psbt-finalize-p2pkh-input p input-index)
       (: psbt? integer? -> psbt?)
@@ -140,14 +161,23 @@
         (let* ((leaf-script (car leaf-scripts))
                (script (psbt-taproot-leaf-script-script leaf-script))
                (script-key (tapscript-pk-checksig-pubkey script))
+               (multi-a (tapscript-multi-a-pubkeys script))
                (leaf-hash (taproot-leaf-script-hash leaf-script)))
-          (unless script-key
+          (unless (or script-key multi-a)
             (error "psbt-finalize-p2tr-scriptpath-input: unsupported Taproot leaf script"))
-          (let* ((sig (find-taproot-script-sig
-                        (psbt-input-taproot-script-sigs input)
-                        script-key
-                        leaf-hash
-                        "psbt-finalize-p2tr-scriptpath-input"))
+          (let* ((witness-items
+                   (if script-key
+                       (list
+                         (find-taproot-script-sig
+                           (psbt-input-taproot-script-sigs input)
+                           script-key
+                           leaf-hash
+                           "psbt-finalize-p2tr-scriptpath-input"))
+                       (taproot-multi-a-witness-items
+                         (psbt-input-taproot-script-sigs input)
+                         (cdr multi-a)
+                         leaf-hash
+                         (car multi-a))))
                  (final-input
                    (psbt-input
                      non-witness-utxo: (psbt-input-non-witness-utxo input)
@@ -155,10 +185,11 @@
                      partial-sigs: (psbt-input-partial-sigs input)
                      sighash-type: (psbt-input-sighash-type input)
                      final-script-sig: #u8()
-                     final-script-witness: (list
-                                             sig
-                                             script
-                                             (psbt-taproot-leaf-script-control-block leaf-script))
+                     final-script-witness: (append
+                                             witness-items
+                                             (list
+                                               script
+                                               (psbt-taproot-leaf-script-control-block leaf-script)))
                      taproot-key-sig: (psbt-input-taproot-key-sig input)
                      taproot-script-sigs: (psbt-input-taproot-script-sigs input)
                      taproot-leaf-scripts: leaf-scripts

@@ -92,8 +92,37 @@
       (string=? mod-name "(sigil bitcoin keys)")
       (string=? mod-name "(sigil bitcoin script)")
       (string=? mod-name "(sigil bitcoin tx)")
+      (string=? mod-name "(sigil bitcoin psbt)")
       (string=? mod-name "(sigil bitcoin miniscript)")
       (string=? mod-name "(sigil secp256k1)")))
+
+(define (canonical-package-name mod-name)
+  (cond ((string=? mod-name "(sigil bitcoin primitives)") "sigil-bitcoin-primitives")
+        ((string=? mod-name "(sigil bitcoin encoding)") "sigil-bitcoin-encoding")
+        ((string=? mod-name "(sigil bitcoin keys)") "sigil-bitcoin-keys")
+        ((string=? mod-name "(sigil bitcoin script)") "sigil-bitcoin-script")
+        ((string=? mod-name "(sigil bitcoin tx)") "sigil-bitcoin-tx")
+        ((string=? mod-name "(sigil bitcoin psbt)") "sigil-bitcoin-tx")
+        ((string=? mod-name "(sigil bitcoin miniscript)") "sigil-bitcoin-miniscript")
+        ((string=? mod-name "(sigil secp256k1)") "sigil-secp256k1")
+        (else "")))
+
+(define (canonical-module? module)
+  (string=? (dict-ref module package: "")
+            (canonical-package-name (dict-ref module module: ""))))
+
+(define (module-export-count module)
+  (length (array->list (dict-ref module exports: #[]))))
+
+(define (prefer-module? candidate current)
+  ;;; Prefer metadata emitted by the package that owns a public module.
+  (let ((candidate-canonical? (canonical-module? candidate))
+        (current-canonical? (canonical-module? current)))
+    (cond ((and candidate-canonical? (not current-canonical?)) #t)
+          ((and (not candidate-canonical?) current-canonical?) #f)
+          ((> (module-export-count candidate) (module-export-count current)) #t)
+          ((< (module-export-count candidate) (module-export-count current)) #f)
+          (else #t))))
 
 (define (read-module-json path)
   (let ((data (json-decode (read-file-string path))))
@@ -107,7 +136,9 @@
 (define (replace-module modules module)
   (cond ((null? modules) (list module))
         ((string=? (module-key (car modules)) (module-key module))
-         (cons module (cdr modules)))
+         (if (prefer-module? module (car modules))
+             (cons module (cdr modules))
+             modules))
         (else
          (cons (car modules) (replace-module (cdr modules) module)))))
 
@@ -229,12 +260,12 @@
        example: "Private key 1 signs a one-input P2WPKH PSBT." }
     #{ id: "miniscript.compile" title: "Compile Miniscript" group: "Miniscript"
        summary: "Parse Miniscript, inspect its type flags, and compile it to script bytes."
-       usage: "Paste a Miniscript expression using supported fragments such as pk, older, and_v, multi, and thresh."
-       example: "and_v(v:pk(generator),older(12960))" }
+       usage: "Paste a Miniscript expression using supported fragments such as pk, older, and_v, multi, thresh, and Taproot-only multi_a."
+       example: "multi_a(1,0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798,03f028892bad7ed57d2fb57bf33081d5cfcf6f9ed3d3d7f159c2e2fff579dc341a)" }
     #{ id: "descriptor.inspect" title: "Inspect descriptor" group: "Descriptors"
        summary: "Parse a descriptor, compute its checksum, and try compiling or deriving its scriptPubKey."
-       usage: "Paste a descriptor. Optional branch and index fields are used for derivable descriptors."
-       example: "wpkh(0279be66...f81798)" } ))
+       usage: "Paste a descriptor. Optional branch and index fields are used for derivable descriptors. Taproot script leaves can use pk or multi_a."
+       example: "tr(0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798,multi_a(1,0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798,03f028892bad7ed57d2fb57bf33081d5cfcf6f9ed3d3d7f159c2e2fff579dc341a))" } ))
 
 (define (tool-slug id)
   (string-replace id "." "-"))

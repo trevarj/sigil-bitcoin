@@ -33,6 +33,7 @@
     psbt-create
     psbt-annotate-input
     psbt-annotate-input-scripts
+    psbt-annotate-input-taproot-leaf-scripts
     psbt-annotate-output
     psbt-serialize
     psbt-parse
