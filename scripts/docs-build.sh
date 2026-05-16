@@ -15,6 +15,28 @@ PACKAGES=(
   packages/sigil-bitcoin-miniscript
 )
 
+rebase_pages_urls() {
+  local site_base="/sigil-bitcoin/"
+
+  for html in public/**/*.html public/*.html; do
+    if [ -f "$html" ]; then
+      sed -i \
+        -e "s#href=\"/#href=\"$site_base#g" \
+        -e "s#src=\"/#src=\"$site_base#g" \
+        -e "s#\"${site_base}sigil-bitcoin/#\"$site_base#g" \
+        "$html"
+    fi
+  done
+
+  if [ -f public/assets/search.js ]; then
+    sed -i \
+      -e "s#fetch('/#fetch('$site_base#g" \
+      -e "s#a.href='/'[+]item.url#a.href='$site_base'+item.url#g" \
+      -e "s#'${site_base}sigil-bitcoin/#'$site_base#g" \
+      public/assets/search.js
+  fi
+}
+
 link_package_deps() {
   local package_dir=$1
   mkdir -p "$package_dir/.sigil"
@@ -62,3 +84,4 @@ sigil "${lib_args[@]}" \
   eval -f tools/press-site.sgl
 
 cp tools/press-search-index.json public/search-index.json
+rebase_pages_urls
