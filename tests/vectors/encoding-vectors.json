@@ -1,0 +1,51 @@
+{
+  "sources": [
+    "Bitcoin Core base58_encode_decode.json",
+    "BIP173 Bech32 checksum and SegWit address vectors",
+    "BIP350 Bech32m checksum and SegWit address vectors",
+    "rust-bitcoin Base58/Base58Check vectors mirrored in test-encoding.sgl"
+  ],
+  "base58": [
+    { "hex": "", "base58": "" },
+    { "hex": "61", "base58": "2g" },
+    { "hex": "626262", "base58": "a3gV" },
+    { "hex": "636363", "base58": "aPEr" },
+    { "hex": "00", "base58": "1" }
+  ],
+  "base58check": [
+    {
+      "name": "mainnet-p2pkh-example",
+      "version": 0,
+      "payload_hex": "751e76e8199196d454941c45d1b3a323f1433bd6",
+      "base58check": "1BgGZ9tcN4rm9KBzDn7KprQz87SZ26SAMH"
+    }
+  ],
+  "bech32": {
+    "valid_checksum_examples": [
+      "A12UEL5L",
+      "a12uel5l",
+      "an83characterlonghumanreadablepartthatcontainsthetheexcludedcharactersbioandnumber11d6pts4"
+    ],
+    "invalid_checksum_examples": [
+      " 1nwldj5",
+      "\u007f1axkwrx",
+      "an84characterslonghumanreadablepartthatcontainsthetheexcludedcharactersbioandnumber11d6pts4"
+    ]
+  },
+  "segwit": [
+    {
+      "name": "bip173-mainnet-v0",
+      "address": "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080",
+      "hrp": "bc",
+      "version": 0,
+      "program_hex": "751e76e8199196d454941c45d1b3a323f1433bd6"
+    },
+    {
+      "name": "bip350-mainnet-v1",
+      "address": "bc1p5cyxnuxmeuwuvkwfem96llyxfajw9sv8mzm0d5cn8qvyq3m8l5gq6z4q0z",
+      "hrp": "bc",
+      "version": 1,
+      "program_hex": "a6089da1b9cf1dc659c9cecbaffc864f64e2c187d8b6f6d313380c404767fd10"
+    }
+  ]
+}

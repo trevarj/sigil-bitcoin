@@ -568,8 +568,7 @@
             (string-append
               "tr(musig(" (hex-encode key-a) "," (hex-encode key-b) "))")
             (descriptor->string derived)))))
-    (test-skip "native secp256k1 module is not linked in direct workspace runner"
-      #t))
+    #t)
 
   (if %native-secp256k1?
     (test "compiles musig Taproot descriptor scriptPubKey"
@@ -584,8 +583,7 @@
                                (tagged-hash "TapTweak" %bip327-aggregate-xonly)))
              (expected (script-p2tr (secp256k1-pubkey-xonly tweaked-pubkey))))
         (assert-equal expected (descriptor-script-pubkey desc))))
-    (test-skip "native secp256k1 module is not linked in direct workspace runner"
-      #t))
+    #t)
 
   (if %native-secp256k1?
     (test "compiles Taproot descriptor script-tree scriptPubKey"
@@ -616,8 +614,7 @@
                              "tr(" %generator-pub-text ",{after(500),older(10)})"))))
         (assert-equal (descriptor-script-pubkey left-first)
                       (descriptor-script-pubkey right-first))))
-    (test-skip "native secp256k1 module is not linked in direct workspace runner"
-      #t)))
+    #t))
 
 (test-group "BIP388 wallet policies"
   (test "expands /** to multipath descriptor"
@@ -675,8 +672,7 @@
         (assert-equal 25 (bytevector-length (descriptor-psbt-plan-script-pubkey plan)))
         (assert-equal %bip388-origin-branch-1-index-7
                       (hex-encode (cdr entry)))))
-    (test-skip "native secp256k1 module is not linked in direct workspace runner"
-      #t))
+    #t)
 
   (test "rejects missing key info"
     (assert-error

@@ -589,9 +589,7 @@
       (assert-error
         (transaction-sign-p2tr-keypath-input
           %witness-tx 0 (list %p2tr-utxo) %one))))
-  (test-group "input signing"
-    (test-skip "native secp256k1 module is not linked in direct workspace runner"
-      #t)))
+  #t)
 
 (test-group "PSBT"
   (test "creates empty input and output maps from unsigned tx"
@@ -853,9 +851,7 @@
         (assert-equal script (cadr witness))
         (assert-equal control-block (caddr witness))
         (assert-true (transaction-has-witness? extracted)))))
-  (test-group "PSBT signing"
-    (test-skip "native secp256k1 module is not linked in direct workspace runner"
-      #t)))
+  #t)
 
 (test-group "transaction validation"
   (test "rejects malformed compactSize"

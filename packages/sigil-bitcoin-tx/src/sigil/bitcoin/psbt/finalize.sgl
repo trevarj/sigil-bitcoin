@@ -16,6 +16,7 @@
     psbt-extract-transaction)
   (begin
     (define (find-taproot-script-sig-or-false script-sigs xonly-pubkey leaf-hash)
+      (: list? bytevector? bytevector? -> any?)
       (let ((wanted-key (bytevector-append xonly-pubkey leaf-hash)))
         (let loop ((xs script-sigs))
           (cond ((null? xs) #f)
@@ -23,6 +24,7 @@
                 (else (loop (cdr xs)))))))
 
     (define (taproot-multi-a-witness-items script-sigs keys leaf-hash threshold)
+      (: list? list? bytevector? integer? -> list?)
       (let loop ((xs keys)
                  (signed-count 0)
                  (out '()))

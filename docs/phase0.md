@@ -8,19 +8,22 @@
   - `sigil-ffi/` — dynamic FFI (dyncall-backed)
   - `sigil-build/` — build system and package manager
 
-- `~/Workspace/sigil-bitcoin/` — Bitcoin library monorepo:
+- `/home/trev/Workspace/sigil/sigil-bitcoin/` — Bitcoin library monorepo:
   - `manifest.scm` — Guix dev shell (libsecp256k1 + toolchain)
   - `package.sgl` — workspace definition
   - `docs/plan.md` — full implementation plan
   - `packages/` — scaffolded package dirs for layers 0-6
   - `tests/vectors/` — for BIP test vectors
 
-- Sigil binary installed at `~/.local/bin/sigil` (v0.15.0, static musl build)
+- Sigil is provided by the project Guix development environment and local
+  redirects in `dev-redirects.sgl`.
 
-## Critical paths to confirm before Phase 1
+## Current Verification Entry Points
 
-- `guix shell -m manifest.scm` must provide libsecp256k1.so
-- Sigil must be on PATH: `export PATH="$HOME/.local/bin:$PATH"`
+- `./scripts/test-all.sh` runs root tests, native package harnesses, and wasm
+  validation.
+- `./scripts/docs-build.sh` rebuilds generated public docs.
+- `./scripts/standards-check.sh` reports standards audit counters.
 
 ## Phase 1 (next) — Unblock primitives in sigil-crypto
 

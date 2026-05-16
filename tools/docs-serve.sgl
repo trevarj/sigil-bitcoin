@@ -10,18 +10,21 @@
 (define %public-dir "public")
 
 (define (env-string name fallback)
+  (: string? string? -> string?)
   (let ((value (getenv name)))
     (if (and value (not (string=? value "")))
         value
         fallback)))
 
 (define (env-number name fallback)
+  (: string? integer? -> integer?)
   (let ((value (getenv name)))
     (if value
         (or (string->number value) fallback)
         fallback)))
 
 (define (trim-leading-slashes str)
+  (: string? -> string?)
   (let loop ((i 0))
     (if (and (< i (string-length str))
              (char=? (string-ref str i) #\/))
@@ -29,6 +32,7 @@
         (substring str i (string-length str)))))
 
 (define (safe-relative-path request-path)
+  (: string? -> any?)
   (let* ((decoded (url-decode request-path))
          (trimmed (trim-leading-slashes decoded))
          (path (if (string=? trimmed "") "index.html" trimmed))
@@ -40,17 +44,20 @@
         normalized)))
 
 (define (with-index path)
+  (: string? -> string?)
   (if (directory? path)
       (path-join path "index.html")
       path))
 
 (define (file-response path)
+  (: string? -> any?)
   (http-response
     status: HTTP-OK
     headers: #{ content-type: (mime-type-for-file path) }
     body: (read-file-bytes path)))
 
 (define (port-available? host port)
+  (: string? integer? -> boolean?)
   (let ((sock (tcp-listen port 128 host)))
     (if sock
         (begin
@@ -59,6 +66,7 @@
         #f)))
 
 (define (choose-port host preferred)
+  (: string? integer? -> integer?)
   (let loop ((port preferred) (tries 0))
     (cond ((port-available? host port) port)
           ((>= tries 20)
@@ -66,6 +74,7 @@
           (else (loop (+ port 1) (+ tries 1))))))
 
 (define (static-response req)
+  (: any? -> any?)
   (let ((method (http-request-method req)))
     (if (not (or (eq? method 'GET) (eq? method 'HEAD)))
         (http-response/error HTTP-METHOD-NOT-ALLOWED "Method Not Allowed")
@@ -79,6 +88,7 @@
                     (http-response/not-found))))))))
 
 (define (main)
+  (: -> void?)
   (let ((host (env-string "SIGIL_DOCS_HOST" "127.0.0.1"))
         (requested-port (env-number "SIGIL_DOCS_PORT" 8080)))
     (unless (directory? %public-dir)

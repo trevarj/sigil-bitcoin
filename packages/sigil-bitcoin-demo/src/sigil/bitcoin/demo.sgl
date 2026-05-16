@@ -10,7 +10,7 @@
           (sigil bitcoin tx)
           (sigil bitcoin psbt)
           (sigil bitcoin miniscript))
-  (export demo-dispatch demo-tools-json main)
+  (export demo-dispatch-json demo-dispatch demo-tools-json main)
   (begin
 
     (define %empty "")
@@ -27,12 +27,15 @@
     (define %zero32 (make-bytevector 32 0))
 
     (define (blank? s)
+      (: any? -> boolean?)
       (or (not s) (string=? s "")))
 
     (define (string->bool s)
+      (: string? -> boolean?)
       (or (string=? s "true") (string=? s "1") (string=? s "yes")))
 
     (define (u32 n)
+      (: integer? -> integer?)
       (bitwise-and n #xffffffff))
 
     (define (json-escape s)
@@ -140,6 +143,7 @@
         "descriptor.inspect"))
 
     (define (demo-tools-json)
+      (: -> string?)
       (string-append "{\"ok\":true,\"tools\":["
         (string-join (map json-string (tool-names)) ",")
         "]}"))
@@ -332,12 +336,19 @@
                         (descriptor-tool tool input a b c))))
         (or result (fail (string-append "unknown tool: " tool)))))
 
+    ;;; Dispatch a browser tool request and return a JSON result string.
+    (define (demo-dispatch-json tool input a b c)
+      (: string? string? string? string? string? -> string?)
+      (guard (err
+               (else (fail (format "~a" err))))
+        (dispatch-json tool input a b c)))
+
+    ;;; Dispatch a browser tool request and print the framed JSON result.
     (define (demo-dispatch tool input a b c)
-      (print-json
-        (guard (err
-                 (else (fail (format "~a" err))))
-          (dispatch-json tool input a b c))))
+      (: string? string? string? string? string? -> void?)
+      (print-json (demo-dispatch-json tool input a b c)))
 
     (define (main)
+      (: -> void?)
       (display "sigil-bitcoin demo runtime ready")
       (newline))))

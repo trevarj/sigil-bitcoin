@@ -1390,63 +1390,63 @@
     "kind": "variable",
     "module": "(sigil bitcoin miniscript)",
     "url": "api/sigil/bitcoin/miniscript.html#miniscript-type-info?",
-    "summary": ""
+    "summary": "Test if a value is a `miniscript-type-info` record."
   },
   {
     "name": "miniscript-type-info-base",
     "kind": "variable",
     "module": "(sigil bitcoin miniscript)",
     "url": "api/sigil/bitcoin/miniscript.html#miniscript-type-info-base",
-    "summary": ""
+    "summary": "Return the Miniscript base type symbol."
   },
   {
     "name": "miniscript-type-info-properties",
     "kind": "variable",
     "module": "(sigil bitcoin miniscript)",
     "url": "api/sigil/bitcoin/miniscript.html#miniscript-type-info-properties",
-    "summary": ""
+    "summary": "Return Miniscript satisfaction property symbols."
   },
   {
     "name": "miniscript-type-info-satisfaction-items",
     "kind": "variable",
     "module": "(sigil bitcoin miniscript)",
     "url": "api/sigil/bitcoin/miniscript.html#miniscript-type-info-satisfaction-items",
-    "summary": ""
+    "summary": "Return the estimated satisfaction stack item count."
   },
   {
     "name": "miniscript-type-info-requires-signature",
     "kind": "variable",
     "module": "(sigil bitcoin miniscript)",
     "url": "api/sigil/bitcoin/miniscript.html#miniscript-type-info-requires-signature",
-    "summary": ""
+    "summary": "Return true when satisfaction requires a signature."
   },
   {
     "name": "miniscript-type-info-requires-preimage",
     "kind": "variable",
     "module": "(sigil bitcoin miniscript)",
     "url": "api/sigil/bitcoin/miniscript.html#miniscript-type-info-requires-preimage",
-    "summary": ""
+    "summary": "Return true when satisfaction requires a hash preimage."
   },
   {
     "name": "miniscript-type-info-has-timelock",
     "kind": "variable",
     "module": "(sigil bitcoin miniscript)",
     "url": "api/sigil/bitcoin/miniscript.html#miniscript-type-info-has-timelock",
-    "summary": ""
+    "summary": "Return true when the fragment contains a timelock."
   },
   {
     "name": "miniscript-type-info-nonmalleable",
     "kind": "variable",
     "module": "(sigil bitcoin miniscript)",
     "url": "api/sigil/bitcoin/miniscript.html#miniscript-type-info-nonmalleable",
-    "summary": ""
+    "summary": "Return true when the fragment is treated as nonmalleable."
   },
   {
     "name": "taproot-output-xonly",
     "kind": "variable",
     "module": "(sigil bitcoin miniscript)",
     "url": "api/sigil/bitcoin/miniscript.html#taproot-output-xonly",
-    "summary": ""
+    "summary": "Compute a BIP341 Taproot output x-only public key."
   },
   {
     "name": "sigil bitcoin primitives",
@@ -1516,364 +1516,364 @@
     "kind": "variable",
     "module": "(sigil bitcoin psbt)",
     "url": "api/sigil/bitcoin/psbt.html#psbt",
-    "summary": ""
+    "summary": "Partially Signed Bitcoin Transaction record."
   },
   {
     "name": "psbt?",
     "kind": "variable",
     "module": "(sigil bitcoin psbt)",
     "url": "api/sigil/bitcoin/psbt.html#psbt?",
-    "summary": ""
+    "summary": "Test if a value is a `psbt` struct."
   },
   {
     "name": "psbt-unsigned-tx",
     "kind": "variable",
     "module": "(sigil bitcoin psbt)",
     "url": "api/sigil/bitcoin/psbt.html#psbt-unsigned-tx",
-    "summary": ""
+    "summary": "Get the `unsigned-tx` field of a `psbt` struct."
   },
   {
     "name": "psbt-inputs",
     "kind": "variable",
     "module": "(sigil bitcoin psbt)",
     "url": "api/sigil/bitcoin/psbt.html#psbt-inputs",
-    "summary": ""
+    "summary": "Get the `inputs` field of a `psbt` struct."
   },
   {
     "name": "psbt-outputs",
     "kind": "variable",
     "module": "(sigil bitcoin psbt)",
     "url": "api/sigil/bitcoin/psbt.html#psbt-outputs",
-    "summary": ""
+    "summary": "Get the `outputs` field of a `psbt` struct."
   },
   {
     "name": "psbt-taproot-leaf-script",
     "kind": "variable",
     "module": "(sigil bitcoin psbt)",
     "url": "api/sigil/bitcoin/psbt.html#psbt-taproot-leaf-script",
-    "summary": ""
+    "summary": "BIP371 Taproot leaf script record for PSBT input maps."
   },
   {
     "name": "psbt-taproot-leaf-script?",
     "kind": "variable",
     "module": "(sigil bitcoin psbt)",
     "url": "api/sigil/bitcoin/psbt.html#psbt-taproot-leaf-script?",
-    "summary": ""
+    "summary": "Test if a value is a `psbt-taproot-leaf-script` struct."
   },
   {
     "name": "psbt-taproot-leaf-script-control-block",
     "kind": "variable",
     "module": "(sigil bitcoin psbt)",
     "url": "api/sigil/bitcoin/psbt.html#psbt-taproot-leaf-script-control-block",
-    "summary": ""
+    "summary": "Get the `control-block` field of a `psbt-taproot-leaf-script` struct."
   },
   {
     "name": "psbt-taproot-leaf-script-script",
     "kind": "variable",
     "module": "(sigil bitcoin psbt)",
     "url": "api/sigil/bitcoin/psbt.html#psbt-taproot-leaf-script-script",
-    "summary": ""
+    "summary": "Get the `script` field of a `psbt-taproot-leaf-script` struct."
   },
   {
     "name": "psbt-taproot-leaf-script-leaf-version",
     "kind": "variable",
     "module": "(sigil bitcoin psbt)",
     "url": "api/sigil/bitcoin/psbt.html#psbt-taproot-leaf-script-leaf-version",
-    "summary": ""
+    "summary": "Get the `leaf-version` field of a `psbt-taproot-leaf-script` struct."
   },
   {
     "name": "psbt-input",
     "kind": "variable",
     "module": "(sigil bitcoin psbt)",
     "url": "api/sigil/bitcoin/psbt.html#psbt-input",
-    "summary": ""
+    "summary": "PSBT input map subset supported by this package."
   },
   {
     "name": "psbt-input?",
     "kind": "variable",
     "module": "(sigil bitcoin psbt)",
     "url": "api/sigil/bitcoin/psbt.html#psbt-input?",
-    "summary": ""
+    "summary": "Test if a value is a `psbt-input` struct."
   },
   {
     "name": "psbt-input-non-witness-utxo",
     "kind": "variable",
     "module": "(sigil bitcoin psbt)",
     "url": "api/sigil/bitcoin/psbt.html#psbt-input-non-witness-utxo",
-    "summary": ""
+    "summary": "Get the `non-witness-utxo` field of a `psbt-input` struct."
   },
   {
     "name": "psbt-input-witness-utxo",
     "kind": "variable",
     "module": "(sigil bitcoin psbt)",
     "url": "api/sigil/bitcoin/psbt.html#psbt-input-witness-utxo",
-    "summary": ""
+    "summary": "Get the `witness-utxo` field of a `psbt-input` struct."
   },
   {
     "name": "psbt-input-partial-sigs",
     "kind": "variable",
     "module": "(sigil bitcoin psbt)",
     "url": "api/sigil/bitcoin/psbt.html#psbt-input-partial-sigs",
-    "summary": ""
+    "summary": "Get the `partial-sigs` field of a `psbt-input` struct."
   },
   {
     "name": "psbt-input-sighash-type",
     "kind": "variable",
     "module": "(sigil bitcoin psbt)",
     "url": "api/sigil/bitcoin/psbt.html#psbt-input-sighash-type",
-    "summary": ""
+    "summary": "Get the `sighash-type` field of a `psbt-input` struct."
   },
   {
     "name": "psbt-input-final-script-sig",
     "kind": "variable",
     "module": "(sigil bitcoin psbt)",
     "url": "api/sigil/bitcoin/psbt.html#psbt-input-final-script-sig",
-    "summary": ""
+    "summary": "Get the `final-script-sig` field of a `psbt-input` struct."
   },
   {
     "name": "psbt-input-final-script-witness",
     "kind": "variable",
     "module": "(sigil bitcoin psbt)",
     "url": "api/sigil/bitcoin/psbt.html#psbt-input-final-script-witness",
-    "summary": ""
+    "summary": "Get the `final-script-witness` field of a `psbt-input` struct."
   },
   {
     "name": "psbt-input-taproot-key-sig",
     "kind": "variable",
     "module": "(sigil bitcoin psbt)",
     "url": "api/sigil/bitcoin/psbt.html#psbt-input-taproot-key-sig",
-    "summary": ""
+    "summary": "Get the `taproot-key-sig` field of a `psbt-input` struct."
   },
   {
     "name": "psbt-input-taproot-script-sigs",
     "kind": "variable",
     "module": "(sigil bitcoin psbt)",
     "url": "api/sigil/bitcoin/psbt.html#psbt-input-taproot-script-sigs",
-    "summary": ""
+    "summary": "Get the `taproot-script-sigs` field of a `psbt-input` struct."
   },
   {
     "name": "psbt-input-taproot-leaf-scripts",
     "kind": "variable",
     "module": "(sigil bitcoin psbt)",
     "url": "api/sigil/bitcoin/psbt.html#psbt-input-taproot-leaf-scripts",
-    "summary": ""
+    "summary": "Get the `taproot-leaf-scripts` field of a `psbt-input` struct."
   },
   {
     "name": "psbt-input-redeem-script",
     "kind": "variable",
     "module": "(sigil bitcoin psbt)",
     "url": "api/sigil/bitcoin/psbt.html#psbt-input-redeem-script",
-    "summary": ""
+    "summary": "Get the `redeem-script` field of a `psbt-input` struct."
   },
   {
     "name": "psbt-input-witness-script",
     "kind": "variable",
     "module": "(sigil bitcoin psbt)",
     "url": "api/sigil/bitcoin/psbt.html#psbt-input-witness-script",
-    "summary": ""
+    "summary": "Get the `witness-script` field of a `psbt-input` struct."
   },
   {
     "name": "psbt-input-bip32-derivations",
     "kind": "variable",
     "module": "(sigil bitcoin psbt)",
     "url": "api/sigil/bitcoin/psbt.html#psbt-input-bip32-derivations",
-    "summary": ""
+    "summary": "Get the `bip32-derivations` field of a `psbt-input` struct."
   },
   {
     "name": "psbt-input-taproot-bip32-derivations",
     "kind": "variable",
     "module": "(sigil bitcoin psbt)",
     "url": "api/sigil/bitcoin/psbt.html#psbt-input-taproot-bip32-derivations",
-    "summary": ""
+    "summary": "Get the `taproot-bip32-derivations` field of a `psbt-input` struct."
   },
   {
     "name": "psbt-input-unknowns",
     "kind": "variable",
     "module": "(sigil bitcoin psbt)",
     "url": "api/sigil/bitcoin/psbt.html#psbt-input-unknowns",
-    "summary": ""
+    "summary": "Get the `unknowns` field of a `psbt-input` struct."
   },
   {
     "name": "psbt-output",
     "kind": "variable",
     "module": "(sigil bitcoin psbt)",
     "url": "api/sigil/bitcoin/psbt.html#psbt-output",
-    "summary": ""
+    "summary": "PSBT output map subset supported by this package."
   },
   {
     "name": "psbt-output?",
     "kind": "variable",
     "module": "(sigil bitcoin psbt)",
     "url": "api/sigil/bitcoin/psbt.html#psbt-output?",
-    "summary": ""
+    "summary": "Test if a value is a `psbt-output` struct."
   },
   {
     "name": "psbt-output-bip32-derivations",
     "kind": "variable",
     "module": "(sigil bitcoin psbt)",
     "url": "api/sigil/bitcoin/psbt.html#psbt-output-bip32-derivations",
-    "summary": ""
+    "summary": "Get the `bip32-derivations` field of a `psbt-output` struct."
   },
   {
     "name": "psbt-output-taproot-bip32-derivations",
     "kind": "variable",
     "module": "(sigil bitcoin psbt)",
     "url": "api/sigil/bitcoin/psbt.html#psbt-output-taproot-bip32-derivations",
-    "summary": ""
+    "summary": "Get the `taproot-bip32-derivations` field of a `psbt-output` struct."
   },
   {
     "name": "psbt-output-unknowns",
     "kind": "variable",
     "module": "(sigil bitcoin psbt)",
     "url": "api/sigil/bitcoin/psbt.html#psbt-output-unknowns",
-    "summary": ""
+    "summary": "Get the `unknowns` field of a `psbt-output` struct."
   },
   {
     "name": "psbt-unknowns",
     "kind": "variable",
     "module": "(sigil bitcoin psbt)",
     "url": "api/sigil/bitcoin/psbt.html#psbt-unknowns",
-    "summary": ""
+    "summary": "Get the `unknowns` field of a `psbt` struct."
   },
   {
     "name": "psbt-create",
     "kind": "variable",
     "module": "(sigil bitcoin psbt)",
     "url": "api/sigil/bitcoin/psbt.html#psbt-create",
-    "summary": ""
+    "summary": "Create an empty PSBT from an unsigned transaction."
   },
   {
     "name": "psbt-annotate-input",
     "kind": "variable",
     "module": "(sigil bitcoin psbt)",
     "url": "api/sigil/bitcoin/psbt.html#psbt-annotate-input",
-    "summary": ""
+    "summary": "Attach script and key-origin metadata to a PSBT input after prevout matching."
   },
   {
     "name": "psbt-annotate-input-scripts",
     "kind": "variable",
     "module": "(sigil bitcoin psbt)",
     "url": "api/sigil/bitcoin/psbt.html#psbt-annotate-input-scripts",
-    "summary": ""
+    "summary": "Attach redeem or witness scripts to a PSBT input map."
   },
   {
     "name": "psbt-annotate-input-taproot-leaf-scripts",
     "kind": "variable",
     "module": "(sigil bitcoin psbt)",
     "url": "api/sigil/bitcoin/psbt.html#psbt-annotate-input-taproot-leaf-scripts",
-    "summary": ""
+    "summary": "Attach Taproot leaf scripts to a PSBT input map."
   },
   {
     "name": "psbt-annotate-output",
     "kind": "variable",
     "module": "(sigil bitcoin psbt)",
     "url": "api/sigil/bitcoin/psbt.html#psbt-annotate-output",
-    "summary": ""
+    "summary": "Attach BIP32 derivation metadata to a PSBT output after script matching."
   },
   {
     "name": "psbt-serialize",
     "kind": "variable",
     "module": "(sigil bitcoin psbt)",
     "url": "api/sigil/bitcoin/psbt.html#psbt-serialize",
-    "summary": ""
+    "summary": "Serialize a PSBT v0 record."
   },
   {
     "name": "psbt-parse",
     "kind": "variable",
     "module": "(sigil bitcoin psbt)",
     "url": "api/sigil/bitcoin/psbt.html#psbt-parse",
-    "summary": ""
+    "summary": "Parse PSBT v0 bytes into a PSBT record."
   },
   {
     "name": "psbt-sign-p2pkh-input",
     "kind": "variable",
     "module": "(sigil bitcoin psbt)",
     "url": "api/sigil/bitcoin/psbt.html#psbt-sign-p2pkh-input",
-    "summary": ""
+    "summary": "Add a legacy P2PKH partial signature to a PSBT input."
   },
   {
     "name": "psbt-sign-p2wpkh-input",
     "kind": "variable",
     "module": "(sigil bitcoin psbt)",
     "url": "api/sigil/bitcoin/psbt.html#psbt-sign-p2wpkh-input",
-    "summary": ""
+    "summary": "Add a P2WPKH partial signature to a PSBT input."
   },
   {
     "name": "psbt-sign-p2wsh-input",
     "kind": "variable",
     "module": "(sigil bitcoin psbt)",
     "url": "api/sigil/bitcoin/psbt.html#psbt-sign-p2wsh-input",
-    "summary": ""
+    "summary": "Add a P2WSH partial signature for a single-key checksig witness script."
   },
   {
     "name": "psbt-sign-p2tr-keypath-input",
     "kind": "variable",
     "module": "(sigil bitcoin psbt)",
     "url": "api/sigil/bitcoin/psbt.html#psbt-sign-p2tr-keypath-input",
-    "summary": ""
+    "summary": "Add a Taproot key-path signature to a PSBT input."
   },
   {
     "name": "psbt-sign-p2tr-scriptpath-input",
     "kind": "variable",
     "module": "(sigil bitcoin psbt)",
     "url": "api/sigil/bitcoin/psbt.html#psbt-sign-p2tr-scriptpath-input",
-    "summary": ""
+    "summary": "Add a Taproot script-path signature for a single-key checksig leaf."
   },
   {
     "name": "psbt-sign-standard-input",
     "kind": "variable",
     "module": "(sigil bitcoin psbt)",
     "url": "api/sigil/bitcoin/psbt.html#psbt-sign-standard-input",
-    "summary": ""
+    "summary": "Sign a standard P2PKH, P2WPKH, or key-path P2TR PSBT input."
   },
   {
     "name": "psbt-finalize-p2pkh-input",
     "kind": "variable",
     "module": "(sigil bitcoin psbt)",
     "url": "api/sigil/bitcoin/psbt.html#psbt-finalize-p2pkh-input",
-    "summary": ""
+    "summary": "Finalize a signed P2PKH PSBT input."
   },
   {
     "name": "psbt-finalize-p2wpkh-input",
     "kind": "variable",
     "module": "(sigil bitcoin psbt)",
     "url": "api/sigil/bitcoin/psbt.html#psbt-finalize-p2wpkh-input",
-    "summary": ""
+    "summary": "Finalize a signed P2WPKH PSBT input."
   },
   {
     "name": "psbt-finalize-p2wsh-input",
     "kind": "variable",
     "module": "(sigil bitcoin psbt)",
     "url": "api/sigil/bitcoin/psbt.html#psbt-finalize-p2wsh-input",
-    "summary": ""
+    "summary": "Finalize a signed P2WSH single-key checksig PSBT input."
   },
   {
     "name": "psbt-finalize-p2tr-keypath-input",
     "kind": "variable",
     "module": "(sigil bitcoin psbt)",
     "url": "api/sigil/bitcoin/psbt.html#psbt-finalize-p2tr-keypath-input",
-    "summary": ""
+    "summary": "Finalize a signed Taproot key-path PSBT input."
   },
   {
     "name": "psbt-finalize-p2tr-scriptpath-input",
     "kind": "variable",
     "module": "(sigil bitcoin psbt)",
     "url": "api/sigil/bitcoin/psbt.html#psbt-finalize-p2tr-scriptpath-input",
-    "summary": ""
+    "summary": "Finalize a signed Taproot script-path PSBT input."
   },
   {
     "name": "psbt-finalize-standard-input",
     "kind": "variable",
     "module": "(sigil bitcoin psbt)",
     "url": "api/sigil/bitcoin/psbt.html#psbt-finalize-standard-input",
-    "summary": ""
+    "summary": "Finalize a standard P2PKH, P2WPKH, or key-path P2TR PSBT input."
   },
   {
     "name": "psbt-extract-transaction",
     "kind": "variable",
     "module": "(sigil bitcoin psbt)",
     "url": "api/sigil/bitcoin/psbt.html#psbt-extract-transaction",
-    "summary": ""
+    "summary": "Extract the final transaction from a fully-finalized PSBT."
   },
   {
     "name": "sigil bitcoin script",

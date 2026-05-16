@@ -28,6 +28,8 @@ Follow the Sigil implementation standards from the sibling checkout:
 Key rules for this repo:
 
 - Use hyphenated filenames.
+- Exception: `packages/sigil-bitcoin-demo/wasm-include/sigil_mbedtls_config.h`
+  mirrors the mbedTLS configuration filename expected by included C headers.
 - Use `.sgl` for Sigil source files.
 - Prefer existing modules, helpers, and package layering before adding new
   utilities.

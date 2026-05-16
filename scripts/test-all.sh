@@ -3,6 +3,18 @@ set -eu
 
 ROOT=$(CDPATH= cd "$(dirname "$0")/.." && pwd)
 
+setup_native_library_path() {
+  libsecp_dir=$(guix build libsecp256k1 2>/dev/null)/lib
+  if [ -d "$libsecp_dir" ]; then
+    if [ "${LD_LIBRARY_PATH:-}" ]; then
+      LD_LIBRARY_PATH="$libsecp_dir:$LD_LIBRARY_PATH"
+    else
+      LD_LIBRARY_PATH="$libsecp_dir"
+    fi
+    export LD_LIBRARY_PATH
+  fi
+}
+
 link_package_deps() {
   package_dir=$1
   mkdir -p "$package_dir/.sigil"
@@ -15,6 +27,8 @@ link_package_deps() {
   # Package-local native test runs use the workspace dependency cache.
   ln -sfn "../../../.sigil/deps" "$package_dir/.sigil/deps"
 }
+
+setup_native_library_path
 
 printf '\n==> root workspace tests\n'
 cd "$ROOT"

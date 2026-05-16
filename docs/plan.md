@@ -77,6 +77,12 @@ Layer 6 — Networking (sigil-bitcoin-p2p)
 ## Current Status
 
 - Phase 0 is complete.
+- Current verification is consolidated in `./scripts/test-all.sh`, which runs
+  root workspace tests, native secp256k1-dependent package harnesses, and wasm
+  validation.
+- Standards counters are available through `./scripts/standards-check.sh`.
+- Durable vector mirrors live under `tests/vectors/`; package tests may still
+  keep small inline fixtures when that is clearer.
 - `sigil-bitcoin-primitives` passes HASH160, HASH256, and BIP-340 tagged-hash vectors.
 - `sigil-bitcoin-encoding` passes hex, Base58, Base58Check, full BIP173/BIP350 Bech32/Bech32m checksum vectors, SegWit v0, and SegWit v1 vectors.
 - `sigil-secp256k1` now uses a native C module linked against `libsecp256k1` instead of runtime `(sigil ffi)` dynamic loading.
@@ -166,8 +172,10 @@ or pure Sigil code. No changes to the Sigil VM or compiler are required.
 
 ## Verification
 
-- Test vectors from BIPs as JSON files in tests/vectors/
-- (sigil test) runner driving assertions against known-answer vectors
+- Test vectors from BIPs, Bitcoin Core, rust-bitcoin, and rust-miniscript live
+  in `tests/vectors/` when practical, with focused inline fixtures allowed in
+  package tests.
+- `(sigil test)` drives assertions against known-answer vectors.
 - Critical vectors: BIP32 (1,2,3), BIP39, sighash (legacy/143/341), bech32/bech32m
 
 ## Path to Upstream

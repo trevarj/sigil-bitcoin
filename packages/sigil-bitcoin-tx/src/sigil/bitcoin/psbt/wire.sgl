@@ -10,11 +10,13 @@
   (export psbt-serialize psbt-parse)
   (begin
     (define (taproot-leaf-script-value leaf-script)
+      (: psbt-taproot-leaf-script? -> bytevector?)
       (bytevector-append
         (psbt-taproot-leaf-script-script leaf-script)
         (make-bytevector 1 (psbt-taproot-leaf-script-leaf-version leaf-script))))
 
     (define (parse-taproot-leaf-script control-block value)
+      (: bytevector? bytevector? -> psbt-taproot-leaf-script?)
       (validate-taproot-control-block "psbt Taproot leaf script control block" control-block)
       (require-bytevector "psbt Taproot leaf script value" value)
       (when (= 0 (bytevector-length value))
@@ -25,6 +27,7 @@
         leaf-version: (bytevector-u8-ref value (- (bytevector-length value) 1))))
 
     (define (psbt-input->keyvals input)
+      (: psbt-input? -> list?)
       (validate-psbt-input input)
       (let ((parts '()))
         (when (psbt-input-non-witness-utxo input)
@@ -107,6 +110,7 @@
         (append parts (map psbt-raw-keyval (psbt-input-unknowns input)))))
 
     (define (psbt-output->keyvals output)
+      (: psbt-output? -> list?)
       (validate-psbt-output output)
       (let ((parts '()))
         (do ((xs (psbt-output-bip32-derivations output) (cdr xs)))
@@ -124,6 +128,7 @@
         (append parts (map psbt-raw-keyval (psbt-output-unknowns output)))))
 
     (define (serialize-psbt-map keyvals)
+      (: list? -> bytevector?)
       (apply bytevector-append (append keyvals (list #u8(0)))))
 
     ;;; Serialize a PSBT v0 record.
@@ -151,6 +156,7 @@
                        output-maps))))
 
     (define (parse-psbt-map bytes offset)
+      (: bytevector? integer? -> list?)
       (let loop ((next offset) (entries '()))
         (let* ((key-result (read-length-prefixed-bytes bytes next "psbt key"))
                (key (car key-result))
@@ -163,6 +169,7 @@
                       (cons (cons key value) entries)))))))
 
     (define (parse-global-map entries)
+      (: list? -> list?)
       (let ((unsigned #f)
             (unknowns '()))
         (do ((xs entries (cdr xs)))
@@ -179,6 +186,7 @@
         (list unsigned unknowns)))
 
     (define (parse-input-entry current-input entry)
+      (: psbt-input? pair? -> psbt-input?)
       (let ((base-non-witness-utxo (psbt-input-non-witness-utxo current-input))
             (base-witness-utxo (psbt-input-witness-utxo current-input))
             (base-partial-sigs (psbt-input-partial-sigs current-input))
@@ -429,6 +437,7 @@
                                              (list (cons key value)))))))))
 
     (define (parse-psbt-input entries)
+      (: list? -> psbt-input?)
       (let loop ((xs entries)
                  (current (empty-psbt-input)))
         (if (null? xs)
@@ -437,6 +446,7 @@
                   (parse-input-entry current (car xs))))))
 
     (define (parse-psbt-inputs bytes offset count)
+      (: bytevector? integer? integer? -> list?)
       (let loop ((i 0) (next offset) (inputs '()))
         (if (>= i count)
             (list (reverse inputs) next)
@@ -446,6 +456,7 @@
                     (cons (parse-psbt-input (car parsed)) inputs))))))
 
     (define (parse-output-entry output entry)
+      (: psbt-output? pair? -> psbt-output?)
       (let* ((key (car entry))
              (value (cdr entry))
              (key-type (bytevector-u8-ref key 0))
@@ -471,12 +482,14 @@
                                               (list (cons key value))))))))
 
     (define (parse-psbt-output entries)
+      (: list? -> psbt-output?)
       (let ((output (empty-psbt-output)))
         (do ((xs entries (cdr xs)))
             ((null? xs) output)
           (set! output (parse-output-entry output (car xs))))))
 
     (define (parse-psbt-outputs bytes offset count)
+      (: bytevector? integer? integer? -> list?)
       (let loop ((i 0) (next offset) (outputs '()))
         (if (>= i count)
             (list (reverse outputs) next)

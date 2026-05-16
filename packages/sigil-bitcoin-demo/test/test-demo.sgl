@@ -1,0 +1,38 @@
+(import (sigil test)
+        (sigil string)
+        (sigil bitcoin demo))
+
+(test-group "demo tool registry"
+  (test "lists browser tools"
+    (let ((json (demo-tools-json)))
+      (assert-true (string-find json "\"ok\":true"))
+      (assert-true (string-find json "hash.hash160"))
+      (assert-true (string-find json "descriptor.inspect")))))
+
+(test-group "demo dispatch invalid inputs"
+  (test "reports unknown tools as JSON errors"
+    (let ((json (demo-dispatch-json "missing.tool" "" "" "" "")))
+      (assert-true (string-find json "\"ok\":false"))
+      (assert-true (string-find json "unknown tool: missing.tool"))))
+
+  (test "reports malformed hex as JSON errors"
+    (let ((json (demo-dispatch-json "encoding.hex" "abc" "" "" "")))
+      (assert-true (string-find json "\"ok\":false"))
+      (assert-true (string-find json "hex-decode"))))
+
+  (test "reports invalid integer fields as JSON errors"
+    (let ((json (demo-dispatch-json
+                  "encoding.base58check.encode"
+                  "00"
+                  "not-a-number"
+                  ""
+                  "")))
+      (assert-true (string-find json "\"ok\":false"))
+      (assert-true (string-find json "expected integer"))))
+
+  (test "reports malformed descriptors as JSON errors"
+    (let ((json (demo-dispatch-json "descriptor.inspect" "wpkh(" "" "" "")))
+      (assert-true (string-find json "\"ok\":false"))
+      (assert-true (string-find json "\"error\"")))))
+
+(run-tests)

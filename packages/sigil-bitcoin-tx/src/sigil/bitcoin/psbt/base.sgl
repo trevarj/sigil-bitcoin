@@ -44,6 +44,7 @@
     verify-taproot-leaf-prevout)
   (begin
     (define (empty-psbt-input)
+      (: -> psbt-input?)
       (psbt-input non-witness-utxo: #f
                   witness-utxo: #f
                   partial-sigs: '()
@@ -60,11 +61,13 @@
                   unknowns: '()))
 
     (define (empty-psbt-output)
+      (: -> psbt-output?)
       (psbt-output bip32-derivations: '()
                    taproot-bip32-derivations: '()
                    unknowns: '()))
 
     (define (validate-raw-keyvals who keyvals)
+      (: string? list? -> list?)
       (unless (list? keyvals)
         (error (string-append who ": expected list")))
       (do ((xs keyvals (cdr xs)))
@@ -78,6 +81,7 @@
             (error (string-append who ": empty key is reserved for map terminator"))))))
 
     (define (validate-bip32-origin-value who value)
+      (: string? bytevector? -> bytevector?)
       (require-bytevector who value)
       (when (or (< (bytevector-length value) 4)
                 (not (= 0 (remainder (- (bytevector-length value) 4) 4))))
@@ -85,6 +89,7 @@
       value)
 
     (define (validate-taproot-origin-value who value)
+      (: string? bytevector? -> bytevector?)
       (require-bytevector who value)
       (let* ((count-result (compact-size-decode-at value 0))
              (count (car count-result))
@@ -96,6 +101,7 @@
       value)
 
     (define (validate-bip32-derivations who derivations key-length value-validator)
+      (: string? list? integer? procedure? -> list?)
       (unless (list? derivations)
         (error (string-append who ": expected list")))
       (do ((xs derivations (cdr xs)))
@@ -107,12 +113,14 @@
           (value-validator who (cdr entry)))))
 
     (define (validate-schnorr-signature who sig)
+      (: string? bytevector? -> bytevector?)
       (let ((len (bytevector-length (require-bytevector who sig))))
         (unless (or (= len 64) (= len 65))
           (error (string-append who ": expected 64 or 65 bytes"))))
       sig)
 
     (define (validate-taproot-script-sigs who sigs)
+      (: string? list? -> list?)
       (unless (list? sigs)
         (error (string-append who ": expected list")))
       (do ((xs sigs (cdr xs)))
@@ -124,6 +132,7 @@
           (validate-schnorr-signature who (cdr entry)))))
 
     (define (validate-taproot-leaf-scripts who leaf-scripts)
+      (: string? list? -> list?)
       (unless (list? leaf-scripts)
         (error (string-append who ": expected list")))
       (do ((xs leaf-scripts (cdr xs)))
@@ -138,6 +147,7 @@
           (require-uint who (psbt-taproot-leaf-script-leaf-version entry) #xff))))
 
     (define (make-empty-list count maker)
+      (: integer? procedure? -> list?)
       (let loop ((i 0) (out '()))
         (if (>= i count)
             (reverse out)
@@ -155,6 +165,7 @@
             unknowns: '()))
 
     (define (validate-psbt-input input)
+      (: psbt-input? -> psbt-input?)
       (unless (psbt-input? input)
         (error "psbt input: expected psbt-input"))
       (when (psbt-input-non-witness-utxo input)
@@ -202,6 +213,7 @@
       input)
 
     (define (validate-psbt-output output)
+      (: psbt-output? -> psbt-output?)
       (unless (psbt-output? output)
         (error "psbt output: expected psbt-output"))
       (validate-bip32-derivations
@@ -218,6 +230,7 @@
       output)
 
     (define (validate-psbt p)
+      (: psbt? -> psbt?)
       (unless (psbt? p)
         (error "psbt: expected psbt"))
       (validate-transaction (psbt-unsigned-tx p))
@@ -235,6 +248,7 @@
           ((null? xs) p)
         (validate-psbt-output (car xs))))
     (define (psbt-update-input p input-index input)
+      (: psbt? integer? psbt-input? -> psbt?)
       (psbt unsigned-tx: (psbt-unsigned-tx p)
             inputs: (replace-nth (psbt-inputs p)
                                  input-index
@@ -244,6 +258,7 @@
             unknowns: (psbt-unknowns p)))
 
     (define (psbt-update-output p output-index output)
+      (: psbt? integer? psbt-output? -> psbt?)
       (psbt unsigned-tx: (psbt-unsigned-tx p)
             inputs: (psbt-inputs p)
             outputs: (replace-nth (psbt-outputs p)
@@ -253,11 +268,13 @@
             unknowns: (psbt-unknowns p)))
 
     (define (entry-key-in? key entries)
+      (: bytevector? list? -> boolean?)
       (cond ((null? entries) #f)
             ((equal? key (car (car entries))) #t)
             (else (entry-key-in? key (cdr entries)))))
 
     (define (merge-keyvals existing added)
+      (: list? list? -> list?)
       (let loop ((xs existing)
                  (out '()))
         (if (null? xs)
@@ -269,6 +286,7 @@
                         (cons entry out)))))))
 
     (define (script-p2pkh? script)
+      (: bytevector? -> boolean?)
       (and (= 25 (bytevector-length script))
            (= op-dup (bytevector-u8-ref script 0))
            (= op-hash160 (bytevector-u8-ref script 1))
@@ -277,25 +295,30 @@
            (= op-checksig (bytevector-u8-ref script 24))))
 
     (define (script-p2wpkh? script)
+      (: bytevector? -> boolean?)
       (and (= 22 (bytevector-length script))
            (= op-0 (bytevector-u8-ref script 0))
            (= #x14 (bytevector-u8-ref script 1))))
 
     (define (script-p2wsh? script)
+      (: bytevector? -> boolean?)
       (and (= 34 (bytevector-length script))
            (= op-0 (bytevector-u8-ref script 0))
            (= #x20 (bytevector-u8-ref script 1))))
 
     (define (script-p2tr? script)
+      (: bytevector? -> boolean?)
       (and (= 34 (bytevector-length script))
            (= op-1 (bytevector-u8-ref script 0))
            (= #x20 (bytevector-u8-ref script 1))))
     (define (psbt-input-sighash-or-default input default)
+      (: psbt-input? integer? -> integer?)
       (if (psbt-input-sighash-type input)
           (psbt-input-sighash-type input)
           default))
 
     (define (psbt-prevout-from-non-witness-utxo p input-index input who)
+      (: psbt? integer? psbt-input? string? -> txout?)
       (let ((prev-tx (psbt-input-non-witness-utxo input)))
         (unless prev-tx
           (error (string-append who ": missing non-witness UTXO")))
@@ -310,6 +333,7 @@
                     who))))
 
     (define (psbt-input-prevout p input-index who)
+      (: psbt? integer? string? -> txout?)
       (let* ((input (nth-item (psbt-inputs p) input-index who))
              (witness-utxo (psbt-input-witness-utxo input)))
         (if witness-utxo
@@ -317,6 +341,7 @@
             (psbt-prevout-from-non-witness-utxo p input-index input who))))
 
     (define (psbt-prevouts p who)
+      (: psbt? string? -> list?)
       (let loop ((i 0)
                  (inputs (psbt-inputs p))
                  (out '()))
@@ -327,6 +352,7 @@
                   (cons (psbt-input-prevout p i who) out)))))
 
     (define (witness-script-pk-checksig-pubkey script)
+      (: bytevector? -> any?)
       (if (and (= 35 (bytevector-length script))
                (= #x21 (bytevector-u8-ref script 0))
                (= op-checksig (bytevector-u8-ref script 34)))
@@ -334,6 +360,7 @@
           #f))
 
     (define (tapscript-pk-checksig-pubkey script)
+      (: bytevector? -> any?)
       (if (and (= 34 (bytevector-length script))
                (= #x20 (bytevector-u8-ref script 0))
                (= op-checksig (bytevector-u8-ref script 33)))
@@ -341,6 +368,7 @@
           #f))
 
     (define (read-script-small-int script offset who)
+      (: bytevector? integer? string? -> integer?)
       (let ((opcode (bytevector-u8-ref script offset)))
         (cond ((= opcode op-0) 0)
               ((and (>= opcode op-1) (<= opcode op-16)) (- opcode #x50))
@@ -351,6 +379,7 @@
                (error (string-append who ": expected script number"))))))
 
     (define (tapscript-multi-a-pubkeys script)
+      (: bytevector? -> any?)
       (let ((len (bytevector-length script)))
         (if (< len 36)
             #f
@@ -377,11 +406,13 @@
                     (else #f))))))
 
     (define (bytevector-member? needle xs)
+      (: bytevector? list? -> boolean?)
       (cond ((null? xs) #f)
             ((equal? needle (car xs)) #t)
             (else (bytevector-member? needle (cdr xs)))))
 
     (define (p2tr-script-xonly script)
+      (: bytevector? -> any?)
       (if (and (= 34 (bytevector-length script))
                (= op-1 (bytevector-u8-ref script 0))
                (= #x20 (bytevector-u8-ref script 1)))
@@ -389,11 +420,13 @@
           #f))
 
     (define (taproot-leaf-script-hash leaf-script)
+      (: psbt-taproot-leaf-script? -> bytevector?)
       (taproot-leaf-hash
         (psbt-taproot-leaf-script-script leaf-script)
         (psbt-taproot-leaf-script-leaf-version leaf-script)))
 
     (define (find-taproot-leaf-for-pubkey leaf-scripts xonly-pubkey who)
+      (: list? bytevector? string? -> psbt-taproot-leaf-script?)
       (let loop ((xs leaf-scripts))
         (cond ((null? xs)
                (error (string-append who ": missing Taproot leaf script for key")))
@@ -407,6 +440,7 @@
               (else (loop (cdr xs))))))
 
     (define (find-taproot-script-sig script-sigs xonly-pubkey leaf-hash who)
+      (: list? bytevector? bytevector? string? -> bytevector?)
       (let ((wanted-key (bytevector-append xonly-pubkey leaf-hash)))
         (let loop ((xs script-sigs))
           (cond ((null? xs)
@@ -415,6 +449,7 @@
                 (else (loop (cdr xs)))))))
 
     (define (verify-taproot-leaf-prevout utxo leaf-script leaf-hash who)
+      (: txout? psbt-taproot-leaf-script? bytevector? string? -> void?)
       (let* ((script (txout-script-pubkey utxo))
              (expected-xonly (p2tr-script-xonly script)))
         (unless expected-xonly

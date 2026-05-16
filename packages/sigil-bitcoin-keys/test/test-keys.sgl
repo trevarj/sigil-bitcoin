@@ -302,8 +302,6 @@
         (assert-error
           (bip39-mnemonic->entropy
             "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon")))))
-  (test-group "sigil-bitcoin-keys"
-    (test-skip "native secp256k1 module is not linked in direct workspace runner"
-      #t)))
+  #t)
 
 (run-tests)

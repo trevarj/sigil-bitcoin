@@ -501,7 +501,9 @@
              (b (if right-first? left right)))
         (tagged-hash "TapBranch" (bytevector-append a b))))
 
+    ;;; Compute a BIP341 Taproot output x-only public key.
     (define (taproot-output-xonly internal-xonly . maybe-merkle-root)
+      (: bytevector? bytevector? ... -> bytevector?)
       (let* ((merkle-root (if (null? maybe-merkle-root) #f (car maybe-merkle-root)))
              (tweak-data (if merkle-root
                              (bytevector-append internal-xonly merkle-root)
@@ -837,28 +839,44 @@
               ((accessor (car xs)) #t)
               (else (loop (cdr xs))))))
 
+    ;;; Test if a value is a `miniscript-type-info` record.
     (define (miniscript-type-info? value)
+      (: any? -> boolean?)
       (miniscript-type-info-record? value))
 
+    ;;; Return the Miniscript base type symbol.
     (define (miniscript-type-info-base info)
+      (: miniscript-type-info-record? -> symbol?)
       (miniscript-type-info-record-base info))
 
+    ;;; Return Miniscript satisfaction property symbols.
     (define (miniscript-type-info-properties info)
+      (: miniscript-type-info-record? -> list?)
       (miniscript-type-info-record-properties info))
 
+    ;;; Return the estimated satisfaction stack item count.
     (define (miniscript-type-info-satisfaction-items info)
+      (: miniscript-type-info-record? -> integer?)
       (miniscript-type-info-record-satisfaction-items info))
 
+    ;;; Return true when satisfaction requires a signature.
     (define (miniscript-type-info-requires-signature info)
+      (: miniscript-type-info-record? -> boolean?)
       (miniscript-type-info-record-requires-signature info))
 
+    ;;; Return true when satisfaction requires a hash preimage.
     (define (miniscript-type-info-requires-preimage info)
+      (: miniscript-type-info-record? -> boolean?)
       (miniscript-type-info-record-requires-preimage info))
 
+    ;;; Return true when the fragment contains a timelock.
     (define (miniscript-type-info-has-timelock info)
+      (: miniscript-type-info-record? -> boolean?)
       (miniscript-type-info-record-has-timelock info))
 
+    ;;; Return true when the fragment is treated as nonmalleable.
     (define (miniscript-type-info-nonmalleable info)
+      (: miniscript-type-info-record? -> boolean?)
       (miniscript-type-info-record-nonmalleable info))
 
     (define (all-info? accessor infos)

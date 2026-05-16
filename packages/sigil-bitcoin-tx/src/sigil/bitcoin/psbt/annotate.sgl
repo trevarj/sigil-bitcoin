@@ -11,6 +11,7 @@
     psbt-annotate-input-taproot-leaf-scripts
     psbt-annotate-output)
   (begin
+    ;;; Attach script and key-origin metadata to a PSBT input after prevout matching.
     (define (psbt-annotate-input p input-index script-pubkey bip32-derivations taproot-bip32-derivations)
       (: psbt? integer? bytevector? list? list? -> psbt?)
       (validate-psbt p)

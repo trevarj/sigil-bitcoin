@@ -1,0 +1,28 @@
+{
+  "sources": [
+    "BIP340 tagged hash domains",
+    "BIP341 Taproot tagged hash domains",
+    "existing packages/sigil-bitcoin-primitives/test/test-primitives.sgl fixtures"
+  ],
+  "vectors": [
+    {
+      "name": "hash160-empty",
+      "function": "hash160",
+      "input_text": "",
+      "expected_hex": "b472a266d0bd89c13706a4132ccfb16f7c3b9fcb"
+    },
+    {
+      "name": "hash256-empty",
+      "function": "hash256",
+      "input_text": "",
+      "expected_hex": "5df6e0e2761359d30a8275058e299fcc0381534545f55cf43e41983f5d4c9456"
+    },
+    {
+      "name": "bip0340-challenge-zero32",
+      "function": "tagged-hash",
+      "tag": "BIP0340/challenge",
+      "input_hex": "0000000000000000000000000000000000000000000000000000000000000000",
+      "expected_hex": "7bb52d7a9fef583e3b1ba16b852ce85d7e0db8defc2a7ea1b3f7a9f0d8d7a0b0"
+    }
+  ]
+}

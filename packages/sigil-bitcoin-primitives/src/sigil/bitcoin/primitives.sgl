@@ -192,6 +192,7 @@
     ;;; (hash160 #u8(0 1 2 3))
     ;;; ```
     (define (hash160 data)
+      (: any? -> bytevector?)
       (ripemd160-bytes (sha256-bytes data)))
 
     ;; ── HASH256 (double SHA-256) ─────────────────────────────
@@ -206,6 +207,7 @@
     ;;; (hash256 #u8(0 1 2 3))
     ;;; ```
     (define (hash256 data)
+      (: any? -> bytevector?)
       (sha256-bytes (sha256-bytes data)))
 
     ;; ── Tagged Hashes (BIP 340) ──────────────────────────────
@@ -233,6 +235,7 @@
     ;;; (tagged-hash "MyApp/v1" #u8(0 1 2 3))
     ;;; ```
     (define (tagged-hash tag x)
+      (: string? bytevector? -> bytevector?)
       (let ((tag-hash (sha256-bytes tag)))
         (sha256-bytes (bytevector-append tag-hash tag-hash x))))
     ))

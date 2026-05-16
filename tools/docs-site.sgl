@@ -18,13 +18,16 @@
 (define %out-dir "public")
 
 (define (println str)
+  (: string? -> void?)
   (display str)
   (newline))
 
 (define (safe-string value fallback)
+  (: any? string? -> string?)
   (if (string? value) value fallback))
 
 (define (first-line str)
+  (: string? -> string?)
   (let ((s (safe-string str "")))
     (let ((pos (string-find s "\n")))
       (if pos
@@ -32,6 +35,7 @@
           s))))
 
 (define (html-escape str)
+  (: string? -> string?)
   (let loop ((i 0) (out ""))
     (if (>= i (string-length str))
         out
@@ -45,30 +49,38 @@
                         (else (string c)))))))))
 
 (define (attr-escape str)
+  (: string? -> string?)
   (html-escape str))
 
 (define (slugify str)
+  (: string? -> string?)
   (let* ((s1 (string-replace str "(" ""))
          (s2 (string-replace s1 ")" ""))
          (s3 (string-replace s2 " " "/")))
     s3))
 
 (define (module-display-name mod-name)
+  (: string? -> string?)
   (string-replace (string-replace mod-name "(" "") ")" ""))
 
 (define (module-slug module)
+  (: any? -> string?)
   (slugify (dict-ref module module: "")))
 
 (define (module-url module)
+  (: any? -> string?)
   (string-append "api/" (module-slug module) ".html"))
 
 (define (public-export? export)
+  (: any? -> boolean?)
   (not (string-starts-with? (dict-ref export name: "") "%")))
 
 (define (documented-exports module)
+  (: any? -> list?)
   (filter public-export? (array->list (dict-ref module exports: #[]))))
 
 (define (count-char str ch)
+  (: string? char? -> integer?)
   (let loop ((i 0) (count 0))
     (if (>= i (string-length str))
         count
@@ -78,15 +90,18 @@
                   count)))))
 
 (define (repeat-parent count)
+  (: integer? -> string?)
   (let loop ((n count) (out ""))
     (if (<= n 0)
         out
         (loop (- n 1) (string-append out "../")))))
 
 (define (api-module-prefix module)
+  (: any? -> string?)
   (repeat-parent (+ 1 (count-char (module-slug module) #\/))))
 
 (define (allowed-module? mod-name)
+  (: string? -> boolean?)
   (or (string=? mod-name "(sigil bitcoin primitives)")
       (string=? mod-name "(sigil bitcoin encoding)")
       (string=? mod-name "(sigil bitcoin keys)")
@@ -97,6 +112,7 @@
       (string=? mod-name "(sigil secp256k1)")))
 
 (define (canonical-package-name mod-name)
+  (: string? -> string?)
   (cond ((string=? mod-name "(sigil bitcoin primitives)") "sigil-bitcoin-primitives")
         ((string=? mod-name "(sigil bitcoin encoding)") "sigil-bitcoin-encoding")
         ((string=? mod-name "(sigil bitcoin keys)") "sigil-bitcoin-keys")
@@ -108,14 +124,17 @@
         (else "")))
 
 (define (canonical-module? module)
+  (: any? -> boolean?)
   (string=? (dict-ref module package: "")
             (canonical-package-name (dict-ref module module: ""))))
 
 (define (module-export-count module)
+  (: any? -> integer?)
   (length (array->list (dict-ref module exports: #[]))))
 
 (define (prefer-module? candidate current)
-  ;;; Prefer metadata emitted by the package that owns a public module.
+  (: any? any? -> boolean?)
+  ;; Prefer metadata emitted by the package that owns a public module.
   (let ((candidate-canonical? (canonical-module? candidate))
         (current-canonical? (canonical-module? current)))
     (cond ((and candidate-canonical? (not current-canonical?)) #t)
@@ -125,15 +144,22 @@
           (else #t))))
 
 (define (read-module-json path)
+  (: string? -> any?)
   (let ((data (json-decode (read-file-string path))))
     (if (allowed-module? (dict-ref data module: ""))
         data
         #f)))
 
+(define (read-any-module-json path)
+  (: string? -> any?)
+  (json-decode (read-file-string path)))
+
 (define (module-key module)
+  (: any? -> string?)
   (dict-ref module module: ""))
 
 (define (replace-module modules module)
+  (: list? any? -> list?)
   (cond ((null? modules) (list module))
         ((string=? (module-key (car modules)) (module-key module))
          (if (prefer-module? module (car modules))
@@ -143,27 +169,36 @@
          (cons (car modules) (replace-module (cdr modules) module)))))
 
 (define (unique-modules modules)
+  (: list? -> list?)
   (let loop ((remaining modules) (out '()))
     (if (null? remaining)
         out
         (loop (cdr remaining) (replace-module out (car remaining))))))
 
 (define (load-json-paths)
+  (: -> list?)
   (let loop ((patterns %lib-globs) (paths '()))
     (if (null? patterns)
         paths
         (loop (cdr patterns) (append paths (glob (car patterns)))))))
 
 (define (load-modules)
+  (: -> list?)
   (list-sort
     (lambda (a b)
       (string<? (dict-ref a module: "") (dict-ref b module: "")))
     (unique-modules (filter-map read-module-json (load-json-paths)))))
 
+(define (load-all-modules)
+  (: -> list?)
+  (map read-any-module-json (load-json-paths)))
+
 (define (guide-url path)
+  (: string? -> string?)
   (string-append "guide/" (path-stem (path-basename path)) ".html"))
 
 (define (guide-title path)
+  (: string? -> string?)
   (let ((lines (string-split (read-file-string path) "\n")))
     (if (and (not (null? lines))
              (string-starts-with? (car lines) "# "))
@@ -171,6 +206,7 @@
         (path-stem (path-basename path)))))
 
 (define (load-guides)
+  (: -> list?)
   (list-sort
     (lambda (a b) (string<? (car a) (car b)))
     (map (lambda (path) (cons path (guide-title path)))
@@ -268,12 +304,15 @@
        example: "tr(0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798,multi_a(1,0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798,03f028892bad7ed57d2fb57bf33081d5cfcf6f9ed3d3d7f159c2e2fff579dc341a))" } ))
 
 (define (tool-slug id)
+  (: string? -> string?)
   (string-replace id "." "-"))
 
 (define (tool-url tool)
+  (: any? -> string?)
   (string-append "tools/" (tool-slug (dict-ref tool id: "")) ".html"))
 
 (define (nav-html modules root active)
+  (: list? string? string? -> string?)
   (let* ((api-items
            (string-join
              (map
@@ -322,6 +361,7 @@
       "</aside>")))
 
 (define (page-html title root active modules body)
+  (: string? string? string? list? string? -> string?)
   (string-append
     "<!doctype html><html lang=\"en\"><head>"
     "<meta charset=\"utf-8\">"
@@ -340,29 +380,72 @@
     "<script type=\"module\" src=\"" root "assets/toolbench.js?v=3\"></script>"
     "</body></html>"))
 
-(define (export-description export)
+(define (lookup-export-description name modules)
+  (: string? list? -> string?)
+  (let loop-modules ((remaining modules))
+    (if (null? remaining)
+        ""
+        (let loop-exports ((exports (documented-exports (car remaining))))
+          (cond ((null? exports) (loop-modules (cdr remaining)))
+                ((string=? name (dict-ref (car exports) name: ""))
+                 (safe-string (dict-ref (car exports) description: #f) ""))
+                (else (loop-exports (cdr exports))))))))
+
+(define (fallback-export-description name)
+  (: string? -> string?)
+  (cond ((string=? name "psbt-annotate-input")
+         "Attach script and key-origin metadata to a PSBT input after prevout matching.")
+        ((string=? name "miniscript-type-info?")
+         "Test if a value is a `miniscript-type-info` record.")
+        ((string=? name "miniscript-type-info-base")
+         "Return the Miniscript base type symbol.")
+        ((string=? name "miniscript-type-info-properties")
+         "Return Miniscript satisfaction property symbols.")
+        ((string=? name "miniscript-type-info-satisfaction-items")
+         "Return the estimated satisfaction stack item count.")
+        ((string=? name "miniscript-type-info-requires-signature")
+         "Return true when satisfaction requires a signature.")
+        ((string=? name "miniscript-type-info-requires-preimage")
+         "Return true when satisfaction requires a hash preimage.")
+        ((string=? name "miniscript-type-info-has-timelock")
+         "Return true when the fragment contains a timelock.")
+        ((string=? name "miniscript-type-info-nonmalleable")
+         "Return true when the fragment is treated as nonmalleable.")
+        ((string=? name "taproot-output-xonly")
+         "Compute a BIP341 Taproot output x-only public key.")
+        (else "")))
+
+(define (export-description export modules)
+  (: any? list? -> string?)
   (let ((desc (safe-string (dict-ref export description: #f) ""))
         (name (dict-ref export name: "")))
     (cond ((not (string=? desc "")) desc)
           ((string-starts-with? name "op-") "Bitcoin Script opcode constant.")
+          ((not (string=? (lookup-export-description name modules) ""))
+           (lookup-export-description name modules))
+          ((not (string=? (fallback-export-description name) ""))
+           (fallback-export-description name))
           (else ""))))
 
 (define (doc-or-placeholder desc)
+  (: string? -> string?)
   (let ((s (safe-string desc "")))
     (if (string=? s "")
         "<p class=\"muted\">No docstring yet.</p>"
         (string-append "<p>" (html-escape s) "</p>"))))
 
 (define (signature-html export)
+  (: any? -> string?)
   (let ((sig (safe-string (dict-ref export signature: #f) "")))
     (if (string=? sig "")
         ""
         (string-append "<pre class=\"signature\">" (html-escape sig) "</pre>"))))
 
-(define (export-card export)
+(define (export-card export all-modules)
+  (: any? list? -> string?)
   (let* ((name (dict-ref export name: ""))
          (kind (dict-ref export kind: "value"))
-         (desc (export-description export)))
+         (desc (export-description export all-modules)))
     (string-append
       "<section class=\"export\" id=\"" (attr-escape name) "\">"
       "<div class=\"export-head\"><h3>" (html-escape name) "</h3>"
@@ -371,7 +454,8 @@
       (doc-or-placeholder desc)
       "</section>")))
 
-(define (module-page module modules)
+(define (module-page module modules all-modules)
+  (: any? list? list? -> void?)
   (let* ((mod-name (dict-ref module module: ""))
          (title (module-display-name mod-name))
          (package (safe-string (dict-ref module package: #f) ""))
@@ -385,11 +469,14 @@
              "<section class=\"module-summary\"><strong>"
              (number->string (length exports))
              "</strong> public exports</section>"
-             (string-join (map export-card exports) ""))))
+             (string-join (map (lambda (export)
+                                  (export-card export all-modules))
+                                exports) ""))))
     (write-page (string-append %out-dir "/" (module-url module))
                 (page-html title (api-module-prefix module) mod-name modules body))))
 
 (define (api-index modules)
+  (: list? -> void?)
   (let ((cards
           (string-join
             (map
@@ -412,6 +499,7 @@
           "<section class=\"module-grid\">" cards "</section>")))))
 
 (define (markdown-line line in-code in-list)
+  (: string? boolean? boolean? -> list?)
   (cond
     ((string-starts-with? line "```")
      (if in-code
@@ -440,6 +528,7 @@
            in-code #f))))
 
 (define (markdown->html markdown)
+  (: string? -> string?)
   (let loop ((lines (string-split markdown "\n"))
              (out "")
              (in-code #f)
@@ -458,6 +547,7 @@
                 next-list)))))
 
 (define (guide-page guide modules)
+  (: any? list? -> void?)
   (let* ((path (car guide))
          (title (cdr guide))
          (body (markdown->html (read-file-string path))))
@@ -465,11 +555,13 @@
                 (page-html title "../" "" modules body))))
 
 (define (tool-info-html label value)
+  (: string? string? -> string?)
   (string-append
     "<section class=\"tool-doc-block\"><h2>" (html-escape label) "</h2>"
     "<p>" (html-escape value) "</p></section>"))
 
 (define (tool-page tool modules)
+  (: any? list? -> void?)
   (let* ((title (dict-ref tool title: "Tool"))
          (id (dict-ref tool id: ""))
          (active (string-append "tool:" id))
@@ -491,6 +583,7 @@
                 (page-html title "../" active modules body))))
 
 (define (landing-page modules guides)
+  (: list? list? -> void?)
   (let* ((module-cards
            (string-join
              (map
@@ -530,16 +623,18 @@
           "<section><h2>Guides</h2><div class=\"guide-grid\">" guide-cards "</div></section>"
           "<section><h2>API Modules</h2><div class=\"module-grid\">" module-cards "</div></section>")))))
 
-(define (search-entry module export)
+(define (search-entry module export all-modules)
+  (: any? any? list? -> any?)
   (let ((mod-name (dict-ref module module: "")))
     #{ name: (dict-ref export name: "")
        kind: (dict-ref export kind: "value")
        module: mod-name
        url: (string-append (module-url module) "#"
                            (dict-ref export name: ""))
-       summary: (first-line (export-description export)) }))
+       summary: (first-line (export-description export all-modules)) }))
 
 (define (module-search-entry module)
+  (: any? -> any?)
   (let ((mod-name (dict-ref module module: "")))
     #{ name: (module-display-name mod-name)
        kind: "module"
@@ -548,13 +643,15 @@
        summary: (first-line (dict-ref module description: "")) }))
 
 (define (tool-search-entry tool)
+  (: any? -> any?)
   #{ name: (dict-ref tool title: "")
      kind: "tool"
      module: (dict-ref tool group: "Tool")
      url: (tool-url tool)
      summary: (dict-ref tool summary: "") })
 
-(define (search-index modules)
+(define (search-index modules all-modules)
+  (: list? list? -> void?)
   (let ((entries '()))
     (for-each
       (lambda (tool)
@@ -565,7 +662,7 @@
         (set! entries (cons (module-search-entry module) entries))
         (for-each
           (lambda (export)
-            (set! entries (cons (search-entry module export) entries)))
+            (set! entries (cons (search-entry module export all-modules) entries)))
           (documented-exports module)))
       modules)
     (write-page (path-join %out-dir "search-index.json")
@@ -578,10 +675,12 @@
 "(function(){const input=document.getElementById('search');const box=document.getElementById('search-results');if(!input||!box)return;let index=[];fetch(window.SIGIL_DOCS_SEARCH).then(r=>r.json()).then(data=>{index=data}).catch(()=>{});input.addEventListener('input',()=>{const q=input.value.trim().toLowerCase();box.innerHTML='';if(q.length<2)return;index.filter(item=>(item.name+' '+item.module+' '+item.summary).toLowerCase().includes(q)).slice(0,8).forEach(item=>{const a=document.createElement('a');a.href=(window.SIGIL_DOCS_SEARCH.replace('search-index.json',''))+item.url;a.innerHTML='<strong>'+item.name+'</strong><br><span>'+item.module+'</span>';box.appendChild(a);});});})();")
 
 (define (write-page path content)
+  (: string? string? -> void?)
   (ensure-directory (path-dirname path))
   (write-file-string path content))
 
 (define (write-assets)
+  (: -> void?)
   (write-page (path-join %out-dir "assets/style.css") %style-css)
   (write-page (path-join %out-dir "assets/search.js") %search-js)
   (for-each
@@ -592,7 +691,9 @@
     (glob (path-join %docs-dir "assets/*"))))
 
 (define (build-site)
+  (: -> void?)
   (let ((modules (load-modules))
+        (all-modules (load-all-modules))
         (guides (load-guides)))
     (when (null? modules)
       (error "docs-site: no sigil-bitcoin module JSON found; run sigil build first"))
@@ -601,10 +702,10 @@
     (for-each (lambda (tool) (tool-page tool modules)) %tools)
     (api-index modules)
     (for-each (lambda (m)
-                (module-page m modules))
+                (module-page m modules all-modules))
               modules)
     (for-each (lambda (g) (guide-page g modules)) guides)
-    (search-index modules)
+    (search-index modules all-modules)
     (println (string-append "Wrote " %out-dir " documentation site."))))
 
 (build-site)

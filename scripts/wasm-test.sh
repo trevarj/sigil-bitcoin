@@ -8,13 +8,22 @@ WASM="$WWW/sigil-bitcoin-demo.wasm"
 BUNDLE="$WWW/lib.bundle"
 
 printf '\n==> sigil-bitcoin-demo wasm build\n'
-(
+build_log=$(mktemp "${TMPDIR:-/tmp}/sigil-bitcoin-wasm-build.XXXXXX")
+dump=""
+trap 'rm -f "$build_log" "$dump"' EXIT
+
+if ! (
   cd "$DEMO"
   guix shell -m ../../manifest.scm -- \
     sigil build \
       --config web \
       --redirects ../../dev-redirects.sgl
-)
+) >"$build_log" 2>&1; then
+  cat "$build_log" >&2
+  exit 1
+fi
+
+printf 'wasm-test: wasm build completed\n'
 
 for artifact in "$WASM" "$BUNDLE"; do
   if [ ! -s "$artifact" ]; then
@@ -26,7 +35,6 @@ done
 printf 'wasm-test: artifacts present\n'
 
 dump=$(mktemp "${TMPDIR:-/tmp}/sigil-bitcoin-wasm.XXXXXX")
-trap 'rm -f "$dump"' EXIT
 
 guix shell -m "$ROOT/manifest.scm" -- wasm-objdump -x "$WASM" > "$dump"
 
