@@ -132,6 +132,10 @@
       (apply bytevector-append (append keyvals (list #u8(0)))))
 
     ;;; Serialize a PSBT v0 record.
+    ;;;
+    ;;; ```scheme
+    ;;; (psbt-serialize (psbt-create (transaction-create 2 0)))
+    ;;; ```
     (define (psbt-serialize p)
       (: psbt? -> bytevector?)
       (validate-psbt p)
@@ -499,6 +503,10 @@
                     (cons (parse-psbt-output (car parsed)) outputs))))))
 
     ;;; Parse PSBT v0 bytes into a PSBT record.
+    ;;;
+    ;;; ```scheme
+    ;;; (psbt-parse (psbt-serialize p))
+    ;;; ```
     (define (psbt-parse bytes)
       (: bytevector? -> psbt?)
       (require-bytevector "psbt-parse" bytes)

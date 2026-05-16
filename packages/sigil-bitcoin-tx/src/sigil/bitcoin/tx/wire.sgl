@@ -56,6 +56,10 @@
     (define %u64-max #xffffffffffffffff)
 
     ;;; Encode a Bitcoin CompactSize unsigned integer.
+    ;;;
+    ;;; ```scheme
+    ;;; (compact-size-encode 253) ; => #u8(#xfd #xfd #x00)
+    ;;; ```
     (define (compact-size-encode n)
       (: integer? -> bytevector?)
       (require-uint "compact-size-encode" n %u64-max)
@@ -68,6 +72,13 @@
             (else
              (bytevector-append #u8(#xff) (u64-le n)))))
 
+    ;;; Decode a CompactSize integer at `offset`.
+    ;;;
+    ;;; Returns `(value next-offset)` and rejects non-canonical encodings.
+    ;;;
+    ;;; ```scheme
+    ;;; (compact-size-decode-at #u8(#xfd #xfd #x00 #xaa) 0)
+    ;;; ```
     (define (compact-size-decode-at bytes offset)
       (let ((tag (read-byte bytes offset "compact-size-decode")))
         (cond ((< tag #xfd)
@@ -90,7 +101,11 @@
 
     ;;; Decode a CompactSize integer from a bytevector.
     ;;;
-    ;;; Returns `(value . next-offset)`.
+    ;;; Returns the integer and rejects trailing bytes.
+    ;;;
+    ;;; ```scheme
+    ;;; (compact-size-decode #u8(#xfd #xfd #x00)) ; => 253
+    ;;; ```
     (define (compact-size-decode bytes)
       (: bytevector? -> integer?)
       (let ((result (compact-size-decode-at bytes 0)))
@@ -98,23 +113,43 @@
           (error "compact-size-decode: trailing bytes"))
         (car result)))
 
+    ;;; Prefix a bytevector with its CompactSize length.
+    ;;;
+    ;;; ```scheme
+    ;;; (bytes-with-length #u8(#xaa #xbb))
+    ;;; ```
     (define (bytes-with-length bytes)
       (require-bytevector "bytes-with-length" bytes)
       (bytevector-append
         (compact-size-encode (bytevector-length bytes))
         bytes))
 
+    ;;; Build a PSBT key from a one-byte key type and key data.
+    ;;;
+    ;;; ```scheme
+    ;;; (key-with-type #x01 #u8(#x02 #x03))
+    ;;; ```
     (define (key-with-type key-type key-data)
       (require-uint "psbt key type" key-type #xff)
       (require-bytevector "psbt key data" key-data)
       (bytevector-append (make-bytevector 1 key-type) key-data))
 
+    ;;; Encode a typed PSBT key-value pair.
+    ;;;
+    ;;; ```scheme
+    ;;; (psbt-keyval #x01 #u8() #u8(#xaa))
+    ;;; ```
     (define (psbt-keyval key-type key-data value)
       (let ((key (key-with-type key-type key-data)))
         (bytevector-append
           (bytes-with-length key)
           (bytes-with-length value))))
 
+    ;;; Encode a raw PSBT key-value pair while preserving the key bytes.
+    ;;;
+    ;;; ```scheme
+    ;;; (psbt-raw-keyval (cons #u8(#xfc #x01) #u8(#xaa)))
+    ;;; ```
     (define (psbt-raw-keyval entry)
       (require-bytevector "psbt raw key" (car entry))
       (require-bytevector "psbt raw value" (cdr entry))
@@ -122,10 +157,20 @@
         (bytes-with-length (car entry))
         (bytes-with-length (cdr entry))))
 
+    ;;; Copy `count` bytes from a bytevector at `offset`.
+    ;;;
+    ;;; ```scheme
+    ;;; (read-bytes #u8(1 2 3 4) 1 2 "example")
+    ;;; ```
     (define (read-bytes bytes offset count who)
       (ensure-available who bytes offset count)
       (bytevector-copy bytes offset (+ offset count)))
 
+    ;;; Read a CompactSize-prefixed bytevector at `offset`.
+    ;;;
+    ;;; ```scheme
+    ;;; (read-length-prefixed-bytes #u8(2 #xaa #xbb) 0 "example")
+    ;;; ```
     (define (read-length-prefixed-bytes bytes offset who)
       (let* ((len-result (compact-size-decode-at bytes offset))
              (len (car len-result))
@@ -133,6 +178,11 @@
              (payload (read-bytes bytes payload-offset len who)))
         (list payload (+ payload-offset len))))
 
+    ;;; Validate an outpoint record and return it.
+    ;;;
+    ;;; ```scheme
+    ;;; (validate-outpoint (outpoint txid: (make-bytevector 32 0) index: 0))
+    ;;; ```
     (define (validate-outpoint op)
       (unless (outpoint? op)
         (error "outpoint: expected outpoint"))
@@ -143,6 +193,11 @@
     (define (validate-witness-item item)
       (require-bytevector "txin witness item" item))
 
+    ;;; Validate a witness stack and return it.
+    ;;;
+    ;;; ```scheme
+    ;;; (validate-witness (list #u8(#x30) #u8(#x02)))
+    ;;; ```
     (define (validate-witness witness)
       (unless (list? witness)
         (error "txin witness: expected list"))
@@ -150,6 +205,13 @@
           ((null? xs) witness)
         (validate-witness-item (car xs))))
 
+    ;;; Validate a transaction input and return it.
+    ;;;
+    ;;; ```scheme
+    ;;; (validate-txin
+    ;;;   (txin previous-output: (outpoint txid: (make-bytevector 32 0) index: 0)
+    ;;;         script-sig: #u8() sequence: #xffffffff witness: '()))
+    ;;; ```
     (define (validate-txin input)
       (unless (txin? input)
         (error "txin: expected txin"))
@@ -159,6 +221,11 @@
       (validate-witness (txin-witness input))
       input)
 
+    ;;; Validate a transaction output and return it.
+    ;;;
+    ;;; ```scheme
+    ;;; (validate-txout (txout value: 1000 script-pubkey: #u8(#x51)))
+    ;;; ```
     (define (validate-txout output)
       (unless (txout? output)
         (error "txout: expected txout"))
@@ -166,6 +233,11 @@
       (require-bytevector "txout script-pubkey" (txout-script-pubkey output))
       output)
 
+    ;;; Validate a transaction record and return it.
+    ;;;
+    ;;; ```scheme
+    ;;; (validate-transaction (transaction-create 2 0))
+    ;;; ```
     (define (validate-transaction tx)
       (unless (transaction? tx)
         (error "transaction: expected transaction"))
@@ -183,6 +255,10 @@
         (validate-txout (car xs))))
 
     ;;; Create an empty transaction suitable for incremental construction.
+    ;;;
+    ;;; ```scheme
+    ;;; (transaction-create 2 0)
+    ;;; ```
     (define (transaction-create version lock-time)
       (: integer? integer? -> transaction?)
       (let ((tx (transaction version: version
@@ -192,6 +268,13 @@
         (validate-transaction tx)))
 
     ;;; Append a new input with empty scriptSig and witness.
+    ;;;
+    ;;; ```scheme
+    ;;; (transaction-add-input
+    ;;;   (transaction-create 2 0)
+    ;;;   (outpoint txid: (make-bytevector 32 0) index: 0)
+    ;;;   #xffffffff)
+    ;;; ```
     (define (transaction-add-input tx previous-output sequence)
       (: transaction? outpoint? integer? -> transaction?)
       (validate-transaction tx)
@@ -207,6 +290,10 @@
                      lock-time: (transaction-lock-time tx))))
 
     ;;; Append a new transaction output.
+    ;;;
+    ;;; ```scheme
+    ;;; (transaction-add-output (transaction-create 2 0) 1000 #u8(#x51))
+    ;;; ```
     (define (transaction-add-output tx value script-pubkey)
       (: transaction? integer? bytevector? -> transaction?)
       (validate-transaction tx)
@@ -218,6 +305,10 @@
                      lock-time: (transaction-lock-time tx))))
 
     ;;; Replace an input's scriptSig.
+    ;;;
+    ;;; ```scheme
+    ;;; (transaction-set-input-script-sig tx 0 #u8(#x51))
+    ;;; ```
     (define (transaction-set-input-script-sig tx input-index script-sig)
       (: transaction? integer? bytevector? -> transaction?)
       (validate-transaction tx)
@@ -238,6 +329,10 @@
                      lock-time: (transaction-lock-time tx))))
 
     ;;; Replace an input's witness stack.
+    ;;;
+    ;;; ```scheme
+    ;;; (transaction-set-input-witness tx 0 (list #u8(#x30) #u8(#x02)))
+    ;;; ```
     (define (transaction-set-input-witness tx input-index witness)
       (: transaction? integer? list? -> transaction?)
       (validate-transaction tx)
@@ -257,12 +352,22 @@
                      outputs: (transaction-outputs tx)
                      lock-time: (transaction-lock-time tx))))
 
+    ;;; Serialize an outpoint to Bitcoin wire byte order.
+    ;;;
+    ;;; ```scheme
+    ;;; (serialize-outpoint (outpoint txid: (make-bytevector 32 0) index: 0))
+    ;;; ```
     (define (serialize-outpoint op)
       (validate-outpoint op)
       (bytevector-append
         (reverse-bytevector (outpoint-txid op))
         (u32-le (outpoint-index op))))
 
+    ;;; Serialize a transaction input without witness data.
+    ;;;
+    ;;; ```scheme
+    ;;; (serialize-txin input)
+    ;;; ```
     (define (serialize-txin input)
       (validate-txin input)
       (bytevector-append
@@ -270,12 +375,22 @@
         (bytes-with-length (txin-script-sig input))
         (u32-le (txin-sequence input))))
 
+    ;;; Serialize a transaction output.
+    ;;;
+    ;;; ```scheme
+    ;;; (serialize-txout (txout value: 1000 script-pubkey: #u8(#x51)))
+    ;;; ```
     (define (serialize-txout output)
       (validate-txout output)
       (bytevector-append
         (u64-le (txout-value output))
         (bytes-with-length (txout-script-pubkey output))))
 
+    ;;; Serialize a CompactSize-counted vector with `serializer`.
+    ;;;
+    ;;; ```scheme
+    ;;; (serialize-vector (list #u8(#xaa)) (lambda (item) item))
+    ;;; ```
     (define (serialize-vector items serializer)
       (let ((parts '()))
         (do ((xs items (cdr xs)))
@@ -284,6 +399,11 @@
         (apply bytevector-append
                (cons (compact-size-encode (length items)) parts))))
 
+    ;;; Serialize a list of items without a count prefix.
+    ;;;
+    ;;; ```scheme
+    ;;; (serialize-items (list #u8(#xaa) #u8(#xbb)) (lambda (item) item))
+    ;;; ```
     (define (serialize-items items serializer)
       (let ((parts '()))
         (do ((xs items (cdr xs)))
@@ -293,6 +413,11 @@
             #u8()
             (apply bytevector-append parts))))
 
+    ;;; Serialize a SegWit witness stack.
+    ;;;
+    ;;; ```scheme
+    ;;; (serialize-witness (list #u8(#x30) #u8(#x02)))
+    ;;; ```
     (define (serialize-witness witness)
       (validate-witness witness)
       (let ((parts '()))
@@ -324,6 +449,11 @@
                 witness: '())
           (+ (cadr script-result) 4))))
 
+    ;;; Parse a transaction output at `offset`.
+    ;;;
+    ;;; ```scheme
+    ;;; (parse-txout #u8(#xe8 #x03 #x00 #x00 #x00 #x00 #x00 #x00 #x01 #x51) 0)
+    ;;; ```
     (define (parse-txout bytes offset)
       (let* ((value (read-u64-le bytes offset "txout value"))
              (script-result (read-length-prefixed-bytes
@@ -360,6 +490,11 @@
                       (cadr item-result)
                       (cons (car item-result) items)))))))
 
+    ;;; Parse a serialized witness stack and reject trailing bytes.
+    ;;;
+    ;;; ```scheme
+    ;;; (parse-serialized-witness (serialize-witness (list #u8(#x30))))
+    ;;; ```
     (define (parse-serialized-witness bytes)
       (let ((parsed (parse-witness bytes 0)))
         (unless (= (cadr parsed) (bytevector-length bytes))
@@ -398,6 +533,10 @@
                     (cons (car parsed) witnesses))))))
 
     ;;; Return true when any transaction input has witness stack items.
+    ;;;
+    ;;; ```scheme
+    ;;; (transaction-has-witness? (transaction-create 2 0))
+    ;;; ```
     (define (transaction-has-witness? tx)
       (: transaction? -> boolean?)
       (validate-transaction tx)
@@ -411,6 +550,10 @@
     ;;;
     ;;; Includes witness data by default when present. Pass `#f` to omit
     ;;; witnesses for txid/base serialization.
+    ;;;
+    ;;; ```scheme
+    ;;; (transaction-serialize (transaction-create 2 0))
+    ;;; ```
     (define (transaction-serialize tx . maybe-include-witness)
       (: transaction? boolean? ... -> bytevector?)
       (validate-transaction tx)
@@ -440,6 +583,10 @@
             (bytevector-append base (u32-le (transaction-lock-time tx))))))
 
     ;;; Parse Bitcoin wire bytes into a transaction record.
+    ;;;
+    ;;; ```scheme
+    ;;; (transaction-parse (transaction-serialize tx))
+    ;;; ```
     (define (transaction-parse bytes)
       (: bytevector? -> transaction?)
       (require-bytevector "transaction-parse" bytes)
@@ -468,27 +615,47 @@
                      lock-time: lock-time)))
 
     ;;; Serialize a transaction without SegWit marker, flag, or witnesses.
+    ;;;
+    ;;; ```scheme
+    ;;; (transaction-base-serialize tx)
+    ;;; ```
     (define (transaction-base-serialize tx)
       (: transaction? -> bytevector?)
       (transaction-serialize tx #f))
 
     ;;; Return the transaction's non-witness serialized size in bytes.
+    ;;;
+    ;;; ```scheme
+    ;;; (transaction-stripped-size tx)
+    ;;; ```
     (define (transaction-stripped-size tx)
       (: transaction? -> integer?)
       (bytevector-length (transaction-base-serialize tx)))
 
     ;;; Return the transaction's full serialized size in bytes.
+    ;;;
+    ;;; ```scheme
+    ;;; (transaction-total-size tx)
+    ;;; ```
     (define (transaction-total-size tx)
       (: transaction? -> integer?)
       (bytevector-length (transaction-serialize tx #t)))
 
     ;;; Return the transaction weight units defined by BIP141.
+    ;;;
+    ;;; ```scheme
+    ;;; (transaction-weight tx)
+    ;;; ```
     (define (transaction-weight tx)
       (: transaction? -> integer?)
       (+ (* 3 (transaction-stripped-size tx))
          (transaction-total-size tx)))
 
     ;;; Return the transaction virtual size in vbytes.
+    ;;;
+    ;;; ```scheme
+    ;;; (transaction-vsize tx)
+    ;;; ```
     (define (transaction-vsize tx)
       (: transaction? -> integer?)
       (let ((weight (transaction-weight tx)))
@@ -503,6 +670,10 @@
               (loop (cdr xs) (+ total (txout-value output)))))))
 
     ;;; Return the sum of this transaction's output values in satoshis.
+    ;;;
+    ;;; ```scheme
+    ;;; (transaction-output-value tx)
+    ;;; ```
     (define (transaction-output-value tx)
       (: transaction? -> integer?)
       (validate-transaction tx)
@@ -516,6 +687,10 @@
     ;;; Return input value minus output value for a transaction.
     ;;;
     ;;; `prevouts` must contain one `txout` for each transaction input.
+    ;;;
+    ;;; ```scheme
+    ;;; (transaction-fee tx prevouts)
+    ;;; ```
     (define (transaction-fee tx prevouts)
       (: transaction? list? -> integer?)
       (validate-transaction tx)
@@ -527,21 +702,38 @@
         fee))
 
     ;;; Return the fee rate in satoshis per virtual byte.
+    ;;;
+    ;;; ```scheme
+    ;;; (transaction-feerate tx prevouts)
+    ;;; ```
     (define (transaction-feerate tx prevouts)
       (: transaction? list? -> number?)
       (/ (transaction-fee tx prevouts)
          (transaction-vsize tx)))
 
     ;;; Return the transaction ID bytevector for a transaction.
+    ;;;
+    ;;; ```scheme
+    ;;; (transaction-txid tx)
+    ;;; ```
     (define (transaction-txid tx)
       (: transaction? -> bytevector?)
       (hash256 (transaction-base-serialize tx)))
 
     ;;; Return the witness transaction ID bytevector for a transaction.
+    ;;;
+    ;;; ```scheme
+    ;;; (transaction-wtxid tx)
+    ;;; ```
     (define (transaction-wtxid tx)
       (: transaction? -> bytevector?)
       (hash256 (transaction-serialize tx #t)))
 
+    ;;; Return the nth list item or raise an indexed error named by `who`.
+    ;;;
+    ;;; ```scheme
+    ;;; (nth-item '(a b c) 1 "example")
+    ;;; ```
     (define (nth-item items index who)
       (when (< index 0)
         (error (string-append who ": index out of range")))
@@ -553,6 +745,11 @@
               (else
                (loop (cdr xs) (+ i 1))))))
 
+    ;;; Return a list with the nth item replaced.
+    ;;;
+    ;;; ```scheme
+    ;;; (replace-nth '(a b c) 1 'x "example")
+    ;;; ```
     (define (replace-nth items index value who)
       (when (< index 0)
         (error (string-append who ": index out of range")))

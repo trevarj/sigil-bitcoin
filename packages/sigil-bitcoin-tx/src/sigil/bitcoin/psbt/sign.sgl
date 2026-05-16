@@ -22,6 +22,10 @@
     ;;; Add a legacy P2PKH partial signature to a PSBT input.
     ;;;
     ;;; The input must contain the previous transaction as a non-witness UTXO.
+    ;;;
+    ;;; ```scheme
+    ;;; (psbt-sign-p2pkh-input p 0 private-key)
+    ;;; ```
     (define (psbt-sign-p2pkh-input p input-index private-key)
       (: psbt? integer? bytevector? -> psbt?)
       (validate-psbt p)
@@ -64,6 +68,10 @@
     ;;; Add a P2WPKH partial signature to a PSBT input.
     ;;;
     ;;; The input must contain a witness UTXO.
+    ;;;
+    ;;; ```scheme
+    ;;; (psbt-sign-p2wpkh-input p 0 private-key)
+    ;;; ```
     (define (psbt-sign-p2wpkh-input p input-index private-key)
       (: psbt? integer? bytevector? -> psbt?)
       (validate-psbt p)
@@ -107,6 +115,10 @@
             (psbt-update-input p input-index signed-input)))))
 
     ;;; Add a P2WSH partial signature for a single-key checksig witness script.
+    ;;;
+    ;;; ```scheme
+    ;;; (psbt-sign-p2wsh-input p 0 private-key)
+    ;;; ```
     (define (psbt-sign-p2wsh-input p input-index private-key)
       (: psbt? integer? bytevector? -> psbt?)
       (validate-psbt p)
@@ -154,6 +166,10 @@
             (psbt-update-input p input-index signed-input)))))
 
     ;;; Add a Taproot key-path signature to a PSBT input.
+    ;;;
+    ;;; ```scheme
+    ;;; (psbt-sign-p2tr-keypath-input p 0 private-key)
+    ;;; ```
     (define (psbt-sign-p2tr-keypath-input p input-index private-key)
       (: psbt? integer? bytevector? -> psbt?)
       (validate-psbt p)
@@ -191,6 +207,10 @@
           (psbt-update-input p input-index signed-input))))
 
     ;;; Add a Taproot script-path signature for a single-key checksig leaf.
+    ;;;
+    ;;; ```scheme
+    ;;; (psbt-sign-p2tr-scriptpath-input p 0 private-key)
+    ;;; ```
     (define (psbt-sign-p2tr-scriptpath-input p input-index private-key)
       (: psbt? integer? bytevector? -> psbt?)
       (validate-psbt p)
@@ -241,6 +261,10 @@
           (psbt-update-input p input-index signed-input))))
 
     ;;; Sign a standard P2PKH, P2WPKH, or key-path P2TR PSBT input.
+    ;;;
+    ;;; ```scheme
+    ;;; (psbt-sign-standard-input p 0 private-key)
+    ;;; ```
     (define (psbt-sign-standard-input p input-index private-key)
       (: psbt? integer? bytevector? -> psbt?)
       (validate-psbt p)

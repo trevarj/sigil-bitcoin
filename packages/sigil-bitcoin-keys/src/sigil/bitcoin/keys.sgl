@@ -219,6 +219,10 @@
     ;;;
     ;;; `network` selects the WIF version byte. `compressed?` controls whether
     ;;; the compressed-public-key marker is included in the payload.
+    ;;;
+    ;;; ```scheme
+    ;;; (private-key->wif (make-bytevector 32 1) bitcoin-mainnet #t)
+    ;;; ```
     (define (private-key->wif key network compressed?)
       (: bytevector? bitcoin-network? boolean? -> string?)
       (require-private-key key)
@@ -230,6 +234,10 @@
     ;;; Decode a Wallet Import Format string.
     ;;;
     ;;; Returns `(key network . compressed?)`.
+    ;;;
+    ;;; ```scheme
+    ;;; (wif->private-key (private-key->wif (make-bytevector 32 1) bitcoin-mainnet #t))
+    ;;; ```
     (define (wif->private-key wif)
       (: string? -> list?)
       (let* ((decoded (base58check-decode wif))
@@ -253,11 +261,19 @@
                (error "wif->private-key: invalid payload length")))))
 
     ;;; Derive a compressed public key from a 32-byte secp256k1 private key.
+    ;;;
+    ;;; ```scheme
+    ;;; (private-key->public-key (make-bytevector 32 1))
+    ;;; ```
     (define (private-key->public-key key)
       (: bytevector? -> bytevector?)
       (secp256k1-pubkey-create (require-private-key key)))
 
     ;;; Return true when `key` is a valid compressed or uncompressed public key.
+    ;;;
+    ;;; ```scheme
+    ;;; (public-key? (private-key->public-key (make-bytevector 32 1)))
+    ;;; ```
     (define (public-key? key)
       (: any? -> boolean?)
       (and (bytevector? key)
@@ -266,6 +282,10 @@
            (bytevector? (secp256k1-pubkey-parse key))))
 
     ;;; Return true when `key` is a valid 33-byte compressed public key.
+    ;;;
+    ;;; ```scheme
+    ;;; (compressed-public-key? (private-key->public-key (make-bytevector 32 1)))
+    ;;; ```
     (define (compressed-public-key? key)
       (: any? -> boolean?)
       (and (public-key? key)
@@ -274,6 +294,10 @@
                (= #x03 (bytevector-u8-ref key 0)))))
 
     ;;; Convert a serialized public key into a 32-byte x-only public key.
+    ;;;
+    ;;; ```scheme
+    ;;; (x-only-public-key (private-key->public-key (make-bytevector 32 1)))
+    ;;; ```
     (define (x-only-public-key key)
       (: bytevector? -> bytevector?)
       (cond ((and (bytevector? key) (= 32 (bytevector-length key)))
@@ -285,6 +309,12 @@
                (secp256k1-keypair-xonly-pub kp)))))
 
     ;;; Derive a Base58Check P2PKH address from a serialized public key.
+    ;;;
+    ;;; ```scheme
+    ;;; (public-key->p2pkh-address
+    ;;;   (private-key->public-key (make-bytevector 32 1))
+    ;;;   bitcoin-mainnet)
+    ;;; ```
     (define (public-key->p2pkh-address key network)
       (: bytevector? bitcoin-network? -> string?)
       (unless (public-key? key)
@@ -292,12 +322,22 @@
       (base58check-encode (bitcoin-network-p2pkh network) (hash160 key)))
 
     ;;; Encode a 20-byte script hash as a Base58Check P2SH address.
+    ;;;
+    ;;; ```scheme
+    ;;; (script-hash->p2sh-address (make-bytevector 20 1) bitcoin-mainnet)
+    ;;; ```
     (define (script-hash->p2sh-address script-hash network)
       (: bytevector? bitcoin-network? -> string?)
       (require-bytevector-length "script-hash->p2sh-address" script-hash 20)
       (base58check-encode (bitcoin-network-p2sh network) script-hash))
 
     ;;; Derive a native SegWit P2WPKH address from a serialized public key.
+    ;;;
+    ;;; ```scheme
+    ;;; (public-key->p2wpkh-address
+    ;;;   (private-key->public-key (make-bytevector 32 1))
+    ;;;   bitcoin-mainnet)
+    ;;; ```
     (define (public-key->p2wpkh-address key network)
       (: bytevector? bitcoin-network? -> string?)
       (unless (public-key? key)
@@ -305,11 +345,19 @@
       (segwit-encode (bitcoin-network-bech32 network) 0 (hash160 key)))
 
     ;;; Derive a native SegWit P2WSH address from a witness script.
+    ;;;
+    ;;; ```scheme
+    ;;; (script->p2wsh-address #u8(#x51 #xac) bitcoin-mainnet)
+    ;;; ```
     (define (script->p2wsh-address script network)
       (: bytevector? bitcoin-network? -> string?)
       (segwit-encode (bitcoin-network-bech32 network) 0 (hash256 script)))
 
     ;;; Encode a 32-byte x-only public key as a native Taproot address.
+    ;;;
+    ;;; ```scheme
+    ;;; (x-only-public-key->p2tr-address (make-bytevector 32 1) bitcoin-mainnet)
+    ;;; ```
     (define (x-only-public-key->p2tr-address xonly network)
       (: bytevector? bitcoin-network? -> string?)
       (segwit-encode (bitcoin-network-bech32 network) 1
@@ -320,6 +368,11 @@
       (bytevector-copy (hash160 key) 0 4))
 
     ;;; Neuter an extended private key into the matching extended public key.
+    ;;;
+    ;;; ```scheme
+    ;;; (extended-private-key->public-key
+    ;;;   (bip32-master-key (make-bytevector 32 1) bitcoin-mainnet))
+    ;;; ```
     (define (extended-private-key->public-key xprv)
       (: extended-private-key? -> extended-public-key?)
       (extended-public-key
@@ -331,6 +384,10 @@
         public-key: (private-key->public-key (extended-private-key-private-key xprv))))
 
     ;;; Derive a BIP32 master extended private key from seed bytes.
+    ;;;
+    ;;; ```scheme
+    ;;; (bip32-master-key (make-bytevector 32 1) bitcoin-mainnet)
+    ;;; ```
     (define (bip32-master-key seed network)
       (: bytevector? bitcoin-network? -> extended-private-key?)
       (let* ((i (hmac-sha512-bytes "Bitcoin seed" seed))
@@ -349,6 +406,12 @@
     ;;;
     ;;; Hardened children use child numbers greater than or equal to
     ;;; `#x80000000`.
+    ;;;
+    ;;; ```scheme
+    ;;; (bip32-private-child
+    ;;;   (bip32-master-key (make-bytevector 32 1) bitcoin-mainnet)
+    ;;;   (bip32-hardened-index 0))
+    ;;; ```
     (define (bip32-private-child parent child-number)
       (: extended-private-key? integer? -> extended-private-key?)
       (when (or (< child-number 0) (> child-number #xffffffff))
@@ -376,6 +439,13 @@
           private-key: child-key)))
 
     ;;; Derive a non-hardened BIP32 public child key.
+    ;;;
+    ;;; ```scheme
+    ;;; (bip32-public-child
+    ;;;   (extended-private-key->public-key
+    ;;;     (bip32-master-key (make-bytevector 32 1) bitcoin-mainnet))
+    ;;;   0)
+    ;;; ```
     (define (bip32-public-child parent child-number)
       (: extended-public-key? integer? -> extended-public-key?)
       (when (>= child-number %hardened-offset)
@@ -442,6 +512,10 @@
                 (loop (cdr xs) (string-append out "/" (car xs)))))))
 
     ;;; Parse an absolute BIP32 path into child numbers.
+    ;;;
+    ;;; ```scheme
+    ;;; (bip32-path->list "m/84'/0'/0'/0/0")
+    ;;; ```
     (define (bip32-path->list path)
       (: string? -> list?)
       (let ((parts (split-path path)))
@@ -457,6 +531,10 @@
                           out))))))
 
     ;;; Format child numbers as an absolute BIP32 path.
+    ;;;
+    ;;; ```scheme
+    ;;; (bip32-path->string (bip32-path->list "m/84'/0'/0'/0/0"))
+    ;;; ```
     (define (bip32-path->string path)
       (: list? -> string?)
       (if (null? path)
@@ -481,6 +559,10 @@
                         (cons (parse-path-segment who (car xs)) out)))))))
 
     ;;; Parse `[fingerprint/path]` BIP32 key-origin text.
+    ;;;
+    ;;; ```scheme
+    ;;; (bip32-key-origin-parse "[00000000/84'/0'/0']")
+    ;;; ```
     (define (bip32-key-origin-parse text)
       (: string? -> bip32-key-origin?)
       (let* ((len (string-length text))
@@ -505,6 +587,10 @@
                       (join-path-segments (cdr parts)))))))
 
     ;;; Format BIP32 key-origin metadata as `[fingerprint/path]`.
+    ;;;
+    ;;; ```scheme
+    ;;; (bip32-key-origin->string (bip32-key-origin-parse "[00000000/84'/0'/0']"))
+    ;;; ```
     (define (bip32-key-origin->string origin)
       (: bip32-key-origin? -> string?)
       (let ((path (bip32-key-origin-path origin)))
@@ -529,6 +615,12 @@
     ;;; Derive a BIP32 path such as `m/84'/0'/0'/0/0`.
     ;;;
     ;;; The input key may be an extended private key or extended public key.
+    ;;;
+    ;;; ```scheme
+    ;;; (bip32-derive-path
+    ;;;   (bip32-master-key (make-bytevector 32 1) bitcoin-mainnet)
+    ;;;   "m/84'/0'/0'/0/0")
+    ;;; ```
     (define (bip32-derive-path key path)
       (: any? string? -> any?)
       (let ((parts (split-path path)))
@@ -550,12 +642,20 @@
                   (cdr rest)))))))
 
     ;;; Convert a non-hardened child index into a hardened BIP32 index.
+    ;;;
+    ;;; ```scheme
+    ;;; (bip32-hardened-index 84)
+    ;;; ```
     (define (bip32-hardened-index index)
       (: integer? -> integer?)
       (+ %hardened-offset
          (require-child-index "bip32-hardened-index" index)))
 
     ;;; Build a BIP43 account path `m/purpose'/coin_type'/account'`.
+    ;;;
+    ;;; ```scheme
+    ;;; (bip32-account-path 84 bitcoin-mainnet 0)
+    ;;; ```
     (define (bip32-account-path purpose network account)
       (: integer? bitcoin-network? integer? -> string?)
       (require-child-index "bip32-account-path purpose" purpose)
@@ -563,26 +663,49 @@
       (account-path purpose (network-coin-type network) account))
 
     ;;; BIP44 legacy P2PKH account path.
+    ;;;
+    ;;; ```scheme
+    ;;; (bip44-account-path bitcoin-mainnet 0)
+    ;;; ```
     (define (bip44-account-path network account)
       (: bitcoin-network? integer? -> string?)
       (bip32-account-path 44 network account))
 
     ;;; BIP49 nested SegWit account path.
+    ;;;
+    ;;; ```scheme
+    ;;; (bip49-account-path bitcoin-mainnet 0)
+    ;;; ```
     (define (bip49-account-path network account)
       (: bitcoin-network? integer? -> string?)
       (bip32-account-path 49 network account))
 
     ;;; BIP84 native SegWit account path.
+    ;;;
+    ;;; ```scheme
+    ;;; (bip84-account-path bitcoin-mainnet 0)
+    ;;; ```
     (define (bip84-account-path network account)
       (: bitcoin-network? integer? -> string?)
       (bip32-account-path 84 network account))
 
     ;;; BIP86 Taproot key-path account path.
+    ;;;
+    ;;; ```scheme
+    ;;; (bip86-account-path bitcoin-mainnet 0)
+    ;;; ```
     (define (bip86-account-path network account)
       (: bitcoin-network? integer? -> string?)
       (bip32-account-path 86 network account))
 
     ;;; Derive an account-level extended key for a BIP43 purpose.
+    ;;;
+    ;;; ```scheme
+    ;;; (bip32-account-key
+    ;;;   (bip32-master-key (make-bytevector 32 1) bitcoin-mainnet)
+    ;;;   84
+    ;;;   0)
+    ;;; ```
     (define (bip32-account-key root purpose account)
       (: any? integer? integer? -> any?)
       (bip32-derive-path
@@ -590,26 +713,48 @@
         (bip32-account-path purpose (extended-key-network root) account)))
 
     ;;; Derive a BIP44 account key from a master extended key.
+    ;;;
+    ;;; ```scheme
+    ;;; (bip44-account-key (bip32-master-key (make-bytevector 32 1) bitcoin-mainnet) 0)
+    ;;; ```
     (define (bip44-account-key root account)
       (: any? integer? -> any?)
       (bip32-account-key root 44 account))
 
     ;;; Derive a BIP49 account key from a master extended key.
+    ;;;
+    ;;; ```scheme
+    ;;; (bip49-account-key (bip32-master-key (make-bytevector 32 1) bitcoin-mainnet) 0)
+    ;;; ```
     (define (bip49-account-key root account)
       (: any? integer? -> any?)
       (bip32-account-key root 49 account))
 
     ;;; Derive a BIP84 account key from a master extended key.
+    ;;;
+    ;;; ```scheme
+    ;;; (bip84-account-key (bip32-master-key (make-bytevector 32 1) bitcoin-mainnet) 0)
+    ;;; ```
     (define (bip84-account-key root account)
       (: any? integer? -> any?)
       (bip32-account-key root 84 account))
 
     ;;; Derive a BIP86 account key from a master extended key.
+    ;;;
+    ;;; ```scheme
+    ;;; (bip86-account-key (bip32-master-key (make-bytevector 32 1) bitcoin-mainnet) 0)
+    ;;; ```
     (define (bip86-account-key root account)
       (: any? integer? -> any?)
       (bip32-account-key root 86 account))
 
     ;;; Derive an external (`#f`) or change (`#t`) chain from an account key.
+    ;;;
+    ;;; ```scheme
+    ;;; (bip32-chain-key
+    ;;;   (bip84-account-key (bip32-master-key (make-bytevector 32 1) bitcoin-mainnet) 0)
+    ;;;   #f)
+    ;;; ```
     (define (bip32-chain-key account-key change?)
       (: any? boolean? -> any?)
       (let ((chain (if change? 1 0)))
@@ -621,6 +766,13 @@
                (error "bip32-chain-key: expected extended key")))))
 
     ;;; Derive an address key at `/change/index` from an account key.
+    ;;;
+    ;;; ```scheme
+    ;;; (bip32-address-key
+    ;;;   (bip84-account-key (bip32-master-key (make-bytevector 32 1) bitcoin-mainnet) 0)
+    ;;;   #f
+    ;;;   0)
+    ;;; ```
     (define (bip32-address-key account-key change? index)
       (: any? boolean? integer? -> any?)
       (let ((child (require-child-index "bip32-address-key" index))
@@ -667,6 +819,10 @@
           payload)))
 
     ;;; Serialize a BIP32 extended private key as Base58Check text.
+    ;;;
+    ;;; ```scheme
+    ;;; (bip32-xprv->string (bip32-master-key (make-bytevector 32 1) bitcoin-mainnet))
+    ;;; ```
     (define (bip32-xprv->string key)
       (: extended-private-key? -> string?)
       (let* ((network (extended-private-key-network key))
@@ -681,6 +837,12 @@
         (base58check-encode-bytes payload)))
 
     ;;; Serialize a BIP32 extended public key as Base58Check text.
+    ;;;
+    ;;; ```scheme
+    ;;; (bip32-xpub->string
+    ;;;   (extended-private-key->public-key
+    ;;;     (bip32-master-key (make-bytevector 32 1) bitcoin-mainnet)))
+    ;;; ```
     (define (bip32-xpub->string key)
       (: extended-public-key? -> string?)
       (let* ((network (extended-public-key-network key))
@@ -694,6 +856,12 @@
         (base58check-encode-bytes payload)))
 
     ;;; Serialize an extended private key with a SLIP-132 version prefix.
+    ;;;
+    ;;; ```scheme
+    ;;; (bip32-xprv->slip132-string
+    ;;;   (bip84-account-key (bip32-master-key (make-bytevector 32 1) bitcoin-mainnet) 0)
+    ;;;   "zprv")
+    ;;; ```
     (define (bip32-xprv->slip132-string key prefix)
       (: extended-private-key? string? -> string?)
       (let ((version (slip132-version prefix #t)))
@@ -710,6 +878,15 @@
                                (extended-private-key-private-key key))))))
 
     ;;; Serialize an extended public key with a SLIP-132 version prefix.
+    ;;;
+    ;;; ```scheme
+    ;;; (bip32-xpub->slip132-string
+    ;;;   (extended-private-key->public-key
+    ;;;     (bip84-account-key
+    ;;;       (bip32-master-key (make-bytevector 32 1) bitcoin-mainnet)
+    ;;;       0))
+    ;;;   "zpub")
+    ;;; ```
     (define (bip32-xpub->slip132-string key prefix)
       (: extended-public-key? string? -> string?)
       (let ((version (slip132-version prefix #f)))
@@ -725,6 +902,11 @@
             (extended-public-key-public-key key)))))
 
     ;;; Parse a Base58Check BIP32 extended private key.
+    ;;;
+    ;;; ```scheme
+    ;;; (string->bip32-xprv
+    ;;;   (bip32-xprv->string (bip32-master-key (make-bytevector 32 1) bitcoin-mainnet)))
+    ;;; ```
     (define (string->bip32-xprv str)
       (: string? -> extended-private-key?)
       (let* ((payload (base58check-decode-bytes str)))
@@ -746,6 +928,13 @@
             private-key: (require-private-key (bytevector-copy key-data 1 33))))))
 
     ;;; Parse a Base58Check BIP32 extended public key.
+    ;;;
+    ;;; ```scheme
+    ;;; (string->bip32-xpub
+    ;;;   (bip32-xpub->string
+    ;;;     (extended-private-key->public-key
+    ;;;       (bip32-master-key (make-bytevector 32 1) bitcoin-mainnet))))
+    ;;; ```
     (define (string->bip32-xpub str)
       (: string? -> extended-public-key?)
       (let* ((payload (base58check-decode-bytes str)))
@@ -767,6 +956,15 @@
             public-key: pub))))
 
     ;;; Parse a SLIP-132 extended private key into the standard key record.
+    ;;;
+    ;;; ```scheme
+    ;;; (string->bip32-slip132-xprv
+    ;;;   (bip32-xprv->slip132-string
+    ;;;     (bip84-account-key
+    ;;;       (bip32-master-key (make-bytevector 32 1) bitcoin-mainnet)
+    ;;;       0)
+    ;;;     "zprv"))
+    ;;; ```
     (define (string->bip32-slip132-xprv str)
       (: string? -> extended-private-key?)
       (let* ((payload (base58check-decode-bytes str)))
@@ -788,6 +986,16 @@
             private-key: (require-private-key (bytevector-copy key-data 1 33))))))
 
     ;;; Parse a SLIP-132 extended public key into the standard key record.
+    ;;;
+    ;;; ```scheme
+    ;;; (string->bip32-slip132-xpub
+    ;;;   (bip32-xpub->slip132-string
+    ;;;     (extended-private-key->public-key
+    ;;;       (bip84-account-key
+    ;;;         (bip32-master-key (make-bytevector 32 1) bitcoin-mainnet)
+    ;;;         0))
+    ;;;     "zpub"))
+    ;;; ```
     (define (string->bip32-slip132-xpub str)
       (: string? -> extended-public-key?)
       (let* ((payload (base58check-decode-bytes str)))
@@ -846,6 +1054,10 @@
                  (loop (+ i 1) (if start start i) parts))))))
 
     ;;; Convert BIP39 entropy bytes into an English mnemonic sentence.
+    ;;;
+    ;;; ```scheme
+    ;;; (bip39-entropy->mnemonic (make-bytevector 16 0))
+    ;;; ```
     (define (bip39-entropy->mnemonic entropy)
       (: bytevector? -> string?)
       (let* ((ent-bytes (bytevector-length entropy))
@@ -870,6 +1082,11 @@
             (set! words (cons (bip39-index->word index) words))))))
 
     ;;; Convert a BIP39 English mnemonic sentence back to entropy bytes.
+    ;;;
+    ;;; ```scheme
+    ;;; (bip39-mnemonic->entropy
+    ;;;   (bip39-entropy->mnemonic (make-bytevector 16 0)))
+    ;;; ```
     (define (bip39-mnemonic->entropy mnemonic)
       (: string? -> bytevector?)
       (let* ((words (split-words mnemonic))
@@ -964,6 +1181,12 @@
             (copy-block! out offset t count)))))
 
     ;;; Derive a 64-byte BIP39 seed from a mnemonic and optional passphrase.
+    ;;;
+    ;;; ```scheme
+    ;;; (bip39-mnemonic->seed
+    ;;;   (bip39-entropy->mnemonic (make-bytevector 16 0))
+    ;;;   "TREZOR")
+    ;;; ```
     (define (bip39-mnemonic->seed mnemonic . maybe-passphrase)
       (: string? string? ... -> bytevector?)
       (let ((passphrase (if (null? maybe-passphrase) "" (car maybe-passphrase))))

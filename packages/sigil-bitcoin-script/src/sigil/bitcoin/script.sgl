@@ -84,10 +84,18 @@
     (define op-checksequenceverify #xb2)
 
     ;;; Empty script bytevector.
+    ;;;
+    ;;; ```scheme
+    ;;; script-empty ; => #u8()
+    ;;; ```
     (define script-empty #u8())
 
     ;;; Parsed script chunk. `data` is a bytevector for push operations and
     ;;; `#f` for non-push opcodes.
+    ;;;
+    ;;; ```scheme
+    ;;; (script-chunk opcode: op-dup data: #f)
+    ;;; ```
     (define-struct script-chunk
       (opcode integer?)
       (data any?))
@@ -98,11 +106,19 @@
       value)
 
     ;;; Return a one-byte script containing the given opcode.
+    ;;;
+    ;;; ```scheme
+    ;;; (script-op op-checksig) ; => #u8(#xac)
+    ;;; ```
     (define (script-op opcode)
       (: integer? -> bytevector?)
       (make-bytevector 1 (require-u8 "script-op" opcode)))
 
     ;;; Concatenate script bytevector fragments.
+    ;;;
+    ;;; ```scheme
+    ;;; (script-append (script-op op-dup) (script-op op-hash160))
+    ;;; ```
     (define (script-append . parts)
       (: bytevector? ... -> bytevector?)
       (let ((total 0))
@@ -129,6 +145,10 @@
           (cons (car xs) (replace-last (cdr xs) value))))
 
     ;;; Encode a minimally-sized pushdata operation for a bytevector.
+    ;;;
+    ;;; ```scheme
+    ;;; (script-push-data #u8(1 2 3)) ; => #u8(3 1 2 3)
+    ;;; ```
     (define (script-push-data data)
       (: bytevector? -> bytevector?)
       (require-bytevector "script-push-data" data)
@@ -154,6 +174,10 @@
     ;;;
     ;;; Version 0 is encoded as OP_0. Versions 1 through 16 use OP_1 through
     ;;; OP_16 followed by the witness program push.
+    ;;;
+    ;;; ```scheme
+    ;;; (script-witness-program 0 (make-bytevector 20 0))
+    ;;; ```
     (define (script-witness-program version program)
       (: integer? bytevector? -> bytevector?)
       (require-bytevector "script-witness-program" program)
@@ -167,6 +191,10 @@
         (script-push-data program)))
 
     ;;; Build a standard P2PKH scriptPubKey from a 20-byte public key hash.
+    ;;;
+    ;;; ```scheme
+    ;;; (script-p2pkh (make-bytevector 20 1))
+    ;;; ```
     (define (script-p2pkh pubkey-hash)
       (: bytevector? -> bytevector?)
       (require-bytevector-length "script-p2pkh" pubkey-hash 20)
@@ -178,6 +206,10 @@
         (script-op op-checksig)))
 
     ;;; Build a standard P2SH scriptPubKey from a 20-byte script hash.
+    ;;;
+    ;;; ```scheme
+    ;;; (script-p2sh (make-bytevector 20 1))
+    ;;; ```
     (define (script-p2sh script-hash)
       (: bytevector? -> bytevector?)
       (require-bytevector-length "script-p2sh" script-hash 20)
@@ -187,18 +219,30 @@
         (script-op op-equal)))
 
     ;;; Build a native P2WPKH scriptPubKey from a 20-byte public key hash.
+    ;;;
+    ;;; ```scheme
+    ;;; (script-p2wpkh (make-bytevector 20 1))
+    ;;; ```
     (define (script-p2wpkh pubkey-hash)
       (: bytevector? -> bytevector?)
       (require-bytevector-length "script-p2wpkh" pubkey-hash 20)
       (script-witness-program 0 pubkey-hash))
 
     ;;; Build a native P2WSH scriptPubKey from a 32-byte witness script hash.
+    ;;;
+    ;;; ```scheme
+    ;;; (script-p2wsh (make-bytevector 32 1))
+    ;;; ```
     (define (script-p2wsh script-hash)
       (: bytevector? -> bytevector?)
       (require-bytevector-length "script-p2wsh" script-hash 32)
       (script-witness-program 0 script-hash))
 
     ;;; Build a native P2TR scriptPubKey from a 32-byte x-only public key.
+    ;;;
+    ;;; ```scheme
+    ;;; (script-p2tr (make-bytevector 32 1))
+    ;;; ```
     (define (script-p2tr xonly-pubkey)
       (: bytevector? -> bytevector?)
       (require-bytevector-length "script-p2tr" xonly-pubkey 32)
@@ -207,6 +251,10 @@
     ;;; Parse raw script bytes into opcode/data chunks.
     ;;;
     ;;; Raises an error for truncated pushdata encodings.
+    ;;;
+    ;;; ```scheme
+    ;;; (script-parse (script-push-data #u8(1 2 3)))
+    ;;; ```
     (define (script-parse script)
       (: bytevector? -> list?)
       (require-bytevector "script-parse" script)
@@ -267,6 +315,10 @@
 
     ;;; Encode an integer using Bitcoin Script's little-endian signed-magnitude
     ;;; number format.
+    ;;;
+    ;;; ```scheme
+    ;;; (script-number-encode -1) ; => #u8(#x81)
+    ;;; ```
     (define (script-number-encode n)
       (: integer? -> bytevector?)
       (unless (integer? n)
@@ -290,6 +342,10 @@
                         (cons (remainder v 256) bytes)))))))
 
     ;;; Decode a Bitcoin Script little-endian signed-magnitude number.
+    ;;;
+    ;;; ```scheme
+    ;;; (script-number-decode #u8(#x81)) ; => -1
+    ;;; ```
     (define (script-number-decode bytes)
       (: bytevector? -> integer?)
       (require-bytevector "script-number-decode" bytes)
@@ -359,6 +415,10 @@
             (opcode-name opcode))))
 
     ;;; Decompile raw script bytes to a simple Bitcoin Core-style ASM string.
+    ;;;
+    ;;; ```scheme
+    ;;; (script->asm (script-p2pkh (make-bytevector 20 1)))
+    ;;; ```
     (define (script->asm script)
       (: bytevector? -> string?)
       (join-strings
@@ -366,6 +426,10 @@
         " "))
 
     ;;; Alias for callers that use decompiler terminology.
+    ;;;
+    ;;; ```scheme
+    ;;; (script-decompile (script-op op-checksig))
+    ;;; ```
     (define (script-decompile script)
       (: bytevector? -> string?)
       (script->asm script))
@@ -375,6 +439,10 @@
     ;;; Returns `(version program)` for a valid witness program shape, otherwise
     ;;; `#f`. This validates only the script shape and witness program length;
     ;;; address-level Bech32 checksum rules live in `(sigil bitcoin encoding)`.
+    ;;;
+    ;;; ```scheme
+    ;;; (script-witness-program-decode (script-p2wpkh (make-bytevector 20 1)))
+    ;;; ```
     (define (script-witness-program-decode script)
       (: bytevector? -> (any-of list? boolean?))
       (require-bytevector "script-witness-program-decode" script)
@@ -399,6 +467,10 @@
     ;;;
     ;;; Returns one of `p2pkh`, `p2sh`, `p2wpkh`, `p2wsh`, `p2tr`, or
     ;;; `unknown`.
+    ;;;
+    ;;; ```scheme
+    ;;; (script-classify (script-p2tr (make-bytevector 32 1))) ; => p2tr
+    ;;; ```
     (define (script-classify script)
       (: bytevector? -> symbol?)
       (require-bytevector "script-classify" script)
@@ -432,6 +504,10 @@
     ;;;
     ;;; For P2PKH/P2SH this is the 20-byte hash. For witness outputs this is
     ;;; the witness program. Returns `#f` for unknown scripts.
+    ;;;
+    ;;; ```scheme
+    ;;; (script-standard-payload (script-p2wpkh (make-bytevector 20 1)))
+    ;;; ```
     (define (script-standard-payload script)
       (: bytevector? -> (any-of bytevector? boolean?))
       (case (script-classify script)

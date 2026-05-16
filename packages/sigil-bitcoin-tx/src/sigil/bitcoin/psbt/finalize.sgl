@@ -39,6 +39,10 @@
                     (cons (if sig sig #u8()) out))))))
 
     ;;; Finalize a signed P2PKH PSBT input.
+    ;;;
+    ;;; ```scheme
+    ;;; (psbt-finalize-p2pkh-input p 0)
+    ;;; ```
     (define (psbt-finalize-p2pkh-input p input-index)
       (: psbt? integer? -> psbt?)
       (validate-psbt p)
@@ -68,6 +72,10 @@
           (psbt-update-input p input-index final-input))))
 
     ;;; Finalize a signed P2WPKH PSBT input.
+    ;;;
+    ;;; ```scheme
+    ;;; (psbt-finalize-p2wpkh-input p 0)
+    ;;; ```
     (define (psbt-finalize-p2wpkh-input p input-index)
       (: psbt? integer? -> psbt?)
       (validate-psbt p)
@@ -95,6 +103,10 @@
           (psbt-update-input p input-index final-input))))
 
     ;;; Finalize a signed P2WSH single-key checksig PSBT input.
+    ;;;
+    ;;; ```scheme
+    ;;; (psbt-finalize-p2wsh-input p 0)
+    ;;; ```
     (define (psbt-finalize-p2wsh-input p input-index)
       (: psbt? integer? -> psbt?)
       (validate-psbt p)
@@ -127,6 +139,10 @@
           (psbt-update-input p input-index final-input))))
 
     ;;; Finalize a signed Taproot key-path PSBT input.
+    ;;;
+    ;;; ```scheme
+    ;;; (psbt-finalize-p2tr-keypath-input p 0)
+    ;;; ```
     (define (psbt-finalize-p2tr-keypath-input p input-index)
       (: psbt? integer? -> psbt?)
       (validate-psbt p)
@@ -153,6 +169,10 @@
           (psbt-update-input p input-index final-input))))
 
     ;;; Finalize a signed Taproot script-path PSBT input.
+    ;;;
+    ;;; ```scheme
+    ;;; (psbt-finalize-p2tr-scriptpath-input p 0)
+    ;;; ```
     (define (psbt-finalize-p2tr-scriptpath-input p input-index)
       (: psbt? integer? -> psbt?)
       (validate-psbt p)
@@ -203,6 +223,10 @@
             (psbt-update-input p input-index final-input)))))
 
     ;;; Finalize a standard P2PKH, P2WPKH, or key-path P2TR PSBT input.
+    ;;;
+    ;;; ```scheme
+    ;;; (psbt-finalize-standard-input p 0)
+    ;;; ```
     (define (psbt-finalize-standard-input p input-index)
       (: psbt? integer? -> psbt?)
       (validate-psbt p)
@@ -220,6 +244,10 @@
                (error "psbt-finalize-standard-input: unsupported prevout scriptPubKey")))))
 
     ;;; Extract the final transaction from a fully-finalized PSBT.
+    ;;;
+    ;;; ```scheme
+    ;;; (psbt-extract-transaction finalized-psbt)
+    ;;; ```
     (define (psbt-extract-transaction p)
       (: psbt? -> transaction?)
       (validate-psbt p)

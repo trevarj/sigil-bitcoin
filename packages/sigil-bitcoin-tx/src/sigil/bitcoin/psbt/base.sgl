@@ -43,6 +43,11 @@
     find-taproot-script-sig
     verify-taproot-leaf-prevout)
   (begin
+    ;;; Build an empty PSBT input map.
+    ;;;
+    ;;; ```scheme
+    ;;; (empty-psbt-input)
+    ;;; ```
     (define (empty-psbt-input)
       (: -> psbt-input?)
       (psbt-input non-witness-utxo: #f
@@ -60,12 +65,22 @@
                   taproot-bip32-derivations: '()
                   unknowns: '()))
 
+    ;;; Build an empty PSBT output map.
+    ;;;
+    ;;; ```scheme
+    ;;; (empty-psbt-output)
+    ;;; ```
     (define (empty-psbt-output)
       (: -> psbt-output?)
       (psbt-output bip32-derivations: '()
                    taproot-bip32-derivations: '()
                    unknowns: '()))
 
+    ;;; Validate unknown/proprietary raw PSBT key-value pairs.
+    ;;;
+    ;;; ```scheme
+    ;;; (validate-raw-keyvals "unknowns" (list (cons #u8(#xfc) #u8(#x01))))
+    ;;; ```
     (define (validate-raw-keyvals who keyvals)
       (: string? list? -> list?)
       (unless (list? keyvals)
@@ -80,6 +95,11 @@
           (when (= 0 (bytevector-length (car entry)))
             (error (string-append who ": empty key is reserved for map terminator"))))))
 
+    ;;; Validate a PSBT BIP32 origin value.
+    ;;;
+    ;;; ```scheme
+    ;;; (validate-bip32-origin-value "origin" #u8(0 0 0 0))
+    ;;; ```
     (define (validate-bip32-origin-value who value)
       (: string? bytevector? -> bytevector?)
       (require-bytevector who value)
@@ -88,6 +108,11 @@
         (error (string-append who ": expected fingerprint plus u32 path elements")))
       value)
 
+    ;;; Validate a PSBT Taproot origin value.
+    ;;;
+    ;;; ```scheme
+    ;;; (validate-taproot-origin-value "origin" #u8(0 0 0 0 0))
+    ;;; ```
     (define (validate-taproot-origin-value who value)
       (: string? bytevector? -> bytevector?)
       (require-bytevector who value)
@@ -100,6 +125,11 @@
           (error (string-append who ": expected leaf hashes, fingerprint, and u32 path elements"))))
       value)
 
+    ;;; Validate a PSBT BIP32 derivation association list.
+    ;;;
+    ;;; ```scheme
+    ;;; (validate-bip32-derivations "derivations" '() 33 validate-bip32-origin-value)
+    ;;; ```
     (define (validate-bip32-derivations who derivations key-length value-validator)
       (: string? list? integer? procedure? -> list?)
       (unless (list? derivations)
@@ -112,6 +142,11 @@
           (require-bytevector-length who (car entry) key-length)
           (value-validator who (cdr entry)))))
 
+    ;;; Validate a Schnorr signature with optional sighash byte.
+    ;;;
+    ;;; ```scheme
+    ;;; (validate-schnorr-signature "sig" (make-bytevector 64 1))
+    ;;; ```
     (define (validate-schnorr-signature who sig)
       (: string? bytevector? -> bytevector?)
       (let ((len (bytevector-length (require-bytevector who sig))))
@@ -119,6 +154,11 @@
           (error (string-append who ": expected 64 or 65 bytes"))))
       sig)
 
+    ;;; Validate PSBT Taproot script signatures.
+    ;;;
+    ;;; ```scheme
+    ;;; (validate-taproot-script-sigs "script sigs" '())
+    ;;; ```
     (define (validate-taproot-script-sigs who sigs)
       (: string? list? -> list?)
       (unless (list? sigs)
@@ -131,6 +171,11 @@
           (require-bytevector-length who (car entry) 64)
           (validate-schnorr-signature who (cdr entry)))))
 
+    ;;; Validate PSBT Taproot leaf script records.
+    ;;;
+    ;;; ```scheme
+    ;;; (validate-taproot-leaf-scripts "leaf scripts" '())
+    ;;; ```
     (define (validate-taproot-leaf-scripts who leaf-scripts)
       (: string? list? -> list?)
       (unless (list? leaf-scripts)
@@ -154,6 +199,10 @@
             (loop (+ i 1) (cons (maker) out)))))
 
     ;;; Create an empty PSBT from an unsigned transaction.
+    ;;;
+    ;;; ```scheme
+    ;;; (psbt-create (transaction-create 2 0))
+    ;;; ```
     (define (psbt-create unsigned-tx)
       (: transaction? -> psbt?)
       (validate-transaction unsigned-tx)
@@ -164,6 +213,11 @@
                                       empty-psbt-output)
             unknowns: '()))
 
+    ;;; Validate a PSBT input map and return it.
+    ;;;
+    ;;; ```scheme
+    ;;; (validate-psbt-input (empty-psbt-input))
+    ;;; ```
     (define (validate-psbt-input input)
       (: psbt-input? -> psbt-input?)
       (unless (psbt-input? input)
@@ -212,6 +266,11 @@
       (validate-raw-keyvals "psbt input unknowns" (psbt-input-unknowns input))
       input)
 
+    ;;; Validate a PSBT output map and return it.
+    ;;;
+    ;;; ```scheme
+    ;;; (validate-psbt-output (empty-psbt-output))
+    ;;; ```
     (define (validate-psbt-output output)
       (: psbt-output? -> psbt-output?)
       (unless (psbt-output? output)
@@ -229,6 +288,11 @@
       (validate-raw-keyvals "psbt output unknowns" (psbt-output-unknowns output))
       output)
 
+    ;;; Validate a PSBT record and return it.
+    ;;;
+    ;;; ```scheme
+    ;;; (validate-psbt (psbt-create (transaction-create 2 0)))
+    ;;; ```
     (define (validate-psbt p)
       (: psbt? -> psbt?)
       (unless (psbt? p)
@@ -247,6 +311,11 @@
       (do ((xs (psbt-outputs p) (cdr xs)))
           ((null? xs) p)
         (validate-psbt-output (car xs))))
+    ;;; Replace one PSBT input map.
+    ;;;
+    ;;; ```scheme
+    ;;; (psbt-update-input p 0 (empty-psbt-input))
+    ;;; ```
     (define (psbt-update-input p input-index input)
       (: psbt? integer? psbt-input? -> psbt?)
       (psbt unsigned-tx: (psbt-unsigned-tx p)
@@ -257,6 +326,11 @@
             outputs: (psbt-outputs p)
             unknowns: (psbt-unknowns p)))
 
+    ;;; Replace one PSBT output map.
+    ;;;
+    ;;; ```scheme
+    ;;; (psbt-update-output p 0 (empty-psbt-output))
+    ;;; ```
     (define (psbt-update-output p output-index output)
       (: psbt? integer? psbt-output? -> psbt?)
       (psbt unsigned-tx: (psbt-unsigned-tx p)
@@ -273,6 +347,11 @@
             ((equal? key (car (car entries))) #t)
             (else (entry-key-in? key (cdr entries)))))
 
+    ;;; Merge PSBT key-value pairs, preferring entries from `added`.
+    ;;;
+    ;;; ```scheme
+    ;;; (merge-keyvals existing-keyvals added-keyvals)
+    ;;; ```
     (define (merge-keyvals existing added)
       (: list? list? -> list?)
       (let loop ((xs existing)
@@ -285,6 +364,11 @@
                         out
                         (cons entry out)))))))
 
+    ;;; Return true for a standard P2PKH scriptPubKey.
+    ;;;
+    ;;; ```scheme
+    ;;; (script-p2pkh? (script-p2pkh (make-bytevector 20 1)))
+    ;;; ```
     (define (script-p2pkh? script)
       (: bytevector? -> boolean?)
       (and (= 25 (bytevector-length script))
@@ -294,29 +378,54 @@
            (= op-equalverify (bytevector-u8-ref script 23))
            (= op-checksig (bytevector-u8-ref script 24))))
 
+    ;;; Return true for a standard P2WPKH scriptPubKey.
+    ;;;
+    ;;; ```scheme
+    ;;; (script-p2wpkh? (script-p2wpkh (make-bytevector 20 1)))
+    ;;; ```
     (define (script-p2wpkh? script)
       (: bytevector? -> boolean?)
       (and (= 22 (bytevector-length script))
            (= op-0 (bytevector-u8-ref script 0))
            (= #x14 (bytevector-u8-ref script 1))))
 
+    ;;; Return true for a standard P2WSH scriptPubKey.
+    ;;;
+    ;;; ```scheme
+    ;;; (script-p2wsh? (script-p2wsh (make-bytevector 32 1)))
+    ;;; ```
     (define (script-p2wsh? script)
       (: bytevector? -> boolean?)
       (and (= 34 (bytevector-length script))
            (= op-0 (bytevector-u8-ref script 0))
            (= #x20 (bytevector-u8-ref script 1))))
 
+    ;;; Return true for a standard P2TR scriptPubKey.
+    ;;;
+    ;;; ```scheme
+    ;;; (script-p2tr? (script-p2tr (make-bytevector 32 1)))
+    ;;; ```
     (define (script-p2tr? script)
       (: bytevector? -> boolean?)
       (and (= 34 (bytevector-length script))
            (= op-1 (bytevector-u8-ref script 0))
            (= #x20 (bytevector-u8-ref script 1))))
+    ;;; Return an input sighash type or a caller-provided default.
+    ;;;
+    ;;; ```scheme
+    ;;; (psbt-input-sighash-or-default (empty-psbt-input) sighash-all)
+    ;;; ```
     (define (psbt-input-sighash-or-default input default)
       (: psbt-input? integer? -> integer?)
       (if (psbt-input-sighash-type input)
           (psbt-input-sighash-type input)
           default))
 
+    ;;; Resolve an input prevout from its full non-witness UTXO.
+    ;;;
+    ;;; ```scheme
+    ;;; (psbt-prevout-from-non-witness-utxo p 0 input "example")
+    ;;; ```
     (define (psbt-prevout-from-non-witness-utxo p input-index input who)
       (: psbt? integer? psbt-input? string? -> txout?)
       (let ((prev-tx (psbt-input-non-witness-utxo input)))
@@ -332,6 +441,11 @@
                     (outpoint-index op)
                     who))))
 
+    ;;; Resolve one PSBT input's previous output.
+    ;;;
+    ;;; ```scheme
+    ;;; (psbt-input-prevout p 0 "example")
+    ;;; ```
     (define (psbt-input-prevout p input-index who)
       (: psbt? integer? string? -> txout?)
       (let* ((input (nth-item (psbt-inputs p) input-index who))
@@ -340,6 +454,11 @@
             witness-utxo
             (psbt-prevout-from-non-witness-utxo p input-index input who))))
 
+    ;;; Resolve all PSBT input previous outputs.
+    ;;;
+    ;;; ```scheme
+    ;;; (psbt-prevouts p "example")
+    ;;; ```
     (define (psbt-prevouts p who)
       (: psbt? string? -> list?)
       (let loop ((i 0)
@@ -351,6 +470,11 @@
                   (cdr inputs)
                   (cons (psbt-input-prevout p i who) out)))))
 
+    ;;; Extract the pubkey from a simple `<pubkey> OP_CHECKSIG` witness script.
+    ;;;
+    ;;; ```scheme
+    ;;; (witness-script-pk-checksig-pubkey script)
+    ;;; ```
     (define (witness-script-pk-checksig-pubkey script)
       (: bytevector? -> any?)
       (if (and (= 35 (bytevector-length script))
@@ -359,6 +483,11 @@
           (bytevector-copy script 1 34)
           #f))
 
+    ;;; Extract the x-only pubkey from a simple Taproot CHECKSIG script.
+    ;;;
+    ;;; ```scheme
+    ;;; (tapscript-pk-checksig-pubkey script)
+    ;;; ```
     (define (tapscript-pk-checksig-pubkey script)
       (: bytevector? -> any?)
       (if (and (= 34 (bytevector-length script))
@@ -378,6 +507,11 @@
               (else
                (error (string-append who ": expected script number"))))))
 
+    ;;; Extract threshold and x-only keys from a simple `multi_a` tapscript.
+    ;;;
+    ;;; ```scheme
+    ;;; (tapscript-multi-a-pubkeys script)
+    ;;; ```
     (define (tapscript-multi-a-pubkeys script)
       (: bytevector? -> any?)
       (let ((len (bytevector-length script)))
@@ -411,6 +545,11 @@
             ((equal? needle (car xs)) #t)
             (else (bytevector-member? needle (cdr xs)))))
 
+    ;;; Extract the x-only witness program from a P2TR scriptPubKey.
+    ;;;
+    ;;; ```scheme
+    ;;; (p2tr-script-xonly (script-p2tr (make-bytevector 32 1)))
+    ;;; ```
     (define (p2tr-script-xonly script)
       (: bytevector? -> any?)
       (if (and (= 34 (bytevector-length script))
@@ -419,12 +558,22 @@
           (bytevector-copy script 2 34)
           #f))
 
+    ;;; Compute the TapLeaf hash for a PSBT Taproot leaf script record.
+    ;;;
+    ;;; ```scheme
+    ;;; (taproot-leaf-script-hash leaf-script)
+    ;;; ```
     (define (taproot-leaf-script-hash leaf-script)
       (: psbt-taproot-leaf-script? -> bytevector?)
       (taproot-leaf-hash
         (psbt-taproot-leaf-script-script leaf-script)
         (psbt-taproot-leaf-script-leaf-version leaf-script)))
 
+    ;;; Find the Taproot leaf script that spends with an x-only pubkey.
+    ;;;
+    ;;; ```scheme
+    ;;; (find-taproot-leaf-for-pubkey leaf-scripts xonly-pubkey "example")
+    ;;; ```
     (define (find-taproot-leaf-for-pubkey leaf-scripts xonly-pubkey who)
       (: list? bytevector? string? -> psbt-taproot-leaf-script?)
       (let loop ((xs leaf-scripts))
@@ -439,6 +588,11 @@
                (car xs))
               (else (loop (cdr xs))))))
 
+    ;;; Find a Taproot script-path signature by key and leaf hash.
+    ;;;
+    ;;; ```scheme
+    ;;; (find-taproot-script-sig script-sigs xonly-pubkey leaf-hash "example")
+    ;;; ```
     (define (find-taproot-script-sig script-sigs xonly-pubkey leaf-hash who)
       (: list? bytevector? bytevector? string? -> bytevector?)
       (let ((wanted-key (bytevector-append xonly-pubkey leaf-hash)))
@@ -448,6 +602,11 @@
                 ((equal? wanted-key (car (car xs))) (cdr (car xs)))
                 (else (loop (cdr xs)))))))
 
+    ;;; Verify that a Taproot leaf script control block matches the UTXO.
+    ;;;
+    ;;; ```scheme
+    ;;; (verify-taproot-leaf-prevout utxo leaf-script leaf-hash "example")
+    ;;; ```
     (define (verify-taproot-leaf-prevout utxo leaf-script leaf-hash who)
       (: txout? psbt-taproot-leaf-script? bytevector? string? -> void?)
       (let* ((script (txout-script-pubkey utxo))

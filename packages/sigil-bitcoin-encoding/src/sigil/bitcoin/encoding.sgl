@@ -19,6 +19,10 @@
               (else #f))))
 
     ;;; Encode a bytevector as lowercase hexadecimal text.
+    ;;;
+    ;;; ```scheme
+    ;;; (hex-encode #u8(0 15 255)) ; => "000fff"
+    ;;; ```
     (define (hex-encode bytes)
       (: bytevector? -> string?)
       (let* ((len (bytevector-length bytes))
@@ -35,6 +39,10 @@
     ;;; Decode an even-length hexadecimal string into a bytevector.
     ;;;
     ;;; Raises an error for odd-length input or invalid hex characters.
+    ;;;
+    ;;; ```scheme
+    ;;; (hex-decode "000fff") ; => #u8(0 15 255)
+    ;;; ```
     (define (hex-decode str)
       (: string? -> bytevector?)
       (let ((len (string-length str)))
@@ -65,6 +73,10 @@
     ;;; Encode a bytevector with Bitcoin's Base58 alphabet.
     ;;;
     ;;; Leading zero bytes are preserved as leading `1` characters.
+    ;;;
+    ;;; ```scheme
+    ;;; (base58-encode #u8(0 0 1)) ; => "112"
+    ;;; ```
     (define (base58-encode bytes)
       (: bytevector? -> string?)
       (let ((len (bytevector-length bytes)))
@@ -107,6 +119,10 @@
     ;;;
     ;;; Raises an error if the string contains characters outside the
     ;;; Bitcoin Base58 alphabet.
+    ;;;
+    ;;; ```scheme
+    ;;; (base58-decode "112") ; => #u8(0 0 1)
+    ;;; ```
     (define (base58-decode str)
       (: string? -> bytevector?)
       (let* ((slen (string-length str))
@@ -147,6 +163,10 @@
     ;;; Encode a Base58Check payload with a one-byte version prefix.
     ;;;
     ;;; The checksum is the first four bytes of HASH256(version || payload).
+    ;;;
+    ;;; ```scheme
+    ;;; (base58check-encode #x00 #u8(1 2 3 4))
+    ;;; ```
     (define (base58check-encode version payload)
       (: integer? bytevector? -> string?)
       (let* ((vlen (bytevector-length payload))
@@ -168,6 +188,10 @@
     ;;; Decode a Base58Check string.
     ;;;
     ;;; Returns `(version . payload)` and raises an error on checksum failure.
+    ;;;
+    ;;; ```scheme
+    ;;; (base58check-decode (base58check-encode #x00 #u8(1 2 3 4)))
+    ;;; ```
     (define (base58check-decode str)
       (: string? -> list?)
       (let* ((raw (base58-decode str))
@@ -270,8 +294,11 @@
 
     ;;; Encode a Bech32 string using the BIP173 checksum constant.
     ;;;
-    ;;; `hrp` is the human-readable part and `data` is a bytevector of
-    ;;; 5-bit values.
+    ;;; `hrp` is the human-readable part and `data` is a list of 5-bit values.
+    ;;;
+    ;;; ```scheme
+    ;;; (bech32-encode "bc" '(0 14 20 15))
+    ;;; ```
     (define (bech32-encode hrp data)
       (: string? list? -> string?)
       (let ((cksum (bech32-create-checksum hrp data 1)))
@@ -284,6 +311,10 @@
     ;;; Decode a Bech32 string.
     ;;;
     ;;; Returns `(hrp . data)` where `data` excludes the six checksum values.
+    ;;;
+    ;;; ```scheme
+    ;;; (bech32-decode (bech32-encode "bc" '(0 14 20 15)))
+    ;;; ```
     (define (bech32-decode str)
       (: string? -> any?)
       (let* ((len (string-length str))
@@ -327,6 +358,10 @@
                                 #f))))))))))
 
     ;;; Encode a Bech32m string using the BIP350 checksum constant.
+    ;;;
+    ;;; ```scheme
+    ;;; (bech32m-encode "bc" '(1 14 20 15))
+    ;;; ```
     (define (bech32m-encode hrp data)
       (: string? list? -> string?)
       (let ((cksum (bech32-create-checksum hrp data %bech32m-const)))
@@ -339,6 +374,10 @@
     ;;; Decode a Bech32m string.
     ;;;
     ;;; Returns `(hrp . data)` where `data` excludes the six checksum values.
+    ;;;
+    ;;; ```scheme
+    ;;; (bech32m-decode (bech32m-encode "bc" '(1 14 20 15)))
+    ;;; ```
     (define (bech32m-decode str)
       (: string? -> any?)
       (let* ((len (string-length str))
@@ -438,6 +477,10 @@
     ;;; Encode a native SegWit address for a witness version and program.
     ;;;
     ;;; Version 0 uses Bech32. Versions 1 through 16 use Bech32m.
+    ;;;
+    ;;; ```scheme
+    ;;; (segwit-encode "bc" 0 (make-bytevector 20 0))
+    ;;; ```
     (define (segwit-encode hrp version program)
       (: string? integer? bytevector? -> string?)
       (let* ((bytes (let ((vals '()))
@@ -458,6 +501,10 @@
     ;;;
     ;;; Returns `(hrp version . program)` and validates the checksum variant
     ;;; required by the witness version.
+    ;;;
+    ;;; ```scheme
+    ;;; (segwit-decode (segwit-encode "bc" 0 (make-bytevector 20 0)))
+    ;;; ```
     (define (segwit-decode addr)
       (: string? -> any?)
       (let ((upper (string-upcase addr)))

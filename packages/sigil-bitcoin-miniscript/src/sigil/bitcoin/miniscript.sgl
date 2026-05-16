@@ -484,6 +484,10 @@
                 (else (loop (+ i 1)))))))
 
     ;;; Compute the BIP341 TapLeaf hash for a tapscript leaf.
+    ;;;
+    ;;; ```scheme
+    ;;; (taproot-leaf-hash #u8(#x51))
+    ;;; ```
     (define (taproot-leaf-hash script)
       (: bytevector? -> bytevector?)
       (tagged-hash
@@ -494,6 +498,10 @@
           script)))
 
     ;;; Compute the BIP341 TapBranch hash with lexicographically sorted children.
+    ;;;
+    ;;; ```scheme
+    ;;; (taproot-branch-hash (make-bytevector 32 1) (make-bytevector 32 2))
+    ;;; ```
     (define (taproot-branch-hash left right)
       (: bytevector? bytevector? -> bytevector?)
       (let* ((right-first? (bytevector-lexicographic<? right left))
@@ -502,6 +510,10 @@
         (tagged-hash "TapBranch" (bytevector-append a b))))
 
     ;;; Compute a BIP341 Taproot output x-only public key.
+    ;;;
+    ;;; ```scheme
+    ;;; (taproot-output-xonly (make-bytevector 32 1))
+    ;;; ```
     (define (taproot-output-xonly internal-xonly . maybe-merkle-root)
       (: bytevector? bytevector? ... -> bytevector?)
       (let* ((merkle-root (if (null? maybe-merkle-root) #f (car maybe-merkle-root)))
@@ -542,46 +554,82 @@
       value)
 
     ;;; Construct a `pk_k(key)` Miniscript fragment.
+    ;;;
+    ;;; ```scheme
+    ;;; (miniscript-pk-k "02...")
+    ;;; ```
     (define (miniscript-pk-k key)
       (: any? -> miniscript-fragment?)
       (miniscript-fragment kind: 'pk-k args: '() data: (require-key "miniscript-pk-k" key)))
 
     ;;; Construct a `pk_h(key)` Miniscript fragment.
+    ;;;
+    ;;; ```scheme
+    ;;; (miniscript-pk-h "02...")
+    ;;; ```
     (define (miniscript-pk-h key)
       (: any? -> miniscript-fragment?)
       (miniscript-fragment kind: 'pk-h args: '() data: (require-key "miniscript-pk-h" key)))
 
     ;;; Construct the `pk(key)` alias for `c:pk_k(key)`.
+    ;;;
+    ;;; ```scheme
+    ;;; (miniscript-pk "02...")
+    ;;; ```
     (define (miniscript-pk key)
       (: any? -> miniscript-fragment?)
       (miniscript-fragment kind: 'pk args: '() data: (require-key "miniscript-pk" key)))
 
     ;;; Construct an absolute locktime `after(n)` fragment.
+    ;;;
+    ;;; ```scheme
+    ;;; (miniscript-after 500000)
+    ;;; ```
     (define (miniscript-after locktime)
       (: integer? -> miniscript-fragment?)
       (miniscript-fragment kind: 'after args: '() data: (require-locktime "miniscript-after" locktime)))
 
     ;;; Construct a relative locktime `older(n)` fragment.
+    ;;;
+    ;;; ```scheme
+    ;;; (miniscript-older 144)
+    ;;; ```
     (define (miniscript-older sequence)
       (: integer? -> miniscript-fragment?)
       (miniscript-fragment kind: 'older args: '() data: (require-locktime "miniscript-older" sequence)))
 
     ;;; Construct a `sha256(hash)` preimage fragment.
+    ;;;
+    ;;; ```scheme
+    ;;; (miniscript-sha256 (make-bytevector 32 1))
+    ;;; ```
     (define (miniscript-sha256 hash)
       (: bytevector? -> miniscript-fragment?)
       (miniscript-fragment kind: 'sha256 args: '() data: (require-hash "miniscript-sha256" hash 32)))
 
     ;;; Construct a `hash256(hash)` preimage fragment.
+    ;;;
+    ;;; ```scheme
+    ;;; (miniscript-hash256 (make-bytevector 32 1))
+    ;;; ```
     (define (miniscript-hash256 hash)
       (: bytevector? -> miniscript-fragment?)
       (miniscript-fragment kind: 'hash256 args: '() data: (require-hash "miniscript-hash256" hash 32)))
 
     ;;; Construct a `ripemd160(hash)` preimage fragment.
+    ;;;
+    ;;; ```scheme
+    ;;; (miniscript-ripemd160 (make-bytevector 20 1))
+    ;;; ```
     (define (miniscript-ripemd160 hash)
       (: bytevector? -> miniscript-fragment?)
       (miniscript-fragment kind: 'ripemd160 args: '() data: (require-hash "miniscript-ripemd160" hash 20)))
 
     ;;; Construct a `hash160(hash)` preimage fragment.
+    ;;;
+    ;;; ```scheme
+    ;;; (miniscript-hash160 (make-bytevector 20 1))
+    ;;; ```
     (define (miniscript-hash160 hash)
       (: bytevector? -> miniscript-fragment?)
       (miniscript-fragment kind: 'hash160 args: '() data: (require-hash "miniscript-hash160" hash 20)))
@@ -593,6 +641,10 @@
           (error (string-append who ": expected miniscript fragment")))))
 
     ;;; Construct a `multi(k, keys...)` multisig fragment.
+    ;;;
+    ;;; ```scheme
+    ;;; (miniscript-multi 2 '("02..." "03..."))
+    ;;; ```
     (define (miniscript-multi threshold keys)
       (: integer? list? -> miniscript-fragment?)
       (unless (and (integer? threshold) (> threshold 0) (<= threshold (length keys)) (<= (length keys) 16))
@@ -603,6 +655,10 @@
       (miniscript-fragment kind: 'multi args: keys data: threshold))
 
     ;;; Construct a `sortedmulti(k, keys...)` multisig fragment.
+    ;;;
+    ;;; ```scheme
+    ;;; (miniscript-sortedmulti 2 '("02..." "03..."))
+    ;;; ```
     (define (miniscript-sortedmulti threshold keys)
       (: integer? list? -> miniscript-fragment?)
       (unless (and (integer? threshold) (> threshold 0) (<= threshold (length keys)) (<= (length keys) 16))
@@ -613,6 +669,10 @@
       (miniscript-fragment kind: 'sortedmulti args: keys data: threshold))
 
     ;;; Construct a `multi_a(k, keys...)` Tapscript CHECKSIGADD fragment.
+    ;;;
+    ;;; ```scheme
+    ;;; (miniscript-multi-a 2 '("xonly-a" "xonly-b"))
+    ;;; ```
     (define (miniscript-multi-a threshold keys)
       (: integer? list? -> miniscript-fragment?)
       (unless (and (integer? threshold) (> threshold 0) (<= threshold (length keys)) (<= (length keys) 999))
@@ -623,41 +683,73 @@
       (miniscript-fragment kind: 'multi-a args: keys data: threshold))
 
     ;;; Construct an `and_v(left, right)` fragment.
+    ;;;
+    ;;; ```scheme
+    ;;; (miniscript-and-v (miniscript-pk "02...") (miniscript-after 500000))
+    ;;; ```
     (define (miniscript-and-v left right)
       (: miniscript-fragment? miniscript-fragment? -> miniscript-fragment?)
       (miniscript-fragment kind: 'and-v args: (list left right) data: #f))
 
     ;;; Construct an `and_b(left, right)` fragment.
+    ;;;
+    ;;; ```scheme
+    ;;; (miniscript-and-b (miniscript-pk "02...") (miniscript-older 144))
+    ;;; ```
     (define (miniscript-and-b left right)
       (: miniscript-fragment? miniscript-fragment? -> miniscript-fragment?)
       (miniscript-fragment kind: 'and-b args: (list left right) data: #f))
 
     ;;; Construct an `andor(left, then, else)` fragment.
+    ;;;
+    ;;; ```scheme
+    ;;; (miniscript-andor (miniscript-pk "02...") (miniscript-after 1) (miniscript-older 1))
+    ;;; ```
     (define (miniscript-andor left then-fragment else-fragment)
       (: miniscript-fragment? miniscript-fragment? miniscript-fragment? -> miniscript-fragment?)
       (miniscript-fragment kind: 'andor args: (list left then-fragment else-fragment) data: #f))
 
     ;;; Construct an `or_b(left, right)` fragment.
+    ;;;
+    ;;; ```scheme
+    ;;; (miniscript-or-b (miniscript-pk "02...") (miniscript-after 500000))
+    ;;; ```
     (define (miniscript-or-b left right)
       (: miniscript-fragment? miniscript-fragment? -> miniscript-fragment?)
       (miniscript-fragment kind: 'or-b args: (list left right) data: #f))
 
     ;;; Construct an `or_c(left, right)` fragment.
+    ;;;
+    ;;; ```scheme
+    ;;; (miniscript-or-c (miniscript-pk "02...") (miniscript-after 500000))
+    ;;; ```
     (define (miniscript-or-c left right)
       (: miniscript-fragment? miniscript-fragment? -> miniscript-fragment?)
       (miniscript-fragment kind: 'or-c args: (list left right) data: #f))
 
     ;;; Construct an `or_d(left, right)` fragment.
+    ;;;
+    ;;; ```scheme
+    ;;; (miniscript-or-d (miniscript-pk "02...") (miniscript-after 500000))
+    ;;; ```
     (define (miniscript-or-d left right)
       (: miniscript-fragment? miniscript-fragment? -> miniscript-fragment?)
       (miniscript-fragment kind: 'or-d args: (list left right) data: #f))
 
     ;;; Construct an `or_i(left, right)` fragment.
+    ;;;
+    ;;; ```scheme
+    ;;; (miniscript-or-i (miniscript-pk "02...") (miniscript-after 500000))
+    ;;; ```
     (define (miniscript-or-i left right)
       (: miniscript-fragment? miniscript-fragment? -> miniscript-fragment?)
       (miniscript-fragment kind: 'or-i args: (list left right) data: #f))
 
     ;;; Construct a `thresh(k, fragments...)` fragment.
+    ;;;
+    ;;; ```scheme
+    ;;; (miniscript-thresh 1 (list (miniscript-pk "02...") (miniscript-after 500000)))
+    ;;; ```
     (define (miniscript-thresh threshold fragments)
       (: integer? list? -> miniscript-fragment?)
       (unless (and (integer? threshold) (> threshold 0) (<= threshold (length fragments)))
@@ -666,6 +758,10 @@
       (miniscript-fragment kind: 'thresh args: fragments data: threshold))
 
     ;;; Apply wrapper characters to a Miniscript fragment.
+    ;;;
+    ;;; ```scheme
+    ;;; (miniscript-wrapper "c" (miniscript-pk-k "02..."))
+    ;;; ```
     (define (miniscript-wrapper wrappers fragment)
       (: string? miniscript-fragment? -> miniscript-fragment?)
       (unless (and (string? wrappers) (> (string-length wrappers) 0))
@@ -826,6 +922,10 @@
                    (error "miniscript-parse: unsupported fragment"))))))
 
     ;;; Parse a Miniscript expression into a fragment AST.
+    ;;;
+    ;;; ```scheme
+    ;;; (miniscript-parse "pk(02...)")
+    ;;; ```
     (define (miniscript-parse s)
       (: string? -> miniscript-fragment?)
       (parse-fragment (strip-whitespace s)))
@@ -840,41 +940,73 @@
               (else (loop (cdr xs))))))
 
     ;;; Test if a value is a `miniscript-type-info` record.
+    ;;;
+    ;;; ```scheme
+    ;;; (miniscript-type-info? (miniscript-type-info (miniscript-pk "02...")))
+    ;;; ```
     (define (miniscript-type-info? value)
       (: any? -> boolean?)
       (miniscript-type-info-record? value))
 
     ;;; Return the Miniscript base type symbol.
+    ;;;
+    ;;; ```scheme
+    ;;; (miniscript-type-info-base (miniscript-type-info (miniscript-pk "02...")))
+    ;;; ```
     (define (miniscript-type-info-base info)
       (: miniscript-type-info-record? -> symbol?)
       (miniscript-type-info-record-base info))
 
     ;;; Return Miniscript satisfaction property symbols.
+    ;;;
+    ;;; ```scheme
+    ;;; (miniscript-type-info-properties (miniscript-type-info (miniscript-pk "02...")))
+    ;;; ```
     (define (miniscript-type-info-properties info)
       (: miniscript-type-info-record? -> list?)
       (miniscript-type-info-record-properties info))
 
     ;;; Return the estimated satisfaction stack item count.
+    ;;;
+    ;;; ```scheme
+    ;;; (miniscript-type-info-satisfaction-items (miniscript-type-info (miniscript-pk "02...")))
+    ;;; ```
     (define (miniscript-type-info-satisfaction-items info)
       (: miniscript-type-info-record? -> integer?)
       (miniscript-type-info-record-satisfaction-items info))
 
     ;;; Return true when satisfaction requires a signature.
+    ;;;
+    ;;; ```scheme
+    ;;; (miniscript-type-info-requires-signature (miniscript-type-info (miniscript-pk "02...")))
+    ;;; ```
     (define (miniscript-type-info-requires-signature info)
       (: miniscript-type-info-record? -> boolean?)
       (miniscript-type-info-record-requires-signature info))
 
     ;;; Return true when satisfaction requires a hash preimage.
+    ;;;
+    ;;; ```scheme
+    ;;; (miniscript-type-info-requires-preimage (miniscript-type-info (miniscript-pk "02...")))
+    ;;; ```
     (define (miniscript-type-info-requires-preimage info)
       (: miniscript-type-info-record? -> boolean?)
       (miniscript-type-info-record-requires-preimage info))
 
     ;;; Return true when the fragment contains a timelock.
+    ;;;
+    ;;; ```scheme
+    ;;; (miniscript-type-info-has-timelock (miniscript-type-info (miniscript-after 500000)))
+    ;;; ```
     (define (miniscript-type-info-has-timelock info)
       (: miniscript-type-info-record? -> boolean?)
       (miniscript-type-info-record-has-timelock info))
 
     ;;; Return true when the fragment is treated as nonmalleable.
+    ;;;
+    ;;; ```scheme
+    ;;; (miniscript-type-info-nonmalleable (miniscript-type-info (miniscript-pk "02...")))
+    ;;; ```
     (define (miniscript-type-info-nonmalleable info)
       (: miniscript-type-info-record? -> boolean?)
       (miniscript-type-info-record-nonmalleable info))
@@ -933,6 +1065,10 @@
         nonmalleable))
 
     ;;; Return Miniscript base type and signing/satisfaction metadata.
+    ;;;
+    ;;; ```scheme
+    ;;; (miniscript-type-info (miniscript-pk "02..."))
+    ;;; ```
     (define (miniscript-type-info fragment)
       (: miniscript-fragment? -> any?)
       (unless (miniscript-fragment? fragment)
@@ -993,11 +1129,19 @@
                (error "miniscript-type-info: unsupported fragment")))))
 
     ;;; Return the coarse Miniscript base type for a fragment.
+    ;;;
+    ;;; ```scheme
+    ;;; (miniscript-type (miniscript-pk "02..."))
+    ;;; ```
     (define (miniscript-type fragment)
       (: miniscript-fragment? -> symbol?)
       (miniscript-type-info-base (miniscript-type-info fragment)))
 
     ;;; Validate a Miniscript fragment and return its coarse base type.
+    ;;;
+    ;;; ```scheme
+    ;;; (miniscript-type-check (miniscript-pk "02..."))
+    ;;; ```
     (define (miniscript-type-check fragment)
       (: miniscript-fragment? -> boolean?)
       (and (miniscript-type fragment) #t))
@@ -1028,6 +1172,10 @@
         ","))
 
     ;;; Render a Miniscript fragment to its canonical string form.
+    ;;;
+    ;;; ```scheme
+    ;;; (miniscript->string (miniscript-pk "02..."))
+    ;;; ```
     (define (miniscript->string fragment)
       (: miniscript-fragment? -> string?)
       (let ((kind (miniscript-fragment-kind fragment)))
@@ -1296,11 +1444,19 @@
                (error "miniscript-compile: unsupported fragment")))))
 
     ;;; Compile a supported Miniscript fragment into script bytes.
+    ;;;
+    ;;; ```scheme
+    ;;; (miniscript-compile (miniscript-pk "02..."))
+    ;;; ```
     (define (miniscript-compile fragment)
       (: miniscript-fragment? -> bytevector?)
       (compile-fragment fragment #f))
 
     ;;; Compile a supported Miniscript fragment into BIP342 tapscript bytes.
+    ;;;
+    ;;; ```scheme
+    ;;; (miniscript-compile-tapscript (miniscript-pk "xonly..."))
+    ;;; ```
     (define (miniscript-compile-tapscript fragment)
       (: miniscript-fragment? -> bytevector?)
       (compile-fragment fragment #t))
@@ -1386,6 +1542,10 @@
              (error "descriptor->string: unsupported Taproot script tree"))))
 
     ;;; Compile a parsed Taproot script tree into its BIP341 Merkle root.
+    ;;;
+    ;;; ```scheme
+    ;;; (taproot-tree-root (miniscript-pk "xonly..."))
+    ;;; ```
     (define (taproot-tree-root tree)
       (: any? -> bytevector?)
       (cond ((miniscript-fragment? tree)
@@ -1469,6 +1629,10 @@
               (loop (+ i 1) (cons v out))))))
 
     ;;; Compute the BIP380 8-character descriptor checksum.
+    ;;;
+    ;;; ```scheme
+    ;;; (descriptor-checksum "wpkh(02...)")
+    ;;; ```
     (define (descriptor-checksum descriptor-text)
       (: string? -> string?)
       (when (string-contains-char? descriptor-text #\#)
@@ -1483,11 +1647,19 @@
             (string-set! out i (string-ref %descriptor-checksum-charset v))))))
 
     ;;; Append a BIP380 checksum to a descriptor string.
+    ;;;
+    ;;; ```scheme
+    ;;; (descriptor-add-checksum "wpkh(02...)")
+    ;;; ```
     (define (descriptor-add-checksum descriptor-text)
       (: string? -> string?)
       (string-append descriptor-text "#" (descriptor-checksum descriptor-text)))
 
     ;;; Return true when a descriptor contains a valid BIP380 checksum.
+    ;;;
+    ;;; ```scheme
+    ;;; (descriptor-checksum-valid? (descriptor-add-checksum "wpkh(02...)"))
+    ;;; ```
     (define (descriptor-checksum-valid? descriptor-text)
       (: string? -> boolean?)
       (let ((len (string-length descriptor-text)))
@@ -1504,6 +1676,10 @@
                              (descriptor-checksum-values checksum))))))))))
 
     ;;; Remove and validate a checksum when one is present.
+    ;;;
+    ;;; ```scheme
+    ;;; (descriptor-strip-checksum (descriptor-add-checksum "wpkh(02...)"))
+    ;;; ```
     (define (descriptor-strip-checksum descriptor-text)
       (: string? -> string?)
       (let ((separator (string-index-char descriptor-text #\#)))
@@ -1536,11 +1712,19 @@
              (error "descriptor-parse: unsupported descriptor"))))
 
     ;;; Parse an output descriptor into a descriptor AST.
+    ;;;
+    ;;; ```scheme
+    ;;; (descriptor-parse "wpkh(02...)")
+    ;;; ```
     (define (descriptor-parse s)
       (: string? -> descriptor?)
       (parse-descriptor-inner (descriptor-strip-checksum (strip-whitespace s))))
 
     ;;; Render a descriptor AST to a canonical descriptor string.
+    ;;;
+    ;;; ```scheme
+    ;;; (descriptor->string (descriptor-parse "wpkh(02...)"))
+    ;;; ```
     (define (descriptor->string desc)
       (: descriptor? -> string?)
       (let ((kind (descriptor-kind desc)))
@@ -1579,6 +1763,10 @@
     ;;;
     ;;; Requires concrete public keys for descriptors that directly encode
     ;;; address scripts.
+    ;;;
+    ;;; ```scheme
+    ;;; (descriptor-script-pubkey (descriptor-parse "wpkh(02...)"))
+    ;;; ```
     (define (descriptor-script-pubkey desc)
       (: descriptor? -> bytevector?)
       (let ((kind (descriptor-kind desc)))
@@ -1840,6 +2028,10 @@
     ;;;
     ;;; `branch` selects BIP389 multipath alternatives, and `index` replaces
     ;;; wildcard path segments.
+    ;;;
+    ;;; ```scheme
+    ;;; (descriptor-derive (descriptor-parse "wpkh(xpub.../0/*)") 0 7)
+    ;;; ```
     (define (descriptor-derive desc branch index)
       (: descriptor? integer? integer? -> descriptor?)
       (require-derivation-index "descriptor-derive branch" branch)
@@ -1865,6 +2057,10 @@
                (error "descriptor-derive: unsupported descriptor")))))
 
     ;;; Derive a ranged descriptor and return its concrete scriptPubKey.
+    ;;;
+    ;;; ```scheme
+    ;;; (descriptor-derive-script-pubkey (descriptor-parse "wpkh(xpub.../0/*)") 0 7)
+    ;;; ```
     (define (descriptor-derive-script-pubkey desc branch index)
       (: descriptor? integer? integer? -> bytevector?)
       (descriptor-script-pubkey (descriptor-derive desc branch index)))
@@ -2012,6 +2208,10 @@
           '()))
 
     ;;; Build a derived descriptor plan containing script and PSBT key-origin data.
+    ;;;
+    ;;; ```scheme
+    ;;; (descriptor-derive-psbt-plan (descriptor-parse "wpkh(xpub.../0/*)") 0 7)
+    ;;; ```
     (define (descriptor-derive-psbt-plan desc branch index)
       (: descriptor? integer? integer? -> descriptor-psbt-plan?)
       (let* ((derived (descriptor-derive desc branch index))
@@ -2213,6 +2413,10 @@
                (error "wallet-policy: unsupported descriptor template")))))
 
     ;;; Build a BIP388 wallet policy from descriptor template text and keys.
+    ;;;
+    ;;; ```scheme
+    ;;; (wallet-policy-from-template "wpkh(@0/**)" '("[00000000/84'/0'/0']xpub..."))
+    ;;; ```
     (define (wallet-policy-from-template template keys)
       (: string? list? -> wallet-policy?)
       (unless (string-contains-placeholder? template)
@@ -2220,6 +2424,11 @@
       (wallet-policy template: (descriptor-parse template) keys: keys))
 
     ;;; Expand a wallet policy into a concrete descriptor.
+    ;;;
+    ;;; ```scheme
+    ;;; (wallet-policy-descriptor
+    ;;;   (wallet-policy-from-template "wpkh(@0/**)" '("[00000000/84'/0'/0']xpub...")))
+    ;;; ```
     (define (wallet-policy-descriptor policy)
       (: wallet-policy? -> string?)
       (descriptor->string-with-keys
@@ -2227,6 +2436,13 @@
         (wallet-policy-keys policy)))
 
     ;;; Expand and derive a wallet policy into a PSBT planning record.
+    ;;;
+    ;;; ```scheme
+    ;;; (wallet-policy-derive-psbt-plan
+    ;;;   (wallet-policy-from-template "wpkh(@0/**)" '("[00000000/84'/0'/0']xpub..."))
+    ;;;   0
+    ;;;   7)
+    ;;; ```
     (define (wallet-policy-derive-psbt-plan policy branch index)
       (: wallet-policy? integer? integer? -> descriptor-psbt-plan?)
       (descriptor-derive-psbt-plan
@@ -2235,6 +2451,10 @@
         index))
 
     ;;; Attach descriptor-derived metadata to a PSBT input.
+    ;;;
+    ;;; ```scheme
+    ;;; (descriptor-psbt-plan-annotate-input psbt-value 0 plan)
+    ;;; ```
     (define (descriptor-psbt-plan-annotate-input p input-index plan)
       (: psbt? integer? descriptor-psbt-plan? -> psbt?)
       (let* ((base (psbt-annotate-input-scripts
@@ -2253,6 +2473,10 @@
             (psbt-annotate-input-taproot-leaf-scripts base input-index leaf-scripts))))
 
     ;;; Attach descriptor-derived metadata to a PSBT output.
+    ;;;
+    ;;; ```scheme
+    ;;; (descriptor-psbt-plan-annotate-output psbt-value 0 plan)
+    ;;; ```
     (define (descriptor-psbt-plan-annotate-output p output-index plan)
       (: psbt? integer? descriptor-psbt-plan? -> psbt?)
       (psbt-annotate-output
@@ -2263,6 +2487,10 @@
         (descriptor-psbt-plan-taproot-bip32-derivations plan)))
 
     ;;; Annotate and sign a standard descriptor PSBT input.
+    ;;;
+    ;;; ```scheme
+    ;;; (descriptor-psbt-plan-sign-input psbt-value 0 plan private-key)
+    ;;; ```
     (define (descriptor-psbt-plan-sign-input p input-index plan private-key)
       (: psbt? integer? descriptor-psbt-plan? bytevector? -> psbt?)
       (let ((annotated (descriptor-psbt-plan-annotate-input p input-index plan)))
@@ -2271,6 +2499,10 @@
             (psbt-sign-p2tr-scriptpath-input annotated input-index private-key))))
 
     ;;; Finalize a standard descriptor PSBT input.
+    ;;;
+    ;;; ```scheme
+    ;;; (descriptor-psbt-plan-finalize-input psbt-value 0 plan)
+    ;;; ```
     (define (descriptor-psbt-plan-finalize-input p input-index plan)
       (: psbt? integer? descriptor-psbt-plan? -> psbt?)
       (let ((annotated (descriptor-psbt-plan-annotate-input p input-index plan)))

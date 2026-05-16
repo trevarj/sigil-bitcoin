@@ -12,6 +12,10 @@
     psbt-annotate-output)
   (begin
     ;;; Attach script and key-origin metadata to a PSBT input after prevout matching.
+    ;;;
+    ;;; ```scheme
+    ;;; (psbt-annotate-input p 0 script-pubkey bip32-derivations taproot-bip32-derivations)
+    ;;; ```
     (define (psbt-annotate-input p input-index script-pubkey bip32-derivations taproot-bip32-derivations)
       (: psbt? integer? bytevector? list? list? -> psbt?)
       (validate-psbt p)
@@ -53,6 +57,10 @@
             unknowns: (psbt-input-unknowns input)))))
 
     ;;; Attach redeem or witness scripts to a PSBT input map.
+    ;;;
+    ;;; ```scheme
+    ;;; (psbt-annotate-input-scripts p 0 redeem-script witness-script)
+    ;;; ```
     (define (psbt-annotate-input-scripts p input-index redeem-script witness-script)
       (: psbt? integer? any? any? -> psbt?)
       (validate-psbt p)
@@ -81,6 +89,10 @@
             unknowns: (psbt-input-unknowns input)))))
 
     ;;; Attach Taproot leaf scripts to a PSBT input map.
+    ;;;
+    ;;; ```scheme
+    ;;; (psbt-annotate-input-taproot-leaf-scripts p 0 leaf-scripts)
+    ;;; ```
     (define (psbt-annotate-input-taproot-leaf-scripts p input-index leaf-scripts)
       (: psbt? integer? list? -> psbt?)
       (validate-psbt p)
@@ -109,6 +121,10 @@
             unknowns: (psbt-input-unknowns input)))))
 
     ;;; Attach BIP32 derivation metadata to a PSBT output after script matching.
+    ;;;
+    ;;; ```scheme
+    ;;; (psbt-annotate-output p 0 script-pubkey bip32-derivations taproot-bip32-derivations)
+    ;;; ```
     (define (psbt-annotate-output p output-index script-pubkey bip32-derivations taproot-bip32-derivations)
       (: psbt? integer? bytevector? list? list? -> psbt?)
       (validate-psbt p)

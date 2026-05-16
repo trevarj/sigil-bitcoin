@@ -45,6 +45,11 @@
             sequence: (txin-sequence input)
             witness: witness))
 
+    ;;; Append a one-byte sighash type to a serialized signature.
+    ;;;
+    ;;; ```scheme
+    ;;; (append-sighash-byte #u8(#x30 #x44) sighash-all)
+    ;;; ```
     (define (append-sighash-byte sig sighash-type)
       (bytevector-append sig (make-bytevector 1 sighash-type)))
 
@@ -52,12 +57,22 @@
       (require-bytevector-length "taproot-key-tweak" internal-xonly-pubkey 32)
       (tagged-hash "TapTweak" internal-xonly-pubkey))
 
+    ;;; Create the BIP86 Taproot tweaked keypair for an internal private key.
+    ;;;
+    ;;; ```scheme
+    ;;; (taproot-tweaked-keypair (make-bytevector 32 1))
+    ;;; ```
     (define (taproot-tweaked-keypair private-key)
       (let* ((keypair (secp256k1-keypair-create private-key))
              (internal-xonly (secp256k1-keypair-xonly-pub keypair))
              (tweak (taproot-key-tweak internal-xonly)))
         (secp256k1-keypair-xonly-tweak-add keypair tweak)))
 
+    ;;; Sign a Taproot key-path hash and append the sighash byte when needed.
+    ;;;
+    ;;; ```scheme
+    ;;; (taproot-keypath-signature keypair msghash sighash-default)
+    ;;; ```
     (define (taproot-keypath-signature keypair msghash sighash-type)
       (let ((sig (secp256k1-schnorrsig-sign32 keypair msghash)))
         (if (= sighash-type sighash-default)
@@ -99,6 +114,11 @@
       (validate-txout output)
       (bytes-with-length (txout-script-pubkey output)))
 
+    ;;; Validate one previous output for each transaction input.
+    ;;;
+    ;;; ```scheme
+    ;;; (validate-prevouts tx prevouts "example")
+    ;;; ```
     (define (validate-prevouts tx prevouts who)
       (unless (list? prevouts)
         (error (string-append who ": expected prevout list")))
@@ -108,6 +128,11 @@
           ((null? xs) prevouts)
         (validate-txout (car xs))))
 
+    ;;; Validate a BIP341 Taproot control block length.
+    ;;;
+    ;;; ```scheme
+    ;;; (validate-taproot-control-block "control block" control-block)
+    ;;; ```
     (define (validate-taproot-control-block who control-block)
       (require-bytevector who control-block)
       (let ((len (bytevector-length control-block)))
@@ -116,6 +141,11 @@
           (error (string-append who ": expected 33 + 32n bytes"))))
       control-block)
 
+    ;;; Compute a BIP341 TapLeaf hash for a script and leaf version.
+    ;;;
+    ;;; ```scheme
+    ;;; (taproot-leaf-hash #u8(#x51) #xc0)
+    ;;; ```
     (define (taproot-leaf-hash script leaf-version)
       (require-bytevector "taproot leaf script" script)
       (require-uint "taproot leaf version" leaf-version #xff)
@@ -156,6 +186,11 @@
       (validate-taproot-control-block "taproot control block" control-block)
       (bytevector-copy control-block 1 33))
 
+    ;;; Recover and validate the output x-only key committed by a control block.
+    ;;;
+    ;;; ```scheme
+    ;;; (taproot-control-block-output-xonly leaf-hash control-block)
+    ;;; ```
     (define (taproot-control-block-output-xonly leaf-hash control-block)
       (let* ((internal (taproot-control-block-internal-key control-block))
              (root (taproot-control-block-merkle-root leaf-hash control-block))
@@ -217,6 +252,10 @@
     ;;; Compute a legacy pre-SegWit signature hash for one input.
     ;;;
     ;;; Currently supports `SIGHASH_ALL`.
+    ;;;
+    ;;; ```scheme
+    ;;; (transaction-sighash-legacy tx 0 script-code sighash-all)
+    ;;; ```
     (define (transaction-sighash-legacy tx input-index script-code . maybe-sighash-type)
       (: transaction? integer? bytevector? integer? ... -> bytevector?)
       (let ((sighash-type (if (null? maybe-sighash-type)
@@ -248,6 +287,10 @@
     ;;; Compute a BIP143 SegWit v0 signature hash for one input.
     ;;;
     ;;; Currently supports `SIGHASH_ALL`.
+    ;;;
+    ;;; ```scheme
+    ;;; (transaction-sighash-segwit-v0 tx 0 script-code prevout-value sighash-all)
+    ;;; ```
     (define (transaction-sighash-segwit-v0 tx input-index script-code value . maybe-sighash-type)
       (: transaction? integer? bytevector? integer? integer? ... -> bytevector?)
       (let ((sighash-type (if (null? maybe-sighash-type)
@@ -277,6 +320,10 @@
     ;;;
     ;;; Supports key-path spends without annex or script-path extension for
     ;;; `SIGHASH_DEFAULT` and `SIGHASH_ALL`.
+    ;;;
+    ;;; ```scheme
+    ;;; (transaction-sighash-taproot-keypath tx 0 prevouts sighash-default)
+    ;;; ```
     (define (transaction-sighash-taproot-keypath tx input-index prevouts . maybe-sighash-type)
       (: transaction? integer? list? integer? ... -> bytevector?)
       (let ((sighash-type (if (null? maybe-sighash-type)
@@ -298,6 +345,10 @@
     ;;;
     ;;; Supports script-path spends without annex or non-default code separator
     ;;; for `SIGHASH_DEFAULT` and `SIGHASH_ALL`.
+    ;;;
+    ;;; ```scheme
+    ;;; (transaction-sighash-taproot-scriptpath tx 0 prevouts script #xc0 sighash-default)
+    ;;; ```
     (define (transaction-sighash-taproot-scriptpath tx input-index prevouts script leaf-version . maybe-sighash-type)
       (: transaction? integer? list? bytevector? integer? integer? ... -> bytevector?)
       (let ((sighash-type (if (null? maybe-sighash-type)
@@ -321,6 +372,10 @@
             (u32-le %u32-max)))))
 
     ;;; Sign one legacy P2PKH input and return a transaction with scriptSig data.
+    ;;;
+    ;;; ```scheme
+    ;;; (transaction-sign-p2pkh-input tx 0 private-key sighash-all)
+    ;;; ```
     (define (transaction-sign-p2pkh-input tx input-index private-key . maybe-sighash-type)
       (: transaction? integer? bytevector? integer? ... -> transaction?)
       (let* ((sighash-type (if (null? maybe-sighash-type)
@@ -351,6 +406,10 @@
           lock-time: (transaction-lock-time tx))))
 
     ;;; Sign one P2WPKH input and return a transaction with witness data.
+    ;;;
+    ;;; ```scheme
+    ;;; (transaction-sign-p2wpkh-input tx 0 prevout-value private-key sighash-all)
+    ;;; ```
     (define (transaction-sign-p2wpkh-input tx input-index prevout-value private-key . maybe-sighash-type)
       (: transaction? integer? integer? bytevector? integer? ... -> transaction?)
       (let* ((sighash-type (if (null? maybe-sighash-type)
@@ -385,6 +444,10 @@
     ;;; Sign one Taproot key-path input and return a transaction with witness data.
     ;;;
     ;;; This signs BIP86-style key-path spends without script tree commitments.
+    ;;;
+    ;;; ```scheme
+    ;;; (transaction-sign-p2tr-keypath-input tx 0 prevouts private-key sighash-default)
+    ;;; ```
     (define (transaction-sign-p2tr-keypath-input tx input-index prevouts private-key . maybe-sighash-type)
       (: transaction? integer? list? bytevector? integer? ... -> transaction?)
       (let* ((sighash-type (if (null? maybe-sighash-type)

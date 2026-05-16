@@ -2071,6 +2071,11 @@
         "zoo"
         ))
 
+    ;;; Return the BIP39 English word at a zero-based wordlist index.
+    ;;;
+    ;;; ```scheme
+    ;;; (bip39-english-word 0) ; => "abandon"
+    ;;; ```
     (define (bip39-english-word index)
       (cond ((< index 512) (vector-ref %bip39-english-words-0 index))
             ((< index 1024) (vector-ref %bip39-english-words-1 (- index 512)))
@@ -2078,6 +2083,11 @@
             ((< index 2048) (vector-ref %bip39-english-words-3 (- index 1536)))
             (else (error "bip39-english-word: index out of range"))))
 
+    ;;; Return the zero-based BIP39 English wordlist index for `word`.
+    ;;;
+    ;;; ```scheme
+    ;;; (bip39-english-word-index "abandon") ; => 0
+    ;;; ```
     (define (bip39-english-word-index word)
       (let loop ((i 0))
         (cond ((>= i %bip39-word-count) #f)
