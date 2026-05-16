@@ -8,6 +8,8 @@
 - `codeberg:sigil/sigil-publish` does not exist as a public repo.
 - Press currently declares old `^0.9.0` ecosystem dependencies and its
   `package.sgl` lacks the modern required `sigil:` field.
+- Upstream tracking issue:
+  <https://codeberg.org/sigil/press/issues/1>.
 - `scripts/docs-build.sh` builds the production site with Press and writes
   `public/`.
 

@@ -36,12 +36,21 @@ Key rules for this repo:
 - Keep package boundaries clear. Do not reach across layers when a facade module
   or shared helper already owns the behavior.
 - Exported Sigil procedures should have `;;;` doc comments suitable for API docs.
+  Every exported function must include example usage in its doc comment unless
+  it is a generated accessor or predicate whose usage is already shown by the
+  exported constructor or workflow docs.
 - Internal comments and section comments use `;;`, not `;;;`.
 - Add inline `(: ...)` specs inside `define` bodies when adding public or
   nontrivial procedures. Specs must include an explicit return type.
 - Comments should explain intent, consensus rules, or non-obvious behavior, not
   restate the code.
 - Public APIs should be small, typed by predicates, and idiomatic for Sigil.
+- Public API work must consider the whole package surface, not only the function
+  being edited. Prefer the smallest API that balances functionality,
+  correctness, and ease of use. Before adding or exposing exports, compare
+  existing package facades, naming, argument order, return shapes, and
+  rust-bitcoin-family API precedents, then avoid duplicative or low-level
+  exports unless they are needed for real workflows.
 
 ## Bitcoin Standards
 
