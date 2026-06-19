@@ -33,3 +33,7 @@ Use this page as a quick map from package to responsibility.
 ## Consensus
 
 `(sigil bitcoin consensus)` owns block/header records, wire parsing and serialization, Merkle root construction, compact target decoding, and proof-of-work checks.
+
+## P2P
+
+`(sigil bitcoin p2p)` owns Bitcoin network envelopes, payload checksums, handshake payloads, ping/pong nonces, and header-sync message codecs.

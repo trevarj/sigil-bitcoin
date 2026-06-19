@@ -1,0 +1,96 @@
+(import (sigil test)
+        (sigil bitcoin p2p)
+        (sigil bitcoin consensus)
+        (sigil bitcoin encoding))
+
+(define %zero32 (make-bytevector 32 0))
+(define %ipv6-loopback
+  #u8(#x00 #x00 #x00 #x00 #x00 #x00 #x00 #x00
+      #x00 #x00 #x00 #x00 #x00 #x00 #x00 #x01))
+
+(define %genesis-header
+  (block-header-parse
+    (hex-decode
+      "0100000000000000000000000000000000000000000000000000000000000000000000003ba3edfd7a7b12b27ac72c3e67768f617fc81bc3888a51323a9fb8aa4b1e5e4a29ab5f49ffff001d1dac2b7c")))
+
+(define %addr
+  (network-address services: 1 ip: %ipv6-loopback port: 8333))
+
+(test-group "envelopes"
+  (test "serializes and parses ping envelope"
+    (let* ((payload (ping-message #x0102030405060708))
+           (wire (p2p-message bitcoin-mainnet-magic "ping" payload))
+           (parsed (p2p-envelope-parse wire)))
+      (assert-equal bitcoin-mainnet-magic (p2p-envelope-magic parsed))
+      (assert-equal "ping" (p2p-envelope-command parsed))
+      (assert-equal payload (p2p-envelope-payload parsed))))
+
+  (test "rejects invalid checksum"
+    (let ((wire (p2p-message bitcoin-mainnet-magic "verack" (verack-message))))
+      (bytevector-u8-set! wire 23 #xff)
+      (assert-error (p2p-envelope-parse wire))))
+
+  (test "rejects overlong command"
+    (assert-error
+      (p2p-message bitcoin-mainnet-magic "this-command-is-too-long" #u8()))))
+
+(test-group "handshake messages"
+  (test "serializes and parses version payload"
+    (let* ((msg (version-message
+                  version: 70015
+                  services: 1
+                  timestamp: 123456789
+                  addr-recv: %addr
+                  addr-from: %addr
+                  nonce: #x1122334455667788
+                  user-agent: "/sigil-bitcoin:0.1.0/"
+                  start-height: 840000
+                  relay?: #t))
+           (parsed (version-message-parse (version-message-serialize msg))))
+      (assert-equal 70015 (version-message-version parsed))
+      (assert-equal 1 (version-message-services parsed))
+      (assert-equal 123456789 (version-message-timestamp parsed))
+      (assert-equal #x1122334455667788 (version-message-nonce parsed))
+      (assert-equal "/sigil-bitcoin:0.1.0/" (version-message-user-agent parsed))
+      (assert-equal 840000 (version-message-start-height parsed))
+      (assert-true (version-message-relay? parsed))
+      (assert-equal 8333 (network-address-port (version-message-addr-recv parsed)))))
+
+  (test "verack is empty"
+    (assert-equal #u8() (verack-message)))
+
+  (test "ping and pong encode little-endian nonces"
+    (assert-equal (ping-message #x0102030405060708)
+                  (pong-message #x0102030405060708))
+    (assert-equal "0807060504030201"
+                  (hex-encode (ping-message #x0102030405060708)))))
+
+(test-group "header sync messages"
+  (test "serializes and parses getheaders"
+    (let* ((msg (getheaders-message
+                  version: 70015
+                  locator-hashes: (list (block-header-hash %genesis-header))
+                  stop-hash: %zero32))
+           (parsed (getheaders-message-parse
+                     (getheaders-message-serialize msg))))
+      (assert-equal 70015 (getheaders-message-version parsed))
+      (assert-equal (list (block-header-hash %genesis-header))
+                    (getheaders-message-locator-hashes parsed))
+      (assert-equal %zero32 (getheaders-message-stop-hash parsed))))
+
+  (test "serializes and parses headers"
+    (let* ((payload (headers-message-serialize (list %genesis-header)))
+           (headers (headers-message-parse payload)))
+      (assert-equal 1 (length headers))
+      (assert-equal (block-header-id %genesis-header)
+                    (block-header-id (car headers)))))
+
+  (test "serializes and parses empty headers"
+    (assert-equal '() (headers-message-parse (headers-message-serialize '()))))
+
+  (test "rejects headers with transaction count"
+    (let ((payload (headers-message-serialize (list %genesis-header))))
+      (bytevector-u8-set! payload 81 1)
+      (assert-error (headers-message-parse payload)))))
+
+(run-tests)

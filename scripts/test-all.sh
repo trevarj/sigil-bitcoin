@@ -76,4 +76,11 @@ guix shell -m ../../manifest.scm -- \
   sigil test test/test-consensus.sgl \
     --redirects ../../dev-redirects.sgl --no-color
 
+printf '\n==> sigil-bitcoin-p2p package harness\n'
+link_package_deps "$ROOT/packages/sigil-bitcoin-p2p"
+cd "$ROOT/packages/sigil-bitcoin-p2p"
+guix shell -m ../../manifest.scm -- \
+  sigil test test/test-p2p.sgl \
+    --redirects ../../dev-redirects.sgl --no-color
+
 "$ROOT/scripts/wasm-test.sh"

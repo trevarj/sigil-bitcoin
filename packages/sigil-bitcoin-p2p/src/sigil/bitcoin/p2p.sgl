@@ -1,0 +1,347 @@
+;;; (sigil bitcoin p2p) — Bitcoin peer-to-peer wire messages
+
+(define-library (sigil bitcoin p2p)
+  (import (sigil math)
+          (sigil struct)
+          (sigil bitcoin utils)
+          (sigil bitcoin primitives)
+          (sigil bitcoin consensus)
+          (sigil bitcoin tx wire))
+  (export
+    bitcoin-mainnet-magic
+    bitcoin-testnet-magic
+    bitcoin-regtest-magic
+    network-address network-address?
+    network-address-services network-address-ip network-address-port
+    version-message version-message?
+    version-message-version version-message-services version-message-timestamp
+    version-message-addr-recv version-message-addr-from version-message-nonce
+    version-message-user-agent version-message-start-height version-message-relay?
+    getheaders-message getheaders-message?
+    getheaders-message-version getheaders-message-locator-hashes
+    getheaders-message-stop-hash
+    p2p-envelope p2p-envelope?
+    p2p-envelope-magic p2p-envelope-command p2p-envelope-payload
+    p2p-checksum
+    p2p-envelope-serialize
+    p2p-envelope-parse
+    p2p-message
+    version-message-serialize
+    version-message-parse
+    verack-message
+    ping-message
+    pong-message
+    getheaders-message-serialize
+    getheaders-message-parse
+    headers-message-serialize
+    headers-message-parse)
+  (begin
+
+    (define bitcoin-mainnet-magic #u8(#xf9 #xbe #xb4 #xd9))
+    (define bitcoin-testnet-magic #u8(#x0b #x11 #x09 #x07))
+    (define bitcoin-regtest-magic #u8(#xfa #xbf #xb5 #xda))
+
+    (define-struct network-address
+      (services integer?)
+      (ip bytevector?)
+      (port integer?))
+
+    (define-struct version-message
+      (version integer?)
+      (services integer?)
+      (timestamp integer?)
+      (addr-recv network-address?)
+      (addr-from network-address?)
+      (nonce integer?)
+      (user-agent string?)
+      (start-height integer?)
+      (relay? boolean?))
+
+    (define-struct getheaders-message
+      (version integer?)
+      (locator-hashes list?)
+      (stop-hash bytevector?))
+
+    (define-struct p2p-envelope
+      (magic bytevector?)
+      (command string?)
+      (payload bytevector?))
+
+    (define %u8-max #xff)
+
+    (define (require-network-address who addr)
+      (unless (network-address? addr)
+        (error (string-append who ": expected network-address")))
+      (require-uint (string-append who " services")
+                    (network-address-services addr)
+                    %u64-max)
+      (require-bytevector-length (string-append who " ip")
+                                 (network-address-ip addr)
+                                 16)
+      (require-uint (string-append who " port")
+                    (network-address-port addr)
+                    #xffff)
+      addr)
+
+    (define (require-command command)
+      (unless (string? command)
+        (error "p2p command: expected string"))
+      (when (> (string-length command) 12)
+        (error "p2p command: command too long"))
+      command)
+
+    (define (require-hash-list who hashes)
+      (unless (list? hashes)
+        (error (string-append who ": expected list")))
+      (do ((xs hashes (cdr xs)))
+          ((null? xs) hashes)
+        (require-bytevector-length who (car xs) 32)))
+
+    (define (string->ascii-bytes text)
+      (let* ((len (string-length text))
+             (out (make-bytevector len 0)))
+        (do ((i 0 (+ i 1)))
+            ((>= i len) out)
+          (let ((ch (char->integer (string-ref text i))))
+            (when (> ch #x7f)
+              (error "string->ascii-bytes: expected ASCII string"))
+            (bytevector-u8-set! out i ch)))))
+
+    (define (ascii-bytes->string bytes)
+      (let* ((len (bytevector-length bytes))
+             (out (make-string len)))
+        (do ((i 0 (+ i 1)))
+            ((>= i len) out)
+          (string-set! out i (integer->char (bytevector-u8-ref bytes i))))))
+
+    (define (u16-be n)
+      (require-uint "u16-be" n #xffff)
+      (let ((out (make-bytevector 2 0)))
+        (bytevector-u8-set! out 0 (bitwise-and (arithmetic-shift n -8) #xff))
+        (bytevector-u8-set! out 1 (bitwise-and n #xff))
+        out))
+
+    (define (read-u16-be bytes offset who)
+      (ensure-available who bytes offset 2)
+      (+ (arithmetic-shift (bytevector-u8-ref bytes offset) 8)
+         (bytevector-u8-ref bytes (+ offset 1))))
+
+    (define (command->field command)
+      (let ((raw (string->ascii-bytes (require-command command)))
+            (out (make-bytevector 12 0)))
+        (bytevector-copy! out 0 raw)
+        out))
+
+    (define (field->command bytes)
+      (let loop ((i 0))
+        (if (or (>= i 12) (= 0 (bytevector-u8-ref bytes i)))
+            (ascii-bytes->string (bytevector-copy bytes 0 i))
+            (loop (+ i 1)))))
+
+    (define (p2p-checksum payload)
+      (require-bytevector "p2p-checksum" payload)
+      (bytevector-copy (hash256 payload) 0 4))
+
+    (define (p2p-envelope-serialize envelope)
+      (: p2p-envelope? -> bytevector?)
+      (unless (p2p-envelope? envelope)
+        (error "p2p-envelope-serialize: expected p2p-envelope"))
+      (require-bytevector-length "p2p magic" (p2p-envelope-magic envelope) 4)
+      (require-command (p2p-envelope-command envelope))
+      (require-bytevector "p2p payload" (p2p-envelope-payload envelope))
+      (bytevector-append
+        (p2p-envelope-magic envelope)
+        (command->field (p2p-envelope-command envelope))
+        (u32-le (bytevector-length (p2p-envelope-payload envelope)))
+        (p2p-checksum (p2p-envelope-payload envelope))
+        (p2p-envelope-payload envelope)))
+
+    (define (p2p-envelope-parse bytes)
+      (: bytevector? -> p2p-envelope?)
+      (require-bytevector "p2p-envelope-parse" bytes)
+      (ensure-available "p2p-envelope-parse" bytes 0 24)
+      (let* ((magic (bytevector-copy bytes 0 4))
+             (command (field->command (bytevector-copy bytes 4 16)))
+             (payload-len (read-u32-le bytes 16 "p2p payload length"))
+             (checksum (bytevector-copy bytes 20 24))
+             (end (+ 24 payload-len)))
+        (ensure-available "p2p-envelope-parse" bytes 24 payload-len)
+        (unless (= end (bytevector-length bytes))
+          (error "p2p-envelope-parse: trailing bytes"))
+        (let ((payload (bytevector-copy bytes 24 end)))
+          (unless (equal? checksum (p2p-checksum payload))
+            (error "p2p-envelope-parse: invalid checksum"))
+          (p2p-envelope magic: magic command: command payload: payload))))
+
+    (define (p2p-message magic command payload)
+      (: bytevector? string? bytevector? -> bytevector?)
+      (p2p-envelope-serialize
+        (p2p-envelope magic: magic command: command payload: payload)))
+
+    (define (network-address-serialize addr)
+      (require-network-address "network-address" addr)
+      (bytevector-append
+        (u64-le (network-address-services addr))
+        (network-address-ip addr)
+        (u16-be (network-address-port addr))))
+
+    (define (network-address-parse bytes offset)
+      (let ((services (read-u64-le bytes offset "network-address services"))
+            (ip (bytevector-copy bytes (+ offset 8) (+ offset 24)))
+            (port (read-u16-be bytes (+ offset 24) "network-address port")))
+        (list (network-address services: services ip: ip port: port)
+              (+ offset 26))))
+
+    (define (varstr-serialize text)
+      (let ((raw (string->ascii-bytes text)))
+        (bytevector-append (compact-size-encode (bytevector-length raw)) raw)))
+
+    (define (varstr-parse bytes offset)
+      (let* ((len-result (compact-size-decode-at bytes offset))
+             (len (car len-result))
+             (start (cadr len-result))
+             (end (+ start len)))
+        (ensure-available "varstr" bytes start len)
+        (list (ascii-bytes->string (bytevector-copy bytes start end)) end)))
+
+    (define (version-message-serialize msg)
+      (: version-message? -> bytevector?)
+      (unless (version-message? msg)
+        (error "version-message-serialize: expected version-message"))
+      (require-network-address "version addr_recv" (version-message-addr-recv msg))
+      (require-network-address "version addr_from" (version-message-addr-from msg))
+      (bytevector-append
+        (u32-le (require-uint "version version" (version-message-version msg) %u32-max))
+        (u64-le (require-uint "version services" (version-message-services msg) %u64-max))
+        (u64-le (require-uint "version timestamp" (version-message-timestamp msg) %u64-max))
+        (network-address-serialize (version-message-addr-recv msg))
+        (network-address-serialize (version-message-addr-from msg))
+        (u64-le (require-uint "version nonce" (version-message-nonce msg) %u64-max))
+        (varstr-serialize (version-message-user-agent msg))
+        (u32-le (require-uint "version start-height" (version-message-start-height msg) %u32-max))
+        (make-bytevector 1 (if (version-message-relay? msg) 1 0))))
+
+    (define (version-message-parse bytes)
+      (: bytevector? -> version-message?)
+      (require-bytevector "version-message-parse" bytes)
+      (ensure-available "version-message-parse" bytes 0 85)
+      (let* ((version (read-u32-le bytes 0 "version version"))
+             (services (read-u64-le bytes 4 "version services"))
+             (timestamp (read-u64-le bytes 12 "version timestamp"))
+             (addr-recv-result (network-address-parse bytes 20))
+             (addr-from-result (network-address-parse bytes (cadr addr-recv-result)))
+             (nonce-offset (cadr addr-from-result))
+             (nonce (read-u64-le bytes nonce-offset "version nonce"))
+             (agent-result (varstr-parse bytes (+ nonce-offset 8)))
+             (height-offset (cadr agent-result))
+             (start-height (read-u32-le bytes height-offset "version start-height"))
+             (relay-offset (+ height-offset 4))
+             (relay? (if (< relay-offset (bytevector-length bytes))
+                         (not (= 0 (read-byte bytes relay-offset "version relay")))
+                         #t))
+             (end (if (< relay-offset (bytevector-length bytes))
+                      (+ relay-offset 1)
+                      relay-offset)))
+        (unless (= end (bytevector-length bytes))
+          (error "version-message-parse: trailing bytes"))
+        (version-message version: version
+                         services: services
+                         timestamp: timestamp
+                         addr-recv: (car addr-recv-result)
+                         addr-from: (car addr-from-result)
+                         nonce: nonce
+                         user-agent: (car agent-result)
+                         start-height: start-height
+                         relay?: relay?)))
+
+    (define (verack-message)
+      #u8())
+
+    (define (nonce-message who nonce)
+      (u64-le (require-uint who nonce %u64-max)))
+
+    (define (ping-message nonce)
+      (nonce-message "ping nonce" nonce))
+
+    (define (pong-message nonce)
+      (nonce-message "pong nonce" nonce))
+
+    (define (getheaders-message-serialize msg)
+      (: getheaders-message? -> bytevector?)
+      (unless (getheaders-message? msg)
+        (error "getheaders-message-serialize: expected getheaders-message"))
+      (require-hash-list "getheaders locator hash"
+                         (getheaders-message-locator-hashes msg))
+      (require-bytevector-length "getheaders stop hash"
+                                 (getheaders-message-stop-hash msg)
+                                 32)
+      (bytevector-append
+        (u32-le (require-uint "getheaders version"
+                              (getheaders-message-version msg)
+                              %u32-max))
+        (serialize-vector (getheaders-message-locator-hashes msg)
+                          (lambda (hash) hash))
+        (getheaders-message-stop-hash msg)))
+
+    (define (parse-hash-vector bytes offset)
+      (let* ((count-result (compact-size-decode-at bytes offset))
+             (count (car count-result)))
+        (let loop ((i 0) (cursor (cadr count-result)) (hashes '()))
+          (if (>= i count)
+              (list (reverse hashes) cursor)
+              (begin
+                (ensure-available "hash vector" bytes cursor 32)
+                (loop (+ i 1)
+                      (+ cursor 32)
+                      (cons (bytevector-copy bytes cursor (+ cursor 32))
+                            hashes)))))))
+
+    (define (getheaders-message-parse bytes)
+      (: bytevector? -> getheaders-message?)
+      (require-bytevector "getheaders-message-parse" bytes)
+      (let* ((version (read-u32-le bytes 0 "getheaders version"))
+             (hashes-result (parse-hash-vector bytes 4))
+             (stop-offset (cadr hashes-result)))
+        (ensure-available "getheaders stop hash" bytes stop-offset 32)
+        (let ((end (+ stop-offset 32)))
+          (unless (= end (bytevector-length bytes))
+            (error "getheaders-message-parse: trailing bytes"))
+          (getheaders-message
+            version: version
+            locator-hashes: (car hashes-result)
+            stop-hash: (bytevector-copy bytes stop-offset end)))))
+
+    (define (headers-message-serialize headers)
+      (: list? -> bytevector?)
+      (let ((payloads (map (lambda (header)
+                             (bytevector-append
+                               (block-header-serialize header)
+                               #u8(0)))
+                           headers)))
+        (if (null? payloads)
+            (compact-size-encode 0)
+            (bytevector-append
+              (compact-size-encode (length headers))
+              (apply bytevector-append payloads)))))
+
+    (define (parse-headers bytes offset count)
+      (let loop ((i 0) (cursor offset) (headers '()))
+        (if (>= i count)
+            (list (reverse headers) cursor)
+            (begin
+              (ensure-available "headers message" bytes cursor 81)
+              (let ((header (block-header-parse
+                              (bytevector-copy bytes cursor (+ cursor 80))))
+                    (tx-count (read-byte bytes (+ cursor 80) "headers tx count")))
+                (unless (= tx-count 0)
+                  (error "headers-message-parse: header tx count must be zero"))
+                (loop (+ i 1) (+ cursor 81) (cons header headers)))))))
+
+    (define (headers-message-parse bytes)
+      (: bytevector? -> list?)
+      (require-bytevector "headers-message-parse" bytes)
+      (let* ((count-result (compact-size-decode-at bytes 0))
+             (parsed (parse-headers bytes (cadr count-result) (car count-result))))
+        (unless (= (cadr parsed) (bytevector-length bytes))
+          (error "headers-message-parse: trailing bytes"))
+        (car parsed)))))

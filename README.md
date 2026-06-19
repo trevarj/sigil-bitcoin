@@ -7,7 +7,8 @@
 Bitcoin libraries for Sigil.
 
 Sigil Bitcoin provides packages for keys, addresses, scripts, transactions,
-PSBTs, Miniscript, block/header consensus helpers, and secp256k1 bindings.
+PSBTs, Miniscript, block/header consensus helpers, P2P message codecs, and
+secp256k1 bindings.
 
 ## Documentation
 
@@ -25,3 +26,4 @@ PSBTs, Miniscript, block/header consensus helpers, and secp256k1 bindings.
 - `(sigil bitcoin tx)`
 - `(sigil bitcoin miniscript)`
 - `(sigil bitcoin consensus)`
+- `(sigil bitcoin p2p)`
