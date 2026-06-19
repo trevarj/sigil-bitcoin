@@ -15,6 +15,8 @@
     block-header-bits block-header-nonce
     block block?
     block-header-field block-transactions
+    utxo-entry utxo-entry?
+    utxo-entry-output utxo-entry-coinbase? utxo-entry-height
     consensus-params consensus-params?
     consensus-params-pow-limit-bits consensus-params-target-spacing
     consensus-params-target-timespan consensus-params-retarget-interval
@@ -43,11 +45,21 @@
     block-header-valid-after?
     validate-header-chain
     header-chain-valid?
-    header-chain-work)
+    header-chain-work
+    bitcoin-max-money
+    block-subsidy
+    coinbase-transaction?
+    utxo-set-lookup
+    connect-block)
   (begin
 
     (define %max-target
       #xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff)
+
+    ;;; Maximum Bitcoin money supply in satoshis.
+    (define bitcoin-max-money 2100000000000000)
+
+    (define %coinbase-maturity 100)
 
     ;;; Bitcoin block header.
     (define-struct block-header
@@ -62,6 +74,12 @@
     (define-struct block
       (header-field block-header?)
       (transactions list?))
+
+    ;;; UTXO set entry tracked by the consensus block connector.
+    (define-struct utxo-entry
+      (output txout?)
+      (coinbase? boolean?)
+      (height integer?))
 
     ;;; Parameters needed for proof-of-work target transitions.
     (define-struct consensus-params
@@ -377,6 +395,188 @@
             work
             (loop (cdr xs)
                   (+ work (block-header-chain-work (car xs)))))))
+
+    (define (require-money who value)
+      (require-uint who value bitcoin-max-money))
+
+    (define (sum-money who outputs)
+      (let loop ((xs outputs) (total 0))
+        (if (null? xs)
+            total
+            (let ((output (car xs)))
+              (validate-txout output)
+              (require-money who (txout-value output))
+              (let ((next (+ total (txout-value output))))
+                (require-money who next)
+                (loop (cdr xs) next))))))
+
+    ;;; Return the block subsidy in satoshis for a block height.
+    (define (block-subsidy height)
+      (: integer? -> integer?)
+      (require-uint "block-subsidy height" height %u32-max)
+      (let ((halvings (quotient height 210000)))
+        (if (>= halvings 64)
+            0
+            (quotient 5000000000 (expt 2 halvings)))))
+
+    (define (coinbase-outpoint? op)
+      (and (outpoint? op)
+           (= #xffffffff (outpoint-index op))
+           (equal? (make-bytevector 32 0) (outpoint-txid op))))
+
+    ;;; Return true when `tx` has the Bitcoin coinbase prevout shape.
+    (define (coinbase-transaction? tx)
+      (: transaction? -> boolean?)
+      (validate-transaction tx)
+      (and (= 1 (length (transaction-inputs tx)))
+           (coinbase-outpoint? (txin-previous-output
+                                 (car (transaction-inputs tx))))))
+
+    (define (validate-coinbase tx)
+      (unless (coinbase-transaction? tx)
+        (error "coinbase: expected coinbase transaction"))
+      (let* ((script (txin-script-sig (car (transaction-inputs tx))))
+             (script-len (bytevector-length script)))
+        (when (or (< script-len 2) (> script-len 100))
+          (error "coinbase: scriptSig length outside consensus bounds")))
+      (when (null? (transaction-outputs tx))
+        (error "coinbase: expected at least one output"))
+      tx)
+
+    (define (validate-regular-transaction tx)
+      (validate-transaction tx)
+      (when (coinbase-transaction? tx)
+        (error "transaction: unexpected coinbase"))
+      (when (null? (transaction-inputs tx))
+        (error "transaction: expected at least one input"))
+      (when (null? (transaction-outputs tx))
+        (error "transaction: expected at least one output"))
+      (sum-money "transaction output value" (transaction-outputs tx))
+      tx)
+
+    (define (outpoint=? a b)
+      (and (= (outpoint-index a) (outpoint-index b))
+           (equal? (outpoint-txid a) (outpoint-txid b))))
+
+    ;;; Return a UTXO entry for `op`, or `#f` when it is absent.
+    (define (utxo-set-lookup utxos op)
+      (: list? outpoint? -> any?)
+      (validate-outpoint op)
+      (let loop ((xs utxos))
+        (cond ((null? xs) #f)
+              ((outpoint=? op (car (car xs))) (cdr (car xs)))
+              (else (loop (cdr xs))))))
+
+    (define (utxo-set-remove utxos op)
+      (let loop ((xs utxos) (out '()) (removed? #f))
+        (cond ((null? xs)
+               (if removed?
+                   (reverse out)
+                   (error "utxo-set-remove: missing outpoint")))
+              ((outpoint=? op (car (car xs)))
+               (loop (cdr xs) out #t))
+              (else
+               (loop (cdr xs) (cons (car xs) out) removed?)))))
+
+    (define (utxo-set-add utxos op entry)
+      (validate-outpoint op)
+      (unless (utxo-entry? entry)
+        (error "utxo-set-add: expected utxo-entry"))
+      (validate-txout (utxo-entry-output entry))
+      (require-uint "utxo-entry height" (utxo-entry-height entry) %u32-max)
+      (when (utxo-set-lookup utxos op)
+        (error "utxo-set-add: duplicate unspent outpoint"))
+      (cons (cons op entry) utxos))
+
+    (define (output-outpoint tx index)
+      (outpoint txid: (transaction-txid tx) index: index))
+
+    (define (add-transaction-outputs utxos tx height coinbase?)
+      (let loop ((outputs (transaction-outputs tx))
+                 (index 0)
+                 (next-utxos utxos))
+        (if (null? outputs)
+            next-utxos
+            (loop
+              (cdr outputs)
+              (+ index 1)
+              (utxo-set-add
+                next-utxos
+                (output-outpoint tx index)
+                (utxo-entry output: (car outputs)
+                            coinbase?: coinbase?
+                            height: height))))))
+
+    (define (spendable-utxo-entry height op entry)
+      (when (and (utxo-entry-coinbase? entry)
+                 (< (- height (utxo-entry-height entry)) %coinbase-maturity))
+        (error "connect-block: immature coinbase spend"))
+      entry)
+
+    (define (spend-transaction-inputs utxos tx height)
+      (let loop ((inputs (transaction-inputs tx))
+                 (next-utxos utxos)
+                 (prevouts '())
+                 (input-value 0))
+        (if (null? inputs)
+            (list next-utxos (reverse prevouts) input-value)
+            (let* ((op (txin-previous-output (car inputs)))
+                   (entry (utxo-set-lookup next-utxos op)))
+              (unless entry
+                (error "connect-block: missing or already-spent input"))
+              (spendable-utxo-entry height op entry)
+              (let ((new-input-value (+ input-value
+                                        (txout-value (utxo-entry-output entry)))))
+                (require-money "connect-block input value" new-input-value)
+                (loop (cdr inputs)
+                      (utxo-set-remove next-utxos op)
+                      (cons (utxo-entry-output entry) prevouts)
+                      new-input-value))))))
+
+    (define (connect-regular-transaction utxos tx height)
+      (validate-regular-transaction tx)
+      (let* ((spent (spend-transaction-inputs utxos tx height))
+             (without-inputs (car spent))
+             (input-value (caddr spent))
+             (output-value (sum-money "connect-block output value"
+                                      (transaction-outputs tx))))
+        (when (< input-value output-value)
+          (error "connect-block: transaction spends more than its inputs"))
+        (list
+          (add-transaction-outputs without-inputs tx height #f)
+          (- input-value output-value))))
+
+    ;;; Validate a block's transactions against `utxos` and return the updated
+    ;;; UTXO set. This does not execute script; it enforces structural block
+    ;;; transaction rules, UTXO availability, value conservation, coinbase
+    ;;; maturity, subsidy, and fees.
+    (define (connect-block params height utxos b)
+      (: consensus-params? integer? list? block? -> list?)
+      (validate-consensus-params params)
+      (require-uint "connect-block height" height %u32-max)
+      (validate-block b)
+      (unless (block-merkle-root-valid? b)
+        (error "connect-block: invalid merkle root"))
+      (let* ((txs (block-transactions b))
+             (coinbase (car txs)))
+        (validate-coinbase coinbase)
+        (let loop ((remaining (cdr txs))
+                   (next-utxos utxos)
+                   (fees 0))
+          (if (null? remaining)
+              (let* ((allowed (+ (block-subsidy height) fees))
+                     (claimed (sum-money "connect-block coinbase value"
+                                         (transaction-outputs coinbase))))
+                (when (> claimed allowed)
+                  (error "connect-block: coinbase reward exceeds subsidy plus fees"))
+                (add-transaction-outputs next-utxos coinbase height #t))
+              (let ((connected (connect-regular-transaction
+                                 next-utxos
+                                 (car remaining)
+                                 height)))
+                (loop (cdr remaining)
+                      (car connected)
+                      (+ fees (cadr connected))))))))
 
     ;;; Serialize a block in Bitcoin wire order.
     (define (block-serialize b)
