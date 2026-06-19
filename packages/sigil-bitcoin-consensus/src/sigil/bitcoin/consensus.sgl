@@ -3,9 +3,11 @@
 (define-library (sigil bitcoin consensus)
   (import (sigil math)
           (sigil struct)
+          (sigil secp256k1)
           (sigil bitcoin utils)
           (sigil bitcoin primitives)
           (sigil bitcoin encoding)
+          (sigil bitcoin script)
           (sigil bitcoin tx)
           (sigil bitcoin tx wire))
   (export
@@ -49,6 +51,8 @@
     bitcoin-max-money
     block-subsidy
     coinbase-transaction?
+    verify-standard-input-script
+    standard-input-script-valid?
     utxo-set-lookup
     connect-block)
   (begin
@@ -513,6 +517,107 @@
         (error "connect-block: immature coinbase spend"))
       entry)
 
+    (define (script-push-chunk? chunk)
+      (bytevector? (script-chunk-data chunk)))
+
+    (define (single-byte-sighash-all? sig)
+      (and (> (bytevector-length sig) 0)
+           (= sighash-all (bytevector-u8-ref sig (- (bytevector-length sig) 1)))))
+
+    (define (signature-der-bytes sig)
+      (bytevector-copy sig 0 (- (bytevector-length sig) 1)))
+
+    (define (verify-ecdsa-sighash-all sig pubkey msghash who)
+      (unless (single-byte-sighash-all? sig)
+        (error (string-append who ": only SIGHASH_ALL is supported")))
+      (unless (secp256k1-ecdsa-verify
+                (secp256k1-ecdsa-signature-parse-der
+                  (signature-der-bytes sig))
+                msghash
+                pubkey)
+        (error (string-append who ": signature check failed")))
+      #t)
+
+    (define (verify-p2pkh-input tx input-index input prevout)
+      (let* ((chunks (script-parse (txin-script-sig input)))
+             (who "verify-standard-input-script p2pkh"))
+        (unless (and (= 2 (length chunks))
+                     (script-push-chunk? (car chunks))
+                     (script-push-chunk? (cadr chunks))
+                     (null? (txin-witness input)))
+          (error (string-append who ": expected signature and public key scriptSig")))
+        (let* ((sig (script-chunk-data (car chunks)))
+               (pubkey (script-chunk-data (cadr chunks)))
+               (pubkey-hash (script-standard-payload (txout-script-pubkey prevout)))
+               (script-code (script-p2pkh pubkey-hash))
+               (msghash (transaction-sighash-legacy tx input-index script-code sighash-all)))
+          (unless (equal? pubkey-hash (hash160 pubkey))
+            (error (string-append who ": public key hash mismatch")))
+          (verify-ecdsa-sighash-all sig pubkey msghash who))))
+
+    (define (verify-p2wpkh-input tx input-index input prevout)
+      (let* ((witness (txin-witness input))
+             (who "verify-standard-input-script p2wpkh"))
+        (unless (and (= 0 (bytevector-length (txin-script-sig input)))
+                     (= 2 (length witness))
+                     (bytevector? (car witness))
+                     (bytevector? (cadr witness)))
+          (error (string-append who ": expected signature and public key witness")))
+        (let* ((sig (car witness))
+               (pubkey (cadr witness))
+               (pubkey-hash (script-standard-payload (txout-script-pubkey prevout)))
+               (script-code (script-p2pkh pubkey-hash))
+               (msghash (transaction-sighash-segwit-v0
+                          tx
+                          input-index
+                          script-code
+                          (txout-value prevout)
+                          sighash-all)))
+          (unless (equal? pubkey-hash (hash160 pubkey))
+            (error (string-append who ": public key hash mismatch")))
+          (verify-ecdsa-sighash-all sig pubkey msghash who))))
+
+    ;;; Verify one input against recognized standard consensus script templates.
+    ;;;
+    ;;; P2PKH uses legacy `SIGHASH_ALL`; native P2WPKH uses BIP143
+    ;;; `SIGHASH_ALL`. Unknown scripts are left to future script-engine work and
+    ;;; currently pass through so existing structural block validation remains
+    ;;; usable for nonstandard test fixtures.
+    ;;;
+    ;;; ```scheme
+    ;;; (verify-standard-input-script tx 0 prevout)
+    ;;; ```
+    (define (verify-standard-input-script tx input-index prevout)
+      (: transaction? integer? txout? -> boolean?)
+      (validate-transaction tx)
+      (validate-txout prevout)
+      (let ((input (nth (transaction-inputs tx) input-index)))
+        (case (script-classify (txout-script-pubkey prevout))
+          ((p2pkh)
+           (verify-p2pkh-input tx input-index input prevout))
+          ((p2wpkh)
+           (verify-p2wpkh-input tx input-index input prevout))
+          (else #t))))
+
+    ;;; Return true when `verify-standard-input-script` accepts an input.
+    ;;;
+    ;;; ```scheme
+    ;;; (standard-input-script-valid? tx 0 prevout)
+    ;;; ```
+    (define (standard-input-script-valid? tx input-index prevout)
+      (: transaction? integer? txout? -> boolean?)
+      (guard (err (else #f))
+        (verify-standard-input-script tx input-index prevout)
+        #t))
+
+    (define (verify-transaction-standard-scripts tx prevouts)
+      (let loop ((xs prevouts) (input-index 0))
+        (if (null? xs)
+            #t
+            (begin
+              (verify-standard-input-script tx input-index (car xs))
+              (loop (cdr xs) (+ input-index 1))))))
+
     (define (spend-transaction-inputs utxos tx height)
       (let loop ((inputs (transaction-inputs tx))
                  (next-utxos utxos)
@@ -537,9 +642,11 @@
       (validate-regular-transaction tx)
       (let* ((spent (spend-transaction-inputs utxos tx height))
              (without-inputs (car spent))
+             (prevouts (cadr spent))
              (input-value (caddr spent))
              (output-value (sum-money "connect-block output value"
                                       (transaction-outputs tx))))
+        (verify-transaction-standard-scripts tx prevouts)
         (when (< input-value output-value)
           (error "connect-block: transaction spends more than its inputs"))
         (list
@@ -547,9 +654,10 @@
           (- input-value output-value))))
 
     ;;; Validate a block's transactions against `utxos` and return the updated
-    ;;; UTXO set. This does not execute script; it enforces structural block
-    ;;; transaction rules, UTXO availability, value conservation, coinbase
-    ;;; maturity, subsidy, and fees.
+    ;;; UTXO set. Recognized standard P2PKH and native P2WPKH inputs execute
+    ;;; signature checks; remaining script templates are tracked in the roadmap.
+    ;;; The connector also enforces structural block transaction rules, UTXO
+    ;;; availability, value conservation, coinbase maturity, subsidy, and fees.
     (define (connect-block params height utxos b)
       (: consensus-params? integer? list? block? -> list?)
       (validate-consensus-params params)

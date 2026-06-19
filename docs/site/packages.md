@@ -32,7 +32,7 @@ Use this page as a quick map from package to responsibility.
 
 ## Consensus
 
-`(sigil bitcoin consensus)` owns block/header records, wire parsing and serialization, Merkle root construction, compact target decoding, proof-of-work checks, header-chain linkage, chain work, retarget validation, subsidy checks, coinbase maturity, and UTXO-backed block connection.
+`(sigil bitcoin consensus)` owns block/header records, wire parsing and serialization, Merkle root construction, compact target decoding, proof-of-work checks, header-chain linkage, chain work, retarget validation, subsidy checks, coinbase maturity, and UTXO-backed block connection with standard P2PKH/P2WPKH signature checks.
 
 ## P2P
 
