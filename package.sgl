@@ -21,6 +21,7 @@
     "packages/sigil-bitcoin-miniscript"
     "packages/sigil-bitcoin-consensus"
     "packages/sigil-bitcoin-p2p"
+    "packages/sigil-bitcoin-node"
     "packages/sigil-bitcoin-demo")
 
   configs: (list

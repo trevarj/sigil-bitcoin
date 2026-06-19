@@ -44,6 +44,11 @@ Layer 6 — Networking (sigil-bitcoin-p2p)
 ├── P2P message serialization
 ├── Handshake, version negotiation
 └── Block/tx relay
+
+Layer 7 — Node Runtime (sigil-bitcoin-node)
+├── Chain configs
+├── SQLite-backed header storage
+└── Peer-driven header sync
 ```
 
 ## Priority Order (user-ranked)
@@ -95,6 +100,7 @@ Layer 6 — Networking (sigil-bitcoin-p2p)
 - `sigil-bitcoin-miniscript` provides fragment ASTs, parsing, canonical strings, type/signing metadata, hash-lock and boolean combinator script compilation, descriptor parsing/checksums, descriptor key derivation, descriptor scriptPubKey compilation including Taproot script-tree output keys, `multi_a`/`CHECKSIGADD` Tapscript compilation, descriptor and wallet-policy PSBT planning records with WSH and single-leaf Taproot script material, descriptor-plan PSBT annotation and standard P2PKH/P2WPKH/P2TR key-path/script-path signing/finalization wrappers, concrete BIP327 `musig(...)` Taproot key aggregation, and BIP388 wallet policy descriptor expansion with BIP390 `musig(...)` placeholders.
 - `sigil-bitcoin-consensus` provides block/header records, wire parsing and serialization, Merkle root construction, compact target decoding, proof-of-work checks, header-chain linkage, chain work, retarget validation, subsidy checks, coinbase maturity, activation-height gates, UTXO-backed block connection, and standard P2PKH/P2SH/P2WPKH/P2WSH/P2TR signature checks.
 - `sigil-bitcoin-p2p` provides network envelopes, payload checksums, `version`/`verack`, `ping`/`pong`, `getheaders`, `headers`, header-sync loops, inventory/getdata/notfound relay payloads, tx/block payloads, socket envelope I/O, peer-session orchestration, peer selection, and relay scheduling.
+- `sigil-bitcoin-node` provides Bitcoin mainnet/testnet/regtest chain configs, SQLite-backed header persistence, best-header/status queries, validated header ingestion, and a `status`/`header-sync` CLI entrypoint.
 - `sigil-bitcoin` has a standalone documentation site generator that reads compiler JSON docs, emits a docs.rs-inspired static site to `public/`, and includes concise guide pages under `docs/site/`.
 - `hash160` uses upstream `sigil-crypto`'s native `ripemd160` binding when it
   is linked in the current runtime, with a private compatibility fallback for
@@ -131,6 +137,14 @@ Known-good miniscript harness verification command:
 ```sh
 cd packages/sigil-bitcoin-miniscript
 guix shell -m ../../manifest.scm -- sigil test test/test-miniscript.sgl \
+  --redirects ../../dev-redirects.sgl --no-color
+```
+
+Known-good node harness verification command:
+
+```sh
+cd packages/sigil-bitcoin-node
+guix shell -m ../../manifest.scm -- ../../../sigil/build/dev/bin/sigil test test/test-node.sgl \
   --redirects ../../dev-redirects.sgl --no-color
 ```
 
@@ -172,6 +186,7 @@ or pure Sigil code. No changes to the Sigil VM or compiler are required.
 - 3f. sigil-bitcoin-miniscript (Miniscript AST, parser, type checker, script compiler, descriptors)
 - 3g. sigil-bitcoin-consensus (blocks, merkle, PoW)
 - 3h. sigil-bitcoin-p2p (messages, handshake)
+- 3i. sigil-bitcoin-node (chain configs, header persistence, header sync)
 
 ## Verification
 
@@ -258,6 +273,7 @@ or pure Sigil code. No changes to the Sigil VM or compiler are required.
 - [x] Extend `sigil-bitcoin-p2p` with socket envelope I/O and transport-driven handshake orchestration.
 - [x] Extend `sigil-bitcoin-p2p` with bounded header-sync loops over peer sessions.
 - [x] Extend `sigil-bitcoin-p2p` with peer selection and full block/transaction relay scheduling.
+- [x] Add `sigil-bitcoin-node` with chain configs, SQLite-backed header persistence, validated header ingestion, status queries, and peer-driven header sync.
 - [x] Extend `sigil-bitcoin-consensus` with standard P2PKH/P2WPKH signature checks during block connection.
 - [x] Extend `sigil-bitcoin-consensus` with P2SH redeem-script checks and P2WSH single-key signature checks.
 - [x] Extend `sigil-bitcoin-consensus` with Taproot key-path and single-key script-path signature checks.

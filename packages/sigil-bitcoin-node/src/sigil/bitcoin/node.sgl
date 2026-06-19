@@ -1,0 +1,397 @@
+;;; (sigil bitcoin node) — Chain-generic header-sync node runtime
+
+(define-library (sigil bitcoin node)
+  (import (sigil struct)
+          (sigil fs)
+          (sigil sqlite)
+          (sigil bitcoin encoding)
+          (sigil bitcoin consensus)
+          (sigil bitcoin p2p))
+  (export
+    chain-config chain-config?
+    chain-config-name chain-config-network-id
+    chain-config-magic chain-config-default-port
+    chain-config-protocol-version chain-config-services
+    chain-config-user-agent chain-config-genesis-header
+    chain-config-genesis-hash chain-config-consensus-params
+    chain-config-extensions
+    bitcoin-mainnet-chain bitcoin-testnet-chain bitcoin-regtest-chain
+    chain-config-by-name
+    node node?
+    node-chain node-data-dir node-db-path node-db
+    node-status node-status-snapshot?
+    node-status-snapshot-chain node-status-snapshot-best-hash
+    node-status-snapshot-best-height node-status-snapshot-best-work
+    node-status-snapshot-header-count
+    node-open
+    node-close
+    node-best-header
+    node-ingest-headers
+    node-sync-headers)
+  (begin
+
+    (define %schema-version "1")
+    (define %zero32 (make-bytevector 32 0))
+    (define %ipv6-loopback
+      #u8(#x00 #x00 #x00 #x00 #x00 #x00 #x00 #x00
+          #x00 #x00 #x00 #x00 #x00 #x00 #x00 #x01))
+    (define %bitcoin-mainnet-genesis-header
+      (block-header-parse
+        (hex-decode
+          "0100000000000000000000000000000000000000000000000000000000000000000000003ba3edfd7a7b12b27ac72c3e67768f617fc81bc3888a51323a9fb8aa4b1e5e4a29ab5f49ffff001d1dac2b7c")))
+    (define %bitcoin-testnet-genesis-header
+      (block-header-parse
+        (hex-decode
+          "0100000000000000000000000000000000000000000000000000000000000000000000003ba3edfd7a7b12b27ac72c3e67768f617fc81bc3888a51323a9fb8aa4b1e5e4adae5494dffff001d1aa4ae18")))
+    (define %bitcoin-regtest-genesis-header
+      (block-header-parse
+        (hex-decode
+          "0100000000000000000000000000000000000000000000000000000000000000000000003ba3edfd7a7b12b27ac72c3e67768f617fc81bc3888a51323a9fb8aa4b1e5e4adae5494dffff7f2002000000")))
+
+    ;;; Chain identity and network/consensus parameters used by the node.
+    ;;;
+    ;;; The `extensions` alist is reserved for chain-specific hooks such as
+    ;;; SigilCoin's future IRC mining metadata.
+    ;;;
+    ;;; ```scheme
+    ;;; (chain-config-name bitcoin-mainnet-chain)
+    ;;; ```
+    (define-struct chain-config
+      (name string?)
+      (network-id string?)
+      (magic bytevector?)
+      (default-port integer?)
+      (protocol-version integer?)
+      (services integer?)
+      (user-agent string?)
+      (genesis-header block-header?)
+      (genesis-hash bytevector?)
+      (consensus-params consensus-params?)
+      (extensions list?))
+
+    ;;; Open node handle containing chain metadata and an SQLite connection.
+    ;;;
+    ;;; ```scheme
+    ;;; (define n (node-open bitcoin-regtest-chain "/tmp/sigil-node"))
+    ;;; ```
+    (define-struct node
+      (chain chain-config?)
+      (data-dir string?)
+      (db-path string?)
+      (db any?))
+
+    ;;; Snapshot of persisted node header state.
+    ;;;
+    ;;; ```scheme
+    ;;; (node-status-snapshot-best-height (node-status n))
+    ;;; ```
+    (define-struct node-status-snapshot
+      (chain string?)
+      (best-hash string?)
+      (best-height integer?)
+      (best-work integer?)
+      (header-count integer?))
+
+    (define bitcoin-mainnet-chain
+      (chain-config name: "bitcoin-mainnet"
+                    network-id: "mainnet"
+                    magic: bitcoin-mainnet-magic
+                    default-port: 8333
+                    protocol-version: 70015
+                    services: 1
+                    user-agent: "/sigil-bitcoin-node:0.1.0/"
+                    genesis-header: %bitcoin-mainnet-genesis-header
+                    genesis-hash: (block-header-hash %bitcoin-mainnet-genesis-header)
+                    consensus-params: bitcoin-mainnet-consensus-params
+                    extensions: '()))
+
+    (define bitcoin-testnet-chain
+      (chain-config name: "bitcoin-testnet"
+                    network-id: "testnet"
+                    magic: bitcoin-testnet-magic
+                    default-port: 18333
+                    protocol-version: 70015
+                    services: 1
+                    user-agent: "/sigil-bitcoin-node:0.1.0/"
+                    genesis-header: %bitcoin-testnet-genesis-header
+                    genesis-hash: (block-header-hash %bitcoin-testnet-genesis-header)
+                    consensus-params: bitcoin-testnet-consensus-params
+                    extensions: '()))
+
+    (define bitcoin-regtest-chain
+      (chain-config name: "bitcoin-regtest"
+                    network-id: "regtest"
+                    magic: bitcoin-regtest-magic
+                    default-port: 18444
+                    protocol-version: 70015
+                    services: 1
+                    user-agent: "/sigil-bitcoin-node:0.1.0/"
+                    genesis-header: %bitcoin-regtest-genesis-header
+                    genesis-hash: (block-header-hash %bitcoin-regtest-genesis-header)
+                    consensus-params: bitcoin-regtest-consensus-params
+                    extensions: '((sigilcoin-mining . hooks-only)
+                                  (irc-mining . off-chain))))
+
+    ;;; Return a built-in chain config by canonical or short name.
+    ;;;
+    ;;; ```scheme
+    ;;; (chain-config-by-name "regtest")
+    ;;; ```
+    (define (chain-config-by-name name)
+      (: string? -> chain-config?)
+      (cond ((string=? name "bitcoin-mainnet") bitcoin-mainnet-chain)
+            ((string=? name "mainnet") bitcoin-mainnet-chain)
+            ((string=? name "bitcoin-testnet") bitcoin-testnet-chain)
+            ((string=? name "testnet") bitcoin-testnet-chain)
+            ((string=? name "bitcoin-regtest") bitcoin-regtest-chain)
+            ((string=? name "regtest") bitcoin-regtest-chain)
+            (else
+             (error (string-append "chain-config-by-name: unknown chain " name)))))
+
+    (define (row-ref row key)
+      (let ((pair (assoc key row)))
+        (if pair
+            (cdr pair)
+            (let ((sym-pair (assoc (string->symbol key) row)))
+              (if sym-pair
+                  (cdr sym-pair)
+                  #f)))))
+
+    (define (header-hash-text header)
+      (hex-encode (block-header-hash header)))
+
+    (define (header-prev-text header)
+      (hex-encode (block-header-previous-block header)))
+
+    (define (header-row->header row)
+      (block-header-parse (hex-decode (row-ref row "header_hex"))))
+
+    (define (header-row-work row)
+      (string->number (row-ref row "work")))
+
+    (define (header-row-height row)
+      (row-ref row "height"))
+
+    (define (db-create-schema db)
+      (sqlite-exec
+        db
+        "CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+      (sqlite-exec
+        db
+        "CREATE TABLE IF NOT EXISTS headers (hash TEXT PRIMARY KEY, prev_hash TEXT NOT NULL, height INTEGER NOT NULL, work TEXT NOT NULL, header_hex TEXT NOT NULL, time INTEGER NOT NULL, bits INTEGER NOT NULL, valid INTEGER NOT NULL)")
+      (sqlite-exec
+        db
+        "CREATE TABLE IF NOT EXISTS peers (address TEXT NOT NULL, port INTEGER NOT NULL, score INTEGER NOT NULL DEFAULT 0, failures INTEGER NOT NULL DEFAULT 0, last_seen INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(address, port))")
+      (sqlite-run db
+                  "INSERT OR REPLACE INTO metadata(key, value) VALUES (?, ?)"
+                  "schema-version"
+                  %schema-version))
+
+    (define (db-header-row db hash-text)
+      (sqlite-query-row
+        db
+        "SELECT hash, prev_hash, height, work, header_hex, time, bits, valid FROM headers WHERE hash = ?"
+        hash-text))
+
+    (define (db-insert-header db hash-text prev-text height work header)
+      (sqlite-run
+        db
+        "INSERT OR REPLACE INTO headers(hash, prev_hash, height, work, header_hex, time, bits, valid) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+        hash-text
+        prev-text
+        height
+        (number->string work)
+        (hex-encode (block-header-serialize header))
+        (block-header-time header)
+        (block-header-bits header)
+        1))
+
+    (define (db-all-header-rows db)
+      (sqlite-query
+        db
+        "SELECT hash, prev_hash, height, work, header_hex, time, bits, valid FROM headers WHERE valid = 1"))
+
+    (define (db-header-count db)
+      (let ((row (sqlite-query-row db "SELECT COUNT(*) AS count FROM headers WHERE valid = 1")))
+        (if row (row-ref row "count") 0)))
+
+    (define (best-row rows)
+      (let loop ((xs rows) (best #f))
+        (cond ((null? xs) best)
+              ((not best) (loop (cdr xs) (car xs)))
+              ((> (header-row-work (car xs)) (header-row-work best))
+               (loop (cdr xs) (car xs)))
+              ((and (= (header-row-work (car xs)) (header-row-work best))
+                    (> (header-row-height (car xs)) (header-row-height best)))
+               (loop (cdr xs) (car xs)))
+              (else
+               (loop (cdr xs) best)))))
+
+    (define (db-best-header-row db)
+      (best-row (db-all-header-rows db)))
+
+    (define (db-chain-to-row db row)
+      (let loop ((current row) (headers '()))
+        (cond ((not current)
+               headers)
+              ((= 0 (header-row-height current))
+               (cons (header-row->header current) headers))
+              (else
+               (loop (db-header-row db (row-ref current "prev_hash"))
+                     (cons (header-row->header current) headers))))))
+
+    (define (db-initialize-chain db chain)
+      (sqlite-run db
+                  "INSERT OR REPLACE INTO metadata(key, value) VALUES (?, ?)"
+                  "chain"
+                  (chain-config-name chain))
+      (let* ((genesis (chain-config-genesis-header chain))
+             (hash-text (hex-encode (chain-config-genesis-hash chain))))
+        (unless (db-header-row db hash-text)
+          (db-insert-header
+            db
+            hash-text
+            (hex-encode (block-header-previous-block genesis))
+            0
+            (block-header-chain-work genesis)
+            genesis))))
+
+    (define (node-db-file data-dir chain)
+      (string-append data-dir "/" (chain-config-name chain) ".sqlite"))
+
+    ;;; Open or initialize a node database for `chain` under `data-dir`.
+    ;;;
+    ;;; ```scheme
+    ;;; (define n (node-open bitcoin-regtest-chain "/tmp/sigil-node"))
+    ;;; ```
+    (define (node-open chain data-dir)
+      (: chain-config? string? -> node?)
+      (ensure-directory data-dir)
+      (let* ((db-path (node-db-file data-dir chain))
+             (db (sqlite-open db-path)))
+        (unless db
+          (error "node-open: could not open SQLite database"))
+        (db-create-schema db)
+        (db-initialize-chain db chain)
+        (node chain: chain data-dir: data-dir db-path: db-path db: db)))
+
+    ;;; Close a node database handle.
+    ;;;
+    ;;; ```scheme
+    ;;; (node-close n)
+    ;;; ```
+    (define (node-close n)
+      (: node? -> boolean?)
+      (sqlite-close (node-db n))
+      #t)
+
+    ;;; Return the best persisted block header by chain work.
+    ;;;
+    ;;; ```scheme
+    ;;; (node-best-header n)
+    ;;; ```
+    (define (node-best-header n)
+      (: node? -> block-header?)
+      (let ((row (db-best-header-row (node-db n))))
+        (if row
+            (header-row->header row)
+            (chain-config-genesis-header (node-chain n)))))
+
+    ;;; Return a snapshot of persisted header-sync state.
+    ;;;
+    ;;; ```scheme
+    ;;; (node-status-snapshot-best-height (node-status n))
+    ;;; ```
+    (define (node-status n)
+      (: node? -> node-status-snapshot?)
+      (let* ((db (node-db n))
+             (row (db-best-header-row db)))
+        (node-status-snapshot
+          chain: (chain-config-name (node-chain n))
+          best-hash: (if row (row-ref row "hash") "")
+          best-height: (if row (header-row-height row) 0)
+          best-work: (if row (header-row-work row) 0)
+          header-count: (db-header-count db))))
+
+    (define (previous-chain-for-header db header)
+      (let ((prev-row (db-header-row db (header-prev-text header))))
+        (unless prev-row
+          (error "node-ingest-headers: header does not connect to known chain"))
+        (db-chain-to-row db prev-row)))
+
+    (define (ingest-one-header n header)
+      (let* ((db (node-db n))
+             (hash-text (header-hash-text header)))
+        (if (db-header-row db hash-text)
+            #f
+            (let* ((previous (previous-chain-for-header db header))
+                   (prev-row (db-header-row db (header-prev-text header)))
+                   (height (+ 1 (header-row-height prev-row)))
+                   (work (+ (header-row-work prev-row)
+                            (block-header-chain-work header))))
+              (unless (block-header-valid-after?
+                        (chain-config-consensus-params (node-chain n))
+                        previous
+                        header)
+                (error "node-ingest-headers: invalid header"))
+              (db-insert-header db
+                                hash-text
+                                (header-prev-text header)
+                                height
+                                work
+                                header)
+              #t))))
+
+    ;;; Validate and persist linked headers, returning the insert count.
+    ;;;
+    ;;; ```scheme
+    ;;; (node-ingest-headers n headers)
+    ;;; ```
+    (define (node-ingest-headers n headers)
+      (: node? list? -> integer?)
+      (let loop ((xs headers) (count 0))
+        (if (null? xs)
+            count
+            (loop (cdr xs)
+                  (if (ingest-one-header n (car xs))
+                      (+ count 1)
+                      count)))))
+
+    (define (make-node-session n start-height)
+      (let* ((chain (node-chain n))
+             (addr (network-address services: (chain-config-services chain)
+                                    ip: %ipv6-loopback
+                                    port: (chain-config-default-port chain))))
+        (p2p-session-create
+          (chain-config-magic chain)
+          (chain-config-protocol-version chain)
+          (chain-config-services chain)
+          addr
+          addr
+          1
+          (chain-config-user-agent chain)
+          start-height
+          #t)))
+
+    ;;; Run a bounded peer handshake/header sync and persist received headers.
+    ;;;
+    ;;; ```scheme
+    ;;; (node-sync-headers n read-envelope write-envelope 64)
+    ;;; ```
+    (define (node-sync-headers n read-envelope write-envelope max-steps)
+      (: node? procedure? procedure? integer? -> node-status-snapshot?)
+      (let* ((start (node-status-snapshot-best-height (node-status n)))
+             (session (make-node-session n start))
+             (ready (p2p-session-handshake read-envelope
+                                           write-envelope
+                                           session
+                                           max-steps))
+             (synced (p2p-session-sync-headers read-envelope
+                                               write-envelope
+                                               ready
+                                               %zero32
+                                               max-steps))
+             (headers (peer-state-headers
+                        (p2p-session-state synced))))
+        (node-ingest-headers n headers)
+        (node-status n)))))

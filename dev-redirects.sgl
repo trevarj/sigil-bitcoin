@@ -11,6 +11,7 @@
 (define (workspace-dep name)
   (or (first-existing
         (list
+          (string-append "../sigil/packages/" name)
           (string-append ".sigil/deps/" name)
           (string-append "../../.sigil/deps/" name)
           (string-append "../../../.sigil/deps/" name)))
@@ -27,6 +28,18 @@
     (dep "sigil-stdlib")
     (dep "sigil-test")
     (dep "sigil-test-runner")
+    (dep "sigil-secp256k1")
+    (dep "sigil-bitcoin-utils")
+    (dep "sigil-bitcoin-primitives")
+    (dep "sigil-bitcoin-encoding")
+    (dep "sigil-bitcoin-keys")
+    (dep "sigil-bitcoin-script")
+    (dep "sigil-bitcoin-tx")
+    (dep "sigil-bitcoin-miniscript")
+    (dep "sigil-bitcoin-consensus")
+    (dep "sigil-bitcoin-p2p")
+    (dep "sigil-bitcoin-node")
+    (dep "sigil-bitcoin-demo")
     (for-package
       name: "sigil-ansi"
       use: (from-path dir: (workspace-dep "sigil-ansi-v0.16")))
@@ -35,4 +48,7 @@
       use: (from-path dir: (workspace-dep "sigil-json-v0.16")))
     (for-package
       name: "sigil-version"
-      use: (from-path dir: (workspace-dep "sigil-version-v0.16")))))
+      use: (from-path dir: (workspace-dep "sigil-version-v0.16")))
+    (for-package
+      name: "sigil-sqlite"
+      use: (from-path dir: (workspace-dep "sigil-sqlite")))))

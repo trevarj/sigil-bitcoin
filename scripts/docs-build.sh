@@ -2,6 +2,7 @@
 set -eu
 
 ROOT=$(CDPATH= cd "$(dirname "$0")/.." && pwd)
+SIGIL=${SIGIL:-"$ROOT/../sigil/build/dev/bin/sigil"}
 PRESS_TOOL="$ROOT/tools/press-docs"
 DEP_ROOT="$PRESS_TOOL/.sigil/deps"
 
@@ -13,6 +14,9 @@ PACKAGES=(
   packages/sigil-bitcoin-script
   packages/sigil-bitcoin-tx
   packages/sigil-bitcoin-miniscript
+  packages/sigil-bitcoin-consensus
+  packages/sigil-bitcoin-p2p
+  packages/sigil-bitcoin-node
 )
 
 rebase_pages_urls() {
@@ -57,7 +61,7 @@ link_package_deps() {
 if [ ! -d "$DEP_ROOT/press" ]; then
   (
     cd "$PRESS_TOOL"
-    sigil deps install
+    "$SIGIL" deps install
   )
 fi
 
@@ -65,7 +69,7 @@ for package in $PACKAGES; do
   link_package_deps "$ROOT/$package"
   (
     cd "$ROOT/$package"
-    sigil build --redirects ../../dev-redirects.sgl --no-bundle
+    "$SIGIL" build --redirects ../../dev-redirects.sgl --no-bundle
   )
 done
 
@@ -79,7 +83,7 @@ done
 cd "$ROOT"
 rm -rf public
 
-sigil "${lib_args[@]}" \
+"$SIGIL" "${lib_args[@]}" \
   -L packages/sigil-bitcoin-miniscript/build/dev/lib \
   eval -f tools/press-site.sgl
 

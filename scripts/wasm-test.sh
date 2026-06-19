@@ -2,6 +2,7 @@
 set -eu
 
 ROOT=$(CDPATH= cd "$(dirname "$0")/.." && pwd)
+SIGIL=${SIGIL:-"$ROOT/../sigil/build/dev/bin/sigil"}
 DEMO="$ROOT/packages/sigil-bitcoin-demo"
 WWW="$DEMO/build/web/www"
 WASM="$WWW/sigil-bitcoin-demo.wasm"
@@ -33,7 +34,7 @@ refresh_package_deps
 if ! (
   cd "$DEMO"
   guix shell -m ../../manifest.scm -- \
-    sigil build \
+    "$SIGIL" build \
       --config web \
       --redirects ../../dev-redirects.sgl
 ) >"$build_log" 2>&1; then

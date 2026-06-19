@@ -1,0 +1,93 @@
+;;; (sigil bitcoin node main) — CLI for the header-sync node
+
+(define-library (sigil bitcoin node main)
+  (import (sigil core)
+          (sigil string)
+          (sigil bitcoin node)
+          (sigil bitcoin p2p))
+  (export main)
+  (begin
+
+    (define (usage)
+      (println "usage:")
+      (println "  sigil-bitcoin-node status [--chain CHAIN] [--data-dir DIR]")
+      (println "  sigil-bitcoin-node header-sync --peer HOST:PORT [--chain CHAIN] [--data-dir DIR] [--max-steps N]")
+      (println "")
+      (println "chains: bitcoin-mainnet, bitcoin-testnet, bitcoin-regtest"))
+
+    (define (arg-value args name default)
+      (let loop ((xs args))
+        (cond ((null? xs) default)
+              ((and (string=? (car xs) name) (not (null? (cdr xs))))
+               (cadr xs))
+              (else
+               (loop (cdr xs))))))
+
+    (define (parse-peer text default-port)
+      (let ((parts (string-split text ":")))
+        (cond ((= 1 (length parts))
+               (cons (car parts) default-port))
+              ((= 2 (length parts))
+               (let ((port (string->number (cadr parts))))
+                 (unless port
+                   (error "header-sync: peer port must be a number"))
+                 (cons (car parts) port)))
+              (else
+               (error "header-sync: expected HOST or HOST:PORT")))))
+
+    (define (print-status status)
+      (println "chain: ~a" (node-status-snapshot-chain status))
+      (println "best-height: ~a" (node-status-snapshot-best-height status))
+      (println "best-hash: ~a" (node-status-snapshot-best-hash status))
+      (println "best-work: ~a" (node-status-snapshot-best-work status))
+      (println "headers: ~a" (node-status-snapshot-header-count status)))
+
+    (define (with-node args proc)
+      (let* ((chain-name (arg-value args "--chain" "bitcoin-mainnet"))
+             (data-dir (arg-value args "--data-dir" ".sigil-bitcoin-node"))
+             (chain (chain-config-by-name chain-name))
+             (n (node-open chain data-dir)))
+        (let ((result (proc n)))
+          (node-close n)
+          result)))
+
+    (define (run-status args)
+      (with-node args
+        (lambda (n)
+          (print-status (node-status n)))))
+
+    (define (run-header-sync args)
+      (let ((peer-text (arg-value args "--peer" #f)))
+        (unless peer-text
+          (usage)
+          (error "header-sync: missing --peer"))
+        (with-node args
+          (lambda (n)
+            (let* ((chain (node-chain n))
+                   (peer (parse-peer peer-text
+                                     (chain-config-default-port chain)))
+                   (host (car peer))
+                   (port (cdr peer))
+                   (max-steps (string->number
+                                (arg-value args "--max-steps" "64")))
+                   (sock (p2p-socket-connect host port)))
+              (print-status
+                (node-sync-headers
+                  n
+                  (lambda () (p2p-socket-read-envelope sock))
+                  (lambda (envelope)
+                    (p2p-socket-write-envelope sock envelope))
+                  max-steps)))))))
+
+    (define (main)
+      (: -> void?)
+      (let ((args (cdr (command-line))))
+        (cond ((null? args)
+               (usage))
+              ((string=? (car args) "status")
+               (run-status (cdr args)))
+              ((string=? (car args) "header-sync")
+               (run-header-sync (cdr args)))
+              (else
+               (usage)
+               (error (string-append "unknown command: " (car args)))))))))

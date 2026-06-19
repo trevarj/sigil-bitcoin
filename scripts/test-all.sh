@@ -2,9 +2,11 @@
 set -eu
 
 ROOT=$(CDPATH= cd "$(dirname "$0")/.." && pwd)
+SIGIL=${SIGIL:-"$ROOT/../sigil/build/dev/bin/sigil"}
 
 setup_native_library_path() {
-  libsecp_dir=$(guix build libsecp256k1 2>/dev/null)/lib
+  libsecp_store=$(guix build libsecp256k1 2>/dev/null || true)
+  libsecp_dir="$libsecp_store/lib"
   if [ -d "$libsecp_dir" ]; then
     if [ "${LD_LIBRARY_PATH:-}" ]; then
       LD_LIBRARY_PATH="$libsecp_dir:$LD_LIBRARY_PATH"
@@ -13,6 +15,7 @@ setup_native_library_path() {
     fi
     export LD_LIBRARY_PATH
   fi
+  return 0
 }
 
 link_package_deps() {
@@ -39,48 +42,55 @@ setup_native_library_path
 printf '\n==> root workspace tests\n'
 cd "$ROOT"
 guix shell -m manifest.scm -- \
-  sigil test --redirects ./dev-redirects.sgl --no-color
+  "$SIGIL" test --redirects ./dev-redirects.sgl --no-color
 
 printf '\n==> sigil-secp256k1 native harness\n'
 link_package_deps "$ROOT/packages/sigil-secp256k1"
 cd "$ROOT/packages/sigil-secp256k1"
 guix shell -m ../../manifest.scm -- \
-  sigil test test/test-secp256k1.sgl \
+  "$SIGIL" test test/test-secp256k1.sgl \
     --redirects ../../dev-redirects.sgl --no-color
 
 printf '\n==> sigil-bitcoin-keys native harness\n'
 link_package_deps "$ROOT/packages/sigil-bitcoin-keys"
 cd "$ROOT/packages/sigil-bitcoin-keys"
 guix shell -m ../../manifest.scm -- \
-  sigil test test/test-keys.sgl \
+  "$SIGIL" test test/test-keys.sgl \
     --redirects ../../dev-redirects.sgl --no-color
 
 printf '\n==> sigil-bitcoin-tx native harness\n'
 link_package_deps "$ROOT/packages/sigil-bitcoin-tx"
 cd "$ROOT/packages/sigil-bitcoin-tx"
 guix shell -m ../../manifest.scm -- \
-  sigil test test/test-tx.sgl \
+  "$SIGIL" test test/test-tx.sgl \
     --redirects ../../dev-redirects.sgl --no-color
 
 printf '\n==> sigil-bitcoin-miniscript native harness\n'
 link_package_deps "$ROOT/packages/sigil-bitcoin-miniscript"
 cd "$ROOT/packages/sigil-bitcoin-miniscript"
 guix shell -m ../../manifest.scm -- \
-  sigil test test/test-miniscript.sgl \
+  "$SIGIL" test test/test-miniscript.sgl \
     --redirects ../../dev-redirects.sgl --no-color
 
 printf '\n==> sigil-bitcoin-consensus package harness\n'
 link_package_deps "$ROOT/packages/sigil-bitcoin-consensus"
 cd "$ROOT/packages/sigil-bitcoin-consensus"
 guix shell -m ../../manifest.scm -- \
-  sigil test test/test-consensus.sgl \
+  "$SIGIL" test test/test-consensus.sgl \
     --redirects ../../dev-redirects.sgl --no-color
 
 printf '\n==> sigil-bitcoin-p2p package harness\n'
 link_package_deps "$ROOT/packages/sigil-bitcoin-p2p"
 cd "$ROOT/packages/sigil-bitcoin-p2p"
 guix shell -m ../../manifest.scm -- \
-  sigil test test/test-p2p.sgl \
+  "$SIGIL" test test/test-p2p.sgl \
+    --redirects ../../dev-redirects.sgl --no-color
+
+printf '\n==> sigil-bitcoin-node package harness\n'
+link_package_deps "$ROOT/packages/sigil-bitcoin-node"
+cd "$ROOT/packages/sigil-bitcoin-node"
+guix shell -m ../../manifest.scm -- \
+  "$SIGIL" test test/test-node.sgl \
     --redirects ../../dev-redirects.sgl --no-color
 
 "$ROOT/scripts/wasm-test.sh"

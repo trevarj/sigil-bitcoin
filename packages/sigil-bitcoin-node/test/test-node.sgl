@@ -1,0 +1,109 @@
+(import (sigil test)
+        (sigil fs)
+        (sigil bitcoin node)
+        (sigil bitcoin consensus))
+
+(define %zero32 (make-bytevector 32 0))
+
+(define (test-data-dir)
+  (let ((dir (make-temp-directory)))
+    (unless dir
+      (error "test-data-dir: failed to create temp directory"))
+    dir))
+
+(define (same-header? left right)
+  (equal? (block-header-serialize left)
+          (block-header-serialize right)))
+
+(define (mine-header previous-headers time bits)
+  (let ((previous-hash (if (null? previous-headers)
+                           %zero32
+                           (block-header-hash
+                             (car (reverse previous-headers))))))
+    (let loop ((nonce 0))
+      (let ((header (block-header version: 1
+                                  previous-block: previous-hash
+                                  merkle-root: %zero32
+                                  time: time
+                                  bits: bits
+                                  nonce: nonce)))
+        (if (block-header-proof-of-work-valid? header)
+            header
+            (loop (+ nonce 1)))))))
+
+(define (mine-next previous-headers time)
+  (mine-header previous-headers time #x207fffff))
+
+(test-group "chain configs"
+  (test "looks up builtin chains"
+    (assert-equal "bitcoin-mainnet"
+                  (chain-config-name
+                    (chain-config-by-name "mainnet")))
+    (assert-equal "bitcoin-testnet"
+                  (chain-config-name
+                    (chain-config-by-name "testnet")))
+    (assert-equal "bitcoin-regtest"
+                  (chain-config-name
+                    (chain-config-by-name "regtest")))
+    (assert-equal 18444
+                  (chain-config-default-port bitcoin-regtest-chain))))
+
+(test-group "node state"
+  (test "initializes genesis header"
+    (let* ((dir (test-data-dir))
+           (n (node-open bitcoin-regtest-chain dir))
+           (status (node-status n)))
+      (assert-equal "bitcoin-regtest"
+                    (node-status-snapshot-chain status))
+      (assert-equal 0
+                    (node-status-snapshot-best-height status))
+      (assert-equal 1
+                    (node-status-snapshot-header-count status))
+      (assert-true
+        (same-header? (chain-config-genesis-header bitcoin-regtest-chain)
+                      (node-best-header n)))
+      (node-close n)))
+
+  (test "ingests linked valid headers"
+    (let* ((dir (test-data-dir))
+           (n (node-open bitcoin-regtest-chain dir))
+           (h0 (chain-config-genesis-header bitcoin-regtest-chain))
+           (h1 (mine-next (list h0) 1296688602))
+           (h2 (mine-next (list h0 h1) 1296689202)))
+      (assert-true
+        (block-header-valid-after?
+          bitcoin-regtest-consensus-params
+          (list h0)
+          h1))
+      (let* ((inserted (node-ingest-headers n (list h1 h2)))
+             (status (node-status n)))
+        (assert-equal 2 inserted)
+        (assert-equal 2
+                      (node-status-snapshot-best-height status))
+        (assert-equal 3
+                      (node-status-snapshot-header-count status))
+        (assert-true (same-header? h2 (node-best-header n)))
+        (node-close n))))
+
+  (test "persists headers across opens"
+    (let* ((dir (test-data-dir))
+           (first (node-open bitcoin-regtest-chain dir))
+           (h0 (chain-config-genesis-header bitcoin-regtest-chain))
+           (h1 (mine-next (list h0) 1296688602)))
+      (node-ingest-headers first (list h1))
+      (node-close first)
+      (let* ((second (node-open bitcoin-regtest-chain dir))
+             (status (node-status second)))
+        (assert-equal 1
+                      (node-status-snapshot-best-height status))
+        (assert-equal 2
+                      (node-status-snapshot-header-count status))
+        (assert-true (same-header? h1 (node-best-header second)))
+        (node-close second))))
+
+  (test "rejects unconnected headers"
+    (let* ((dir (test-data-dir))
+           (n (node-open bitcoin-regtest-chain dir))
+           (orphan (mine-next '() 1296688602)))
+      (assert-error (node-ingest-headers n (list orphan)))
+      (node-close n))))
