@@ -37,6 +37,12 @@
     p2p-session-addr-recv p2p-session-addr-from p2p-session-nonce
     p2p-session-user-agent p2p-session-start-height p2p-session-relay?
     p2p-session-state p2p-session-outbound
+    p2p-peer p2p-peer?
+    p2p-peer-id p2p-peer-session p2p-peer-score
+    p2p-peer-failures p2p-peer-banned?
+    p2p-relay-request p2p-relay-request?
+    p2p-relay-request-peer-id p2p-relay-request-items
+    p2p-relay-request-payload
     p2p-envelope p2p-envelope?
     p2p-envelope-magic p2p-envelope-command p2p-envelope-payload
     p2p-checksum
@@ -81,7 +87,11 @@
     p2p-session-handshake
     p2p-session-sync-headers
     p2p-session-next-getheaders
-    p2p-session-request-inventory)
+    p2p-session-request-inventory
+    p2p-peer-create
+    p2p-peer-select
+    p2p-peer-select-many
+    p2p-relay-schedule)
   (begin
 
     (define bitcoin-mainnet-magic #u8(#xf9 #xbe #xb4 #xd9))
@@ -137,6 +147,18 @@
       (relay? boolean?)
       (state peer-state?)
       (outbound list?))
+
+    (define-struct p2p-peer
+      (id any?)
+      (session p2p-session?)
+      (score integer?)
+      (failures integer?)
+      (banned? boolean?))
+
+    (define-struct p2p-relay-request
+      (peer-id any?)
+      (items list?)
+      (payload bytevector?))
 
     (define-struct p2p-envelope
       (magic bytevector?)
@@ -814,6 +836,35 @@
           session
           (p2p-session-queue session "getdata" (getdata-message items))))
 
+    (define (inventory-vector=? a b)
+      (and (= (inventory-vector-type a) (inventory-vector-type b))
+           (equal? (inventory-vector-hash a) (inventory-vector-hash b))))
+
+    (define (inventory-member? item items)
+      (cond
+        ((null? items) #f)
+        ((inventory-vector=? item (car items)) #t)
+        (else (inventory-member? item (cdr items)))))
+
+    (define (dedupe-inventory items)
+      (let loop ((xs items) (out '()))
+        (cond
+          ((null? xs) (reverse out))
+          ((inventory-member? (car xs) out) (loop (cdr xs) out))
+          (else (loop (cdr xs) (cons (car xs) out))))))
+
+    (define (take-up-to items count)
+      (let loop ((xs items) (i 0) (out '()))
+        (if (or (null? xs) (>= i count))
+            (reverse out)
+            (loop (cdr xs) (+ i 1) (cons (car xs) out)))))
+
+    (define (drop-up-to items count)
+      (let loop ((xs items) (i 0))
+        (if (or (null? xs) (>= i count))
+            xs
+            (loop (cdr xs) (+ i 1)))))
+
     (define (p2p-session-apply-envelope session envelope)
       (: p2p-session? p2p-envelope? -> p2p-session?)
       (let* ((old-state (p2p-session-state session))
@@ -906,4 +957,94 @@
         (peer-state-next-getheaders
           (p2p-session-state session)
           (p2p-session-protocol-version session)
-          stop-hash)))))
+          stop-hash)))
+
+    (define (p2p-peer-create id session score failures banned?)
+      (: any? p2p-session? integer? integer? boolean? -> p2p-peer?)
+      (unless (p2p-session? session)
+        (error "p2p-peer-create: expected p2p-session"))
+      (require-uint "p2p-peer score" score %u64-max)
+      (require-uint "p2p-peer failures" failures %u32-max)
+      (p2p-peer id: id
+                session: session
+                score: score
+                failures: failures
+                banned?: banned?))
+
+    (define (p2p-peer-eligible? peer)
+      (and (p2p-peer? peer)
+           (not (p2p-peer-banned? peer))
+           (peer-state-handshake-complete?
+             (p2p-session-state (p2p-peer-session peer)))))
+
+    (define (p2p-peer-better? left right)
+      (cond
+        ((not right) #t)
+        ((> (p2p-peer-score left) (p2p-peer-score right)) #t)
+        ((< (p2p-peer-score left) (p2p-peer-score right)) #f)
+        ((< (p2p-peer-failures left) (p2p-peer-failures right)) #t)
+        (else #f)))
+
+    (define (p2p-peer-select peers)
+      (: list? -> any?)
+      (let loop ((xs peers) (best #f))
+        (cond
+          ((null? xs) best)
+          ((and (p2p-peer-eligible? (car xs))
+                (p2p-peer-better? (car xs) best))
+           (loop (cdr xs) (car xs)))
+          (else (loop (cdr xs) best)))))
+
+    (define (remove-peer target peers)
+      (let loop ((xs peers) (out '()))
+        (cond
+          ((null? xs) (reverse out))
+          ((eq? target (car xs)) (append (reverse out) (cdr xs)))
+          (else (loop (cdr xs) (cons (car xs) out))))))
+
+    (define (p2p-peer-select-many peers count)
+      (: list? integer? -> list?)
+      (let loop ((remaining peers) (i 0) (out '()))
+        (if (>= i count)
+            (reverse out)
+            (let ((best (p2p-peer-select remaining)))
+              (if best
+                  (loop (remove-peer best remaining)
+                        (+ i 1)
+                        (cons best out))
+                  (reverse out))))))
+
+    (define (round-robin-peer peers index)
+      (let loop ((xs peers) (i index))
+        (cond
+          ((null? xs) #f)
+          ((= i 0) (car xs))
+          (else (loop (cdr xs) (- i 1))))))
+
+    (define (p2p-relay-schedule peers items batch-size)
+      (: list? list? integer? -> list?)
+      (when (<= batch-size 0)
+        (error "p2p-relay-schedule: expected positive batch-size"))
+      (require-inventory-list items)
+      (let ((selected (p2p-peer-select-many peers (length peers)))
+            (relay-items (dedupe-inventory
+                           (filter-relay-inventory items))))
+        (if (null? relay-items)
+            '()
+            (begin
+              (when (null? selected)
+                (error "p2p-relay-schedule: no eligible peers"))
+              (let loop ((remaining relay-items) (peer-index 0) (requests '()))
+                (if (null? remaining)
+                    (reverse requests)
+                    (let* ((batch (take-up-to remaining batch-size))
+                           (peer (round-robin-peer selected peer-index)))
+                      (loop (drop-up-to remaining batch-size)
+                            (if (>= (+ peer-index 1) (length selected))
+                                0
+                                (+ peer-index 1))
+                            (cons (p2p-relay-request
+                                    peer-id: (p2p-peer-id peer)
+                                    items: batch
+                                    payload: (getdata-message batch))
+                                  requests)))))))))))

@@ -67,6 +67,9 @@
          (drained (p2p-session-drain-outbound ready)))
     (cadr drained)))
 
+(define (make-peer id score failures banned?)
+  (p2p-peer-create id (make-ready-session) score failures banned?))
+
 (define (remote-version-envelope)
   (p2p-envelope
     magic: bitcoin-mainnet-magic
@@ -102,6 +105,12 @@
       (let ((next (car remaining)))
         (set! remaining (cdr remaining))
         next))))
+
+(define (make-hash-byte n)
+  (make-bytevector 32 n))
+
+(define (inventory-item type n)
+  (inventory-vector type: type hash: (make-hash-byte n)))
 
 (define (chunk-reader bytes sizes)
   (let ((cursor 0)
@@ -519,5 +528,74 @@
         (assert-equal "getheaders" (p2p-envelope-command (car written)))
         (assert-equal "pong" (p2p-envelope-command (cadr written)))
         (assert-equal 5 (peer-state-last-ping (p2p-session-state synced)))))))
+
+(test-group "peer selection and relay scheduling"
+  (test "selects the best eligible peer"
+    (let* ((incomplete (p2p-peer-create 'incomplete (make-session) 100 0 #f))
+           (banned (make-peer 'banned 200 0 #t))
+           (low (make-peer 'low 10 0 #f))
+           (best (make-peer 'best 20 2 #f))
+           (tie (make-peer 'tie 20 0 #f))
+           (selected (p2p-peer-select
+                       (list incomplete banned low best tie))))
+      (assert-equal 'tie (p2p-peer-id selected))))
+
+  (test "selects peers by score and failure count"
+    (let* ((a (make-peer 'a 10 0 #f))
+           (b (make-peer 'b 30 2 #f))
+           (c (make-peer 'c 30 1 #f))
+           (selected (p2p-peer-select-many (list a b c) 2)))
+      (assert-equal 'c (p2p-peer-id (car selected)))
+      (assert-equal 'b (p2p-peer-id (cadr selected)))))
+
+  (test "returns no relay requests for empty or unsupported inventory"
+    (assert-equal '() (p2p-relay-schedule '() '() 2))
+    (assert-equal '()
+                  (p2p-relay-schedule
+                    (list (make-peer 'a 1 0 #f))
+                    (list (inventory-item inv-error 1))
+                    2)))
+
+  (test "batches deduped relay inventory across selected peers"
+    (let* ((a (make-peer 'a 10 0 #f))
+           (b (make-peer 'b 20 0 #f))
+           (tx1 (inventory-item inv-tx 1))
+           (tx2 (inventory-item inv-tx 2))
+           (block1 (inventory-item inv-block 3))
+           (ignored (inventory-item inv-error 4))
+           (requests (p2p-relay-schedule
+                       (list a b)
+                       (list tx1 tx2 tx1 ignored block1)
+                       2))
+           (first-items (p2p-relay-request-items (car requests)))
+           (second-items (p2p-relay-request-items (cadr requests)))
+           (parsed-first (inventory-message-parse
+                           (p2p-relay-request-payload (car requests)))))
+      (assert-equal 2 (length requests))
+      (assert-equal 'b (p2p-relay-request-peer-id (car requests)))
+      (assert-equal 'a (p2p-relay-request-peer-id (cadr requests)))
+      (assert-equal (list tx1 tx2) first-items)
+      (assert-equal (list block1) second-items)
+      (assert-equal (inventory-vector-type tx1)
+                    (inventory-vector-type (car parsed-first)))
+      (assert-equal (inventory-vector-hash tx2)
+                    (inventory-vector-hash (cadr parsed-first)))))
+
+  (test "rejects relay scheduling without eligible peers"
+    (assert-error
+      (p2p-relay-schedule
+        (list (p2p-peer-create 'incomplete (make-session) 1 0 #f))
+        (list (inventory-item inv-tx 1))
+        1))
+    (assert-error
+      (p2p-relay-schedule
+        (list (make-peer 'banned 1 0 #t))
+        (list (inventory-item inv-block 1))
+        1))
+    (assert-error
+      (p2p-relay-schedule
+        (list (make-peer 'a 1 0 #f))
+        (list (inventory-item inv-tx 1))
+        0))))
 
 (run-tests)
