@@ -24,6 +24,9 @@
     consensus-params consensus-params?
     consensus-params-pow-limit-bits consensus-params-target-spacing
     consensus-params-target-timespan consensus-params-retarget-interval
+    consensus-params-bip34-height consensus-params-bip66-height
+    consensus-params-bip65-height consensus-params-csv-height
+    consensus-params-segwit-height consensus-params-taproot-height
     bitcoin-mainnet-consensus-params
     bitcoin-testnet-consensus-params
     bitcoin-regtest-consensus-params
@@ -66,6 +69,12 @@
     (define bitcoin-max-money 2100000000000000)
 
     (define %coinbase-maturity 100)
+    (define %locktime-threshold 500000000)
+    (define %sequence-final #xffffffff)
+    (define %sequence-locktime-disable-flag #x80000000)
+    (define %sequence-locktime-type-flag #x00400000)
+    (define %sequence-locktime-mask #x0000ffff)
+    (define %sequence-locktime-granularity 9)
 
     ;;; Bitcoin block header.
     (define-struct block-header
@@ -85,21 +94,34 @@
     (define-struct utxo-entry
       (output txout?)
       (coinbase? boolean?)
-      (height integer?))
+      (height integer?)
+      (time integer?))
 
     ;;; Parameters needed for proof-of-work target transitions.
     (define-struct consensus-params
       (pow-limit-bits integer?)
       (target-spacing integer?)
       (target-timespan integer?)
-      (retarget-interval integer?))
+      (retarget-interval integer?)
+      (bip34-height integer?)
+      (bip66-height integer?)
+      (bip65-height integer?)
+      (csv-height integer?)
+      (segwit-height integer?)
+      (taproot-height integer?))
 
     ;;; Bitcoin mainnet proof-of-work schedule parameters.
     (define bitcoin-mainnet-consensus-params
       (consensus-params pow-limit-bits: #x1d00ffff
                         target-spacing: 600
                         target-timespan: 1209600
-                        retarget-interval: 2016))
+                        retarget-interval: 2016
+                        bip34-height: 227931
+                        bip66-height: 363725
+                        bip65-height: 388381
+                        csv-height: 419328
+                        segwit-height: 481824
+                        taproot-height: 709632))
 
     ;;; Testnet uses the same retarget cadence; minimum-difficulty exceptions
     ;;; are intentionally left to a future policy layer.
@@ -107,14 +129,26 @@
       (consensus-params pow-limit-bits: #x1d00ffff
                         target-spacing: 600
                         target-timespan: 1209600
-                        retarget-interval: 2016))
+                        retarget-interval: 2016
+                        bip34-height: 21111
+                        bip66-height: 330776
+                        bip65-height: 581885
+                        csv-height: 770112
+                        segwit-height: 834624
+                        taproot-height: 0))
 
     ;;; Regtest keeps Bitcoin's spacing constants but a much easier pow limit.
     (define bitcoin-regtest-consensus-params
       (consensus-params pow-limit-bits: #x207fffff
                         target-spacing: 600
                         target-timespan: 1209600
-                        retarget-interval: 2016))
+                        retarget-interval: 2016
+                        bip34-height: #xffffffff
+                        bip66-height: #xffffffff
+                        bip65-height: #xffffffff
+                        csv-height: #xffffffff
+                        segwit-height: 0
+                        taproot-height: 0))
 
     (define (validate-consensus-params params)
       (unless (consensus-params? params)
@@ -134,6 +168,24 @@
                     %u32-max)
       (when (= 0 (consensus-params-retarget-interval params))
         (error "consensus retarget interval: expected positive integer"))
+      (require-uint "consensus BIP34 height"
+                    (consensus-params-bip34-height params)
+                    %u32-max)
+      (require-uint "consensus BIP66 height"
+                    (consensus-params-bip66-height params)
+                    %u32-max)
+      (require-uint "consensus BIP65 height"
+                    (consensus-params-bip65-height params)
+                    %u32-max)
+      (require-uint "consensus CSV height"
+                    (consensus-params-csv-height params)
+                    %u32-max)
+      (require-uint "consensus SegWit height"
+                    (consensus-params-segwit-height params)
+                    %u32-max)
+      (require-uint "consensus Taproot height"
+                    (consensus-params-taproot-height params)
+                    %u32-max)
       params)
 
     (define (validate-block-header header)
@@ -449,6 +501,51 @@
         (error "coinbase: expected at least one output"))
       tx)
 
+    (define (height-active? height activation-height)
+      (>= height activation-height))
+
+    (define (validate-buried-deployment-versions params height b)
+      (let ((version (block-header-version (block-header-field b))))
+        (when (and (height-active? height (consensus-params-bip34-height params))
+                   (< version 2))
+          (error "connect-block: BIP34 requires block version 2 or newer"))
+        (when (and (height-active? height (consensus-params-bip66-height params))
+                   (< version 3))
+          (error "connect-block: BIP66 requires block version 3 or newer"))
+        (when (and (height-active? height (consensus-params-bip65-height params))
+                   (< version 4))
+          (error "connect-block: BIP65 requires block version 4 or newer"))))
+
+    (define (validate-bip34-coinbase-height params height coinbase)
+      (when (height-active? height (consensus-params-bip34-height params))
+        (let* ((script (txin-script-sig (car (transaction-inputs coinbase))))
+               (chunks (script-parse script)))
+          (unless (and (not (null? chunks))
+                       (script-push-chunk? (car chunks))
+                       (equal? (script-number-encode height)
+                               (script-chunk-data (car chunks))))
+            (error "coinbase: BIP34 height commitment mismatch")))))
+
+    (define (all-inputs-final? tx)
+      (let loop ((inputs (transaction-inputs tx)))
+        (or (null? inputs)
+            (and (= %sequence-final (txin-sequence (car inputs)))
+                 (loop (cdr inputs))))))
+
+    (define (transaction-final? tx height block-time)
+      (let ((lock-time (transaction-lock-time tx)))
+        (or (= 0 lock-time)
+            (all-inputs-final? tx)
+            (< lock-time
+               (if (< lock-time %locktime-threshold)
+                   height
+                   block-time)))))
+
+    (define (validate-final-transaction tx height block-time)
+      (unless (transaction-final? tx height block-time)
+        (error "connect-block: non-final transaction"))
+      tx)
+
     (define (validate-regular-transaction tx)
       (validate-transaction tx)
       (when (coinbase-transaction? tx)
@@ -490,6 +587,7 @@
         (error "utxo-set-add: expected utxo-entry"))
       (validate-txout (utxo-entry-output entry))
       (require-uint "utxo-entry height" (utxo-entry-height entry) %u32-max)
+      (require-uint "utxo-entry time" (utxo-entry-time entry) %u32-max)
       (when (utxo-set-lookup utxos op)
         (error "utxo-set-add: duplicate unspent outpoint"))
       (cons (cons op entry) utxos))
@@ -497,7 +595,7 @@
     (define (output-outpoint tx index)
       (outpoint txid: (transaction-txid tx) index: index))
 
-    (define (add-transaction-outputs utxos tx height coinbase?)
+    (define (add-transaction-outputs utxos tx height block-time coinbase?)
       (let loop ((outputs (transaction-outputs tx))
                  (index 0)
                  (next-utxos utxos))
@@ -511,7 +609,8 @@
                 (output-outpoint tx index)
                 (utxo-entry output: (car outputs)
                             coinbase?: coinbase?
-                            height: height))))))
+                            height: height
+                            time: block-time))))))
 
     (define (spendable-utxo-entry height op entry)
       (when (and (utxo-entry-coinbase? entry)
@@ -723,6 +822,14 @@
             (verify-p2tr-keypath-input tx input-index prevouts input prevout)
             (verify-p2tr-scriptpath-input tx input-index prevouts input prevout))))
 
+    (define (script-active-at-height? params height script-class)
+      (case script-class
+        ((p2wpkh p2wsh)
+         (height-active? height (consensus-params-segwit-height params)))
+        ((p2tr)
+         (height-active? height (consensus-params-taproot-height params)))
+        (else #t)))
+
     (define (verify-p2sh-input tx input-index input prevout)
       (let* ((chunks (script-parse (txin-script-sig input)))
              (who "verify-standard-input-script p2sh"))
@@ -814,21 +921,55 @@
             (verify-standard-input-script tx input-index prevout (car maybe-prevouts)))
         #t))
 
-    (define (verify-transaction-standard-scripts tx prevouts)
+    (define (verify-transaction-standard-scripts params height tx prevouts)
       (let loop ((xs prevouts) (input-index 0))
         (if (null? xs)
             #t
-            (begin
-              (verify-standard-input-script tx input-index (car xs) prevouts)
+            (let ((script-class (script-classify (txout-script-pubkey (car xs)))))
+              (when (script-active-at-height? params height script-class)
+                (verify-standard-input-script tx input-index (car xs) prevouts))
               (loop (cdr xs) (+ input-index 1))))))
+
+    (define (sequence-lock-disabled? sequence)
+      (not (= 0 (bitwise-and sequence %sequence-locktime-disable-flag))))
+
+    (define (sequence-lock-time-based? sequence)
+      (not (= 0 (bitwise-and sequence %sequence-locktime-type-flag))))
+
+    (define (sequence-lock-value sequence)
+      (bitwise-and sequence %sequence-locktime-mask))
+
+    (define (validate-sequence-locks params height block-time tx spent)
+      (when (and (height-active? height (consensus-params-csv-height params))
+                 (>= (transaction-version tx) 2))
+        (let loop ((inputs (transaction-inputs tx))
+                   (entries (cadddr spent)))
+          (unless (null? inputs)
+            (let* ((input (car inputs))
+                   (entry (car entries))
+                   (sequence (txin-sequence input)))
+              (unless (sequence-lock-disabled? sequence)
+                (let ((relative (sequence-lock-value sequence)))
+                  (if (sequence-lock-time-based? sequence)
+                      (let ((required (+ (utxo-entry-time entry)
+                                         (arithmetic-shift
+                                           relative
+                                           %sequence-locktime-granularity))))
+                        (when (< block-time required)
+                          (error "connect-block: BIP68 time sequence lock not mature")))
+                      (let ((required (+ (utxo-entry-height entry) relative)))
+                        (when (< height required)
+                          (error "connect-block: BIP68 height sequence lock not mature"))))))
+              (loop (cdr inputs) (cdr entries)))))))
 
     (define (spend-transaction-inputs utxos tx height)
       (let loop ((inputs (transaction-inputs tx))
                  (next-utxos utxos)
+                 (entries '())
                  (prevouts '())
                  (input-value 0))
         (if (null? inputs)
-            (list next-utxos (reverse prevouts) input-value)
+            (list next-utxos (reverse prevouts) input-value (reverse entries))
             (let* ((op (txin-previous-output (car inputs)))
                    (entry (utxo-set-lookup next-utxos op)))
               (unless entry
@@ -839,28 +980,32 @@
                 (require-money "connect-block input value" new-input-value)
                 (loop (cdr inputs)
                       (utxo-set-remove next-utxos op)
+                      (cons entry entries)
                       (cons (utxo-entry-output entry) prevouts)
                       new-input-value))))))
 
-    (define (connect-regular-transaction utxos tx height)
+    (define (connect-regular-transaction params utxos tx height block-time)
       (validate-regular-transaction tx)
+      (validate-final-transaction tx height block-time)
       (let* ((spent (spend-transaction-inputs utxos tx height))
              (without-inputs (car spent))
              (prevouts (cadr spent))
              (input-value (caddr spent))
              (output-value (sum-money "connect-block output value"
                                       (transaction-outputs tx))))
-        (verify-transaction-standard-scripts tx prevouts)
+        (validate-sequence-locks params height block-time tx spent)
+        (verify-transaction-standard-scripts params height tx prevouts)
         (when (< input-value output-value)
           (error "connect-block: transaction spends more than its inputs"))
         (list
-          (add-transaction-outputs without-inputs tx height #f)
+          (add-transaction-outputs without-inputs tx height block-time #f)
           (- input-value output-value))))
 
     ;;; Validate a block's transactions against `utxos` and return the updated
     ;;; UTXO set. Recognized standard P2PKH, P2SH, P2WPKH, P2WSH, and P2TR
-    ;;; inputs execute signature checks; remaining deployment-era rules are
-    ;;; tracked in the roadmap.
+    ;;; inputs execute signature checks when their deployment heights are
+    ;;; active. BIP34, BIP66, BIP65, CSV, SegWit, and Taproot activation gates
+    ;;; are driven by `consensus-params`.
     ;;; The connector also enforces structural block transaction rules, UTXO
     ;;; availability, value conservation, coinbase maturity, subsidy, and fees.
     (define (connect-block params height utxos b)
@@ -870,9 +1015,13 @@
       (validate-block b)
       (unless (block-merkle-root-valid? b)
         (error "connect-block: invalid merkle root"))
+      (validate-buried-deployment-versions params height b)
       (let* ((txs (block-transactions b))
-             (coinbase (car txs)))
+             (coinbase (car txs))
+             (block-time (block-header-time (block-header-field b))))
         (validate-coinbase coinbase)
+        (validate-bip34-coinbase-height params height coinbase)
+        (validate-final-transaction coinbase height block-time)
         (let loop ((remaining (cdr txs))
                    (next-utxos utxos)
                    (fees 0))
@@ -882,11 +1031,13 @@
                                          (transaction-outputs coinbase))))
                 (when (> claimed allowed)
                   (error "connect-block: coinbase reward exceeds subsidy plus fees"))
-                (add-transaction-outputs next-utxos coinbase height #t))
+                (add-transaction-outputs next-utxos coinbase height block-time #t))
               (let ((connected (connect-regular-transaction
+                                 params
                                  next-utxos
                                  (car remaining)
-                                 height)))
+                                 height
+                                 block-time)))
                 (loop (cdr remaining)
                       (car connected)
                       (+ fees (cadr connected))))))))

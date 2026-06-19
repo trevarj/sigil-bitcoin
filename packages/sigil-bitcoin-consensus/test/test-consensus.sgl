@@ -37,7 +37,37 @@
   (consensus-params pow-limit-bits: #x207fffff
                     target-spacing: 10
                     target-timespan: 30
-                    retarget-interval: 3))
+                    retarget-interval: 3
+                    bip34-height: #xffffffff
+                    bip66-height: #xffffffff
+                    bip65-height: #xffffffff
+                    csv-height: #xffffffff
+                    segwit-height: 0
+                    taproot-height: 0))
+
+(define %active-deployment-params
+  (consensus-params pow-limit-bits: #x207fffff
+                    target-spacing: 600
+                    target-timespan: 1209600
+                    retarget-interval: 2016
+                    bip34-height: 0
+                    bip66-height: 0
+                    bip65-height: 0
+                    csv-height: 0
+                    segwit-height: 0
+                    taproot-height: 0))
+
+(define %csv-only-params
+  (consensus-params pow-limit-bits: #x207fffff
+                    target-spacing: 600
+                    target-timespan: 1209600
+                    retarget-interval: 2016
+                    bip34-height: #xffffffff
+                    bip66-height: #xffffffff
+                    bip65-height: #xffffffff
+                    csv-height: 0
+                    segwit-height: 0
+                    taproot-height: 0))
 
 (define (make-synthetic-tx n)
   (transaction
@@ -57,6 +87,18 @@
     inputs: (list
       (txin previous-output: (outpoint txid: %zero32 index: #xffffffff)
             script-sig: #u8(#x03 #x04)
+            sequence: #xffffffff
+            witness: '()))
+    outputs: (list
+      (txout value: value script-pubkey: #u8(#x51)))
+    lock-time: 0))
+
+(define (make-bip34-coinbase-tx value height)
+  (transaction
+    version: 1
+    inputs: (list
+      (txin previous-output: (outpoint txid: %zero32 index: #xffffffff)
+            script-sig: (script-push-data (script-number-encode height))
             sequence: #xffffffff
             witness: '()))
     outputs: (list
@@ -142,6 +184,19 @@
       (txout value: value script-pubkey: #u8(#x51)))
     lock-time: 0))
 
+(define (make-spend-tx-with prev-tx value version sequence lock-time)
+  (transaction
+    version: version
+    inputs: (list
+      (txin previous-output: (outpoint txid: (transaction-txid prev-tx)
+                                      index: 0)
+            script-sig: #u8(#x51)
+            sequence: sequence
+            witness: '()))
+    outputs: (list
+      (txout value: value script-pubkey: #u8(#x51)))
+    lock-time: lock-time))
+
 (define (make-unsigned-spend-tx prev-tx value)
   (transaction
     version: 1
@@ -222,6 +277,17 @@
   (block
     header-field: (block-header
                     version: 1
+                    previous-block: %zero32
+                    merkle-root: (merkle-root (map transaction-txid txs))
+                    time: time
+                    bits: #x207fffff
+                    nonce: 0)
+    transactions: txs))
+
+(define (make-versioned-test-block version txs time)
+  (block
+    header-field: (block-header
+                    version: version
                     previous-block: %zero32
                     merkle-root: (merkle-root (map transaction-txid txs))
                     time: time
@@ -412,6 +478,68 @@
       (assert-false
         (utxo-set-lookup updated
                          (outpoint txid: (transaction-txid funding) index: 0)))
+      (assert-true
+        (utxo-entry?
+          (utxo-set-lookup updated
+                           (outpoint txid: (transaction-txid spend) index: 0))))))
+
+  (test "enforces BIP34 coinbase heights and deployment versions"
+    (let* ((coinbase (make-bip34-coinbase-tx (block-subsidy 2) 2))
+           (good (make-versioned-test-block 4 (list coinbase) 2))
+           (bad-version (make-versioned-test-block 3 (list coinbase) 2))
+           (bad-coinbase (make-versioned-test-block
+                           4
+                           (list (make-bip34-coinbase-tx (block-subsidy 2) 3))
+                           2)))
+      (assert-true
+        (utxo-entry?
+          (utxo-set-lookup
+            (connect-block %active-deployment-params 2 '() good)
+            (outpoint txid: (transaction-txid coinbase) index: 0))))
+      (assert-error
+        (connect-block %active-deployment-params 2 '() bad-version))
+      (assert-error
+        (connect-block %active-deployment-params 2 '() bad-coinbase))))
+
+  (test "rejects non-final absolute lock-time transactions"
+    (let* ((funding (make-coinbase-tx 5000))
+           (initial (connect-block
+                      bitcoin-regtest-consensus-params
+                      0
+                      '()
+                      (make-test-block (list funding) 1)))
+           (spend (make-spend-tx-with funding 4000 1 0 100))
+           (early (make-test-block
+                    (list (make-coinbase-tx (+ (block-subsidy 100) 1000))
+                          spend)
+                    2))
+           (late-coinbase (make-coinbase-tx (+ (block-subsidy 101) 1000)))
+           (late (make-test-block (list late-coinbase spend) 2))
+           (updated (connect-block bitcoin-regtest-consensus-params 101 initial late)))
+      (assert-error
+        (connect-block bitcoin-regtest-consensus-params 100 initial early))
+      (assert-true
+        (utxo-entry?
+          (utxo-set-lookup updated
+                           (outpoint txid: (transaction-txid spend) index: 0))))))
+
+  (test "enforces BIP68 height sequence locks after CSV activation"
+    (let* ((funding (make-coinbase-tx 5000))
+           (initial (connect-block
+                      bitcoin-regtest-consensus-params
+                      0
+                      '()
+                      (make-test-block (list funding) 1)))
+           (spend (make-spend-tx-with funding 4000 2 101 0))
+           (early (make-test-block
+                    (list (make-coinbase-tx (+ (block-subsidy 100) 1000))
+                          spend)
+                    2))
+           (late-coinbase (make-coinbase-tx (+ (block-subsidy 101) 1000)))
+           (late (make-test-block (list late-coinbase spend) 2))
+           (updated (connect-block %csv-only-params 101 initial late)))
+      (assert-error
+        (connect-block %csv-only-params 100 initial early))
       (assert-true
         (utxo-entry?
           (utxo-set-lookup updated
