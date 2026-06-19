@@ -50,6 +50,23 @@
                       0
                       #t))
 
+(define (repeat-item item count)
+  (let loop ((i 0) (items '()))
+    (if (>= i count)
+        items
+        (loop (+ i 1) (cons item items)))))
+
+(define (make-ready-session)
+  (let* ((ready (p2p-session-apply-envelope
+                  (p2p-session-apply-envelope
+                    (p2p-session-start (make-session))
+                    (remote-version-envelope))
+                  (p2p-envelope magic: bitcoin-mainnet-magic
+                                command: "verack"
+                                payload: (verack-message))))
+         (drained (p2p-session-drain-outbound ready)))
+    (cadr drained)))
+
 (define (remote-version-envelope)
   (p2p-envelope
     magic: bitcoin-mainnet-magic
@@ -65,6 +82,26 @@
                  user-agent: "/peer:0.1.0/"
                  start-height: 0
                  relay?: #t))))
+
+(define (headers-envelope headers)
+  (p2p-envelope magic: bitcoin-mainnet-magic
+                command: "headers"
+                payload: (headers-message-serialize headers)))
+
+(define (oversized-headers-payload)
+  (let ((entry (bytevector-append (block-header-serialize %genesis-header)
+                                  #u8(0))))
+    (bytevector-append
+      #u8(#xfd #xd1 #x07)
+      (apply bytevector-append
+             (repeat-item entry (+ p2p-max-headers-per-message 1))))))
+
+(define (scripted-reader envelopes)
+  (let ((remaining envelopes))
+    (lambda ()
+      (let ((next (car remaining)))
+        (set! remaining (cdr remaining))
+        next))))
 
 (define (chunk-reader bytes sizes)
   (let ((cursor 0)
@@ -189,7 +226,13 @@
   (test "rejects headers with transaction count"
     (let ((payload (headers-message-serialize (list %genesis-header))))
       (bytevector-u8-set! payload 81 1)
-      (assert-error (headers-message-parse payload)))))
+      (assert-error (headers-message-parse payload))))
+
+  (test "rejects oversized headers messages"
+    (assert-error
+      (headers-message-serialize
+        (repeat-item %genesis-header (+ p2p-max-headers-per-message 1))))
+    (assert-error (headers-message-parse (oversized-headers-payload)))))
 
 (test-group "relay messages"
   (test "serializes and parses inventory vectors"
@@ -411,6 +454,70 @@
         (assert-true (peer-state-handshake-complete? (p2p-session-state ready)))
         (assert-equal 2 (length written))
         (assert-equal "version" (p2p-envelope-command (car written)))
-        (assert-equal "verack" (p2p-envelope-command (cadr written)))))))
+        (assert-equal "verack" (p2p-envelope-command (cadr written))))))
+
+  (test "syncs headers until a partial batch"
+    (let ((written '()))
+      (let* ((write-envelope
+               (lambda (envelope)
+                 (set! written (append written (list envelope)))
+                 #t))
+             (synced (p2p-session-sync-headers
+                       (scripted-reader (list (headers-envelope
+                                                (list %genesis-header))))
+                       write-envelope
+                       (make-ready-session)
+                       %zero32
+                       4))
+             (request (getheaders-message-parse
+                        (p2p-envelope-payload (car written)))))
+        (assert-equal 1 (length written))
+        (assert-equal "getheaders" (p2p-envelope-command (car written)))
+        (assert-equal 1 (length (peer-state-headers (p2p-session-state synced))))
+        (assert-equal '() (getheaders-message-locator-hashes request)))))
+
+  (test "continues header sync after a full batch"
+    (let ((written '()))
+      (let* ((full-batch (repeat-item %genesis-header p2p-max-headers-per-message))
+             (write-envelope
+               (lambda (envelope)
+                 (set! written (append written (list envelope)))
+                 #t))
+             (synced (p2p-session-sync-headers
+                       (scripted-reader (list (headers-envelope full-batch)
+                                              (headers-envelope '())))
+                       write-envelope
+                       (make-ready-session)
+                       %zero32
+                       4))
+             (second-request (getheaders-message-parse
+                               (p2p-envelope-payload (cadr written)))))
+        (assert-equal 2 (length written))
+        (assert-equal p2p-max-headers-per-message
+                      (length (peer-state-headers (p2p-session-state synced))))
+        (assert-equal (list (block-header-hash %genesis-header))
+                      (getheaders-message-locator-hashes second-request)))))
+
+  (test "flushes responses while waiting for headers"
+    (let ((written '()))
+      (let* ((write-envelope
+               (lambda (envelope)
+                 (set! written (append written (list envelope)))
+                 #t))
+             (synced (p2p-session-sync-headers
+                       (scripted-reader
+                         (list
+                           (p2p-envelope magic: bitcoin-mainnet-magic
+                                         command: "ping"
+                                         payload: (ping-message 5))
+                           (headers-envelope '())))
+                       write-envelope
+                       (make-ready-session)
+                       %zero32
+                       4)))
+        (assert-equal 2 (length written))
+        (assert-equal "getheaders" (p2p-envelope-command (car written)))
+        (assert-equal "pong" (p2p-envelope-command (cadr written)))
+        (assert-equal 5 (peer-state-last-ping (p2p-session-state synced)))))))
 
 (run-tests)

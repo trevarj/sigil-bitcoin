@@ -14,6 +14,7 @@
     bitcoin-testnet-magic
     bitcoin-regtest-magic
     p2p-max-payload-size
+    p2p-max-headers-per-message
     network-address network-address?
     network-address-services network-address-ip network-address-port
     version-message version-message?
@@ -78,6 +79,7 @@
     p2p-session-flush
     p2p-session-step
     p2p-session-handshake
+    p2p-session-sync-headers
     p2p-session-next-getheaders
     p2p-session-request-inventory)
   (begin
@@ -86,6 +88,7 @@
     (define bitcoin-testnet-magic #u8(#x0b #x11 #x09 #x07))
     (define bitcoin-regtest-magic #u8(#xfa #xbf #xb5 #xda))
     (define p2p-max-payload-size (* 32 1024 1024))
+    (define p2p-max-headers-per-message 2000)
 
     (define-struct network-address
       (services integer?)
@@ -474,6 +477,8 @@
 
     (define (headers-message-serialize headers)
       (: list? -> bytevector?)
+      (when (> (length headers) p2p-max-headers-per-message)
+        (error "headers-message-serialize: too many headers"))
       (let ((payloads (map (lambda (header)
                              (bytevector-append
                                (block-header-serialize header)
@@ -502,10 +507,13 @@
       (: bytevector? -> list?)
       (require-bytevector "headers-message-parse" bytes)
       (let* ((count-result (compact-size-decode-at bytes 0))
-             (parsed (parse-headers bytes (cadr count-result) (car count-result))))
-        (unless (= (cadr parsed) (bytevector-length bytes))
-          (error "headers-message-parse: trailing bytes"))
-        (car parsed)))
+             (count (car count-result)))
+        (when (> count p2p-max-headers-per-message)
+          (error "headers-message-parse: too many headers"))
+        (let ((parsed (parse-headers bytes (cadr count-result) count)))
+          (unless (= (cadr parsed) (bytevector-length bytes))
+            (error "headers-message-parse: trailing bytes"))
+          (car parsed))))
 
     (define (inventory-vector-serialize item)
       (require-inventory-vector item)
@@ -868,6 +876,27 @@
             (else
              (loop (p2p-session-step read-envelope flushed)
                    (- remaining 1)))))))
+
+    (define (p2p-session-sync-headers read-envelope write-envelope session
+                                      stop-hash max-steps)
+      (: procedure? procedure? p2p-session? bytevector? integer? -> p2p-session?)
+      (unless (peer-state-handshake-complete? (p2p-session-state session))
+        (error "p2p-session-sync-headers: handshake incomplete"))
+      (let loop ((current (p2p-session-next-getheaders session stop-hash))
+                 (remaining max-steps))
+        (let ((flushed (p2p-session-flush write-envelope current)))
+          (when (<= remaining 0)
+            (error "p2p-session-sync-headers: header sync did not complete"))
+          (let* ((envelope (read-envelope))
+                 (next (p2p-session-apply-envelope flushed envelope)))
+            (if (string=? "headers" (p2p-envelope-command envelope))
+                (let ((headers (headers-message-parse
+                                 (p2p-envelope-payload envelope))))
+                  (if (= (length headers) p2p-max-headers-per-message)
+                      (loop (p2p-session-next-getheaders next stop-hash)
+                            (- remaining 1))
+                      next))
+                (loop next (- remaining 1)))))))
 
     (define (p2p-session-next-getheaders session stop-hash)
       (: p2p-session? bytevector? -> p2p-session?)
