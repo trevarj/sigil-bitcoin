@@ -3,6 +3,7 @@
 (define-library (sigil bitcoin p2p)
   (import (sigil math)
           (sigil struct)
+          (sigil socket)
           (sigil bitcoin utils)
           (sigil bitcoin primitives)
           (sigil bitcoin consensus)
@@ -12,6 +13,7 @@
     bitcoin-mainnet-magic
     bitcoin-testnet-magic
     bitcoin-regtest-magic
+    p2p-max-payload-size
     network-address network-address?
     network-address-services network-address-ip network-address-port
     version-message version-message?
@@ -29,6 +31,11 @@
     peer-state-verack-sent? peer-state-verack-received?
     peer-state-headers peer-state-known-inventory
     peer-state-last-ping peer-state-last-pong
+    p2p-session p2p-session?
+    p2p-session-magic p2p-session-protocol-version p2p-session-services
+    p2p-session-addr-recv p2p-session-addr-from p2p-session-nonce
+    p2p-session-user-agent p2p-session-start-height p2p-session-relay?
+    p2p-session-state p2p-session-outbound
     p2p-envelope p2p-envelope?
     p2p-envelope-magic p2p-envelope-command p2p-envelope-payload
     p2p-checksum
@@ -58,12 +65,27 @@
     peer-state-mark-verack-sent
     peer-state-handshake-complete?
     peer-state-apply-envelope
-    peer-state-next-getheaders)
+    peer-state-next-getheaders
+    p2p-read-envelope
+    p2p-write-envelope
+    p2p-socket-connect
+    p2p-socket-read-envelope
+    p2p-socket-write-envelope
+    p2p-session-create
+    p2p-session-start
+    p2p-session-apply-envelope
+    p2p-session-drain-outbound
+    p2p-session-flush
+    p2p-session-step
+    p2p-session-handshake
+    p2p-session-next-getheaders
+    p2p-session-request-inventory)
   (begin
 
     (define bitcoin-mainnet-magic #u8(#xf9 #xbe #xb4 #xd9))
     (define bitcoin-testnet-magic #u8(#x0b #x11 #x09 #x07))
     (define bitcoin-regtest-magic #u8(#xfa #xbf #xb5 #xda))
+    (define p2p-max-payload-size (* 32 1024 1024))
 
     (define-struct network-address
       (services integer?)
@@ -99,6 +121,19 @@
       (known-inventory list?)
       (last-ping any?)
       (last-pong any?))
+
+    (define-struct p2p-session
+      (magic bytevector?)
+      (protocol-version integer?)
+      (services integer?)
+      (addr-recv network-address?)
+      (addr-from network-address?)
+      (nonce integer?)
+      (user-agent string?)
+      (start-height integer?)
+      (relay? boolean?)
+      (state peer-state?)
+      (outbound list?))
 
     (define-struct p2p-envelope
       (magic bytevector?)
@@ -225,12 +260,79 @@
              (checksum (bytevector-copy bytes 20 24))
              (end (+ 24 payload-len)))
         (ensure-available "p2p-envelope-parse" bytes 24 payload-len)
+        (when (> payload-len p2p-max-payload-size)
+          (error "p2p-envelope-parse: payload too large"))
         (unless (= end (bytevector-length bytes))
           (error "p2p-envelope-parse: trailing bytes"))
         (let ((payload (bytevector-copy bytes 24 end)))
           (unless (equal? checksum (p2p-checksum payload))
             (error "p2p-envelope-parse: invalid checksum"))
           (p2p-envelope magic: magic command: command payload: payload))))
+
+    (define (p2p-read-exact read-bytes count)
+      (let ((out (make-bytevector count 0)))
+        (let loop ((cursor 0))
+          (if (>= cursor count)
+              out
+              (let ((chunk (read-bytes (- count cursor))))
+                (when (or (not chunk) (eof-object? chunk))
+                  (error "p2p-read-envelope: unexpected end of stream"))
+                (require-bytevector "p2p-read-envelope chunk" chunk)
+                (let ((len (bytevector-length chunk)))
+                  (when (= len 0)
+                    (error "p2p-read-envelope: empty read"))
+                  (when (> len (- count cursor))
+                    (error "p2p-read-envelope: reader returned too many bytes"))
+                  (bytevector-copy! out cursor chunk)
+                  (loop (+ cursor len))))))))
+
+    (define (p2p-read-envelope read-bytes)
+      (: procedure? -> p2p-envelope?)
+      (let* ((header (p2p-read-exact read-bytes 24))
+             (payload-len (read-u32-le header 16 "p2p payload length")))
+        (when (> payload-len p2p-max-payload-size)
+          (error "p2p-read-envelope: payload too large"))
+        (p2p-envelope-parse
+          (bytevector-append header (p2p-read-exact read-bytes payload-len)))))
+
+    (define (p2p-write-envelope write-bytes envelope)
+      (: procedure? p2p-envelope? -> integer?)
+      (let ((wire (p2p-envelope-serialize envelope)))
+        (let loop ((cursor 0) (written 0))
+          (if (>= cursor (bytevector-length wire))
+              written
+              (let* ((chunk (bytevector-copy wire cursor (bytevector-length wire)))
+                     (result (write-bytes chunk)))
+                (unless result
+                  (error "p2p-write-envelope: write failed"))
+                (let ((n (if (integer? result)
+                             result
+                             (bytevector-length chunk))))
+                  (when (<= n 0)
+                    (error "p2p-write-envelope: short write"))
+                  (when (> n (bytevector-length chunk))
+                    (error "p2p-write-envelope: writer returned too many bytes"))
+                  (loop (+ cursor n) (+ written n))))))))
+
+    (define (p2p-socket-connect host port)
+      (: string? integer? -> any?)
+      (let ((sock (tcp-connect host port)))
+        (unless sock
+          (error "p2p-socket-connect: connection failed"))
+        sock))
+
+    (define (p2p-socket-read-envelope sock)
+      (: any? -> p2p-envelope?)
+      (p2p-read-envelope
+        (lambda (count)
+          (socket-read-bytevector sock count))))
+
+    (define (p2p-socket-write-envelope sock envelope)
+      (: any? p2p-envelope? -> integer?)
+      (p2p-write-envelope
+        (lambda (bytes)
+          (socket-write sock bytes))
+        envelope))
 
     (define (p2p-message magic command payload)
       (: bytevector? string? bytevector? -> bytevector?)
@@ -616,4 +718,163 @@
                               '()
                               (list (block-header-hash
                                       (car (reverse (peer-state-headers state))))))
-          stop-hash: stop-hash)))))
+          stop-hash: stop-hash)))
+
+    (define (p2p-session-create magic protocol-version services addr-recv
+                                addr-from nonce user-agent start-height relay?)
+      (: bytevector? integer? integer? network-address? network-address?
+         integer? string? integer? boolean? -> p2p-session?)
+      (require-bytevector-length "p2p-session magic" magic 4)
+      (require-uint "p2p-session protocol-version" protocol-version %u32-max)
+      (require-uint "p2p-session services" services %u64-max)
+      (require-network-address "p2p-session addr-recv" addr-recv)
+      (require-network-address "p2p-session addr-from" addr-from)
+      (require-uint "p2p-session nonce" nonce %u64-max)
+      (require-uint "p2p-session start-height" start-height %u32-max)
+      (p2p-session magic: magic
+                   protocol-version: protocol-version
+                   services: services
+                   addr-recv: addr-recv
+                   addr-from: addr-from
+                   nonce: nonce
+                   user-agent: user-agent
+                   start-height: start-height
+                   relay?: relay?
+                   state: (peer-state-create)
+                   outbound: '()))
+
+    (define (p2p-session-copy session state outbound)
+      (p2p-session magic: (p2p-session-magic session)
+                   protocol-version: (p2p-session-protocol-version session)
+                   services: (p2p-session-services session)
+                   addr-recv: (p2p-session-addr-recv session)
+                   addr-from: (p2p-session-addr-from session)
+                   nonce: (p2p-session-nonce session)
+                   user-agent: (p2p-session-user-agent session)
+                   start-height: (p2p-session-start-height session)
+                   relay?: (p2p-session-relay? session)
+                   state: state
+                   outbound: outbound))
+
+    (define (p2p-session-queue session command payload)
+      (p2p-session-copy
+        session
+        (p2p-session-state session)
+        (append (p2p-session-outbound session)
+                (list (p2p-envelope magic: (p2p-session-magic session)
+                                    command: command
+                                    payload: payload)))))
+
+    (define (p2p-session-start session)
+      (: p2p-session? -> p2p-session?)
+      (let* ((version (version-message
+                        version: (p2p-session-protocol-version session)
+                        services: (p2p-session-services session)
+                        timestamp: 0
+                        addr-recv: (p2p-session-addr-recv session)
+                        addr-from: (p2p-session-addr-from session)
+                        nonce: (p2p-session-nonce session)
+                        user-agent: (p2p-session-user-agent session)
+                        start-height: (p2p-session-start-height session)
+                        relay?: (p2p-session-relay? session)))
+             (started (p2p-session-copy
+                        session
+                        (peer-state-mark-version-sent
+                          (p2p-session-state session))
+                        (p2p-session-outbound session))))
+        (p2p-session-queue started "version" (version-message-serialize version))))
+
+    (define (relay-inventory? item)
+      (let ((type (inventory-vector-type item)))
+        (or (= type inv-tx)
+            (= type inv-block)
+            (= type inv-witness-tx)
+            (= type inv-witness-block))))
+
+    (define (filter-relay-inventory items)
+      (let loop ((xs items) (out '()))
+        (cond
+          ((null? xs) (reverse out))
+          ((relay-inventory? (car xs))
+           (loop (cdr xs) (cons (car xs) out)))
+          (else (loop (cdr xs) out)))))
+
+    (define (p2p-session-request-inventory session items)
+      (: p2p-session? list? -> p2p-session?)
+      (require-inventory-list items)
+      (if (null? items)
+          session
+          (p2p-session-queue session "getdata" (getdata-message items))))
+
+    (define (p2p-session-apply-envelope session envelope)
+      (: p2p-session? p2p-envelope? -> p2p-session?)
+      (let* ((old-state (p2p-session-state session))
+             (new-state (peer-state-apply-envelope old-state envelope))
+             (updated (p2p-session-copy session
+                                        new-state
+                                        (p2p-session-outbound session)))
+             (command (p2p-envelope-command envelope))
+             (payload (p2p-envelope-payload envelope)))
+        (cond
+          ((and (string=? command "version")
+                (not (peer-state-verack-sent? old-state)))
+           (p2p-session-queue
+             (p2p-session-copy updated
+                               (peer-state-mark-verack-sent new-state)
+                               (p2p-session-outbound updated))
+             "verack"
+             (verack-message)))
+          ((string=? command "ping")
+           (p2p-session-queue updated "pong" payload))
+          ((string=? command "inv")
+           (p2p-session-request-inventory
+             updated
+             (filter-relay-inventory (inventory-message-parse payload))))
+          (else updated))))
+
+    (define (p2p-session-drain-outbound session)
+      (: p2p-session? -> list?)
+      (list (p2p-session-outbound session)
+            (p2p-session-copy session
+                              (p2p-session-state session)
+                              '())))
+
+    (define (p2p-session-flush write-envelope session)
+      (: procedure? p2p-session? -> p2p-session?)
+      (do ((xs (p2p-session-outbound session) (cdr xs)))
+          ((null? xs)
+           (p2p-session-copy session
+                             (p2p-session-state session)
+                             '()))
+        (write-envelope (car xs))))
+
+    (define (p2p-session-step read-envelope session)
+      (: procedure? p2p-session? -> p2p-session?)
+      (p2p-session-apply-envelope session (read-envelope)))
+
+    (define (p2p-session-handshake read-envelope write-envelope session max-steps)
+      (: procedure? procedure? p2p-session? integer? -> p2p-session?)
+      (let loop ((current (if (peer-state-version-sent?
+                                (p2p-session-state session))
+                              session
+                              (p2p-session-start session)))
+                 (remaining max-steps))
+        (let ((flushed (p2p-session-flush write-envelope current)))
+          (cond
+            ((peer-state-handshake-complete? (p2p-session-state flushed))
+             flushed)
+            ((<= remaining 0)
+             (error "p2p-session-handshake: handshake did not complete"))
+            (else
+             (loop (p2p-session-step read-envelope flushed)
+                   (- remaining 1)))))))
+
+    (define (p2p-session-next-getheaders session stop-hash)
+      (: p2p-session? bytevector? -> p2p-session?)
+      (p2p-session-queue
+        session
+        "getheaders"
+        (peer-state-next-getheaders
+          (p2p-session-state session)
+          (p2p-session-protocol-version session)
+          stop-hash)))))

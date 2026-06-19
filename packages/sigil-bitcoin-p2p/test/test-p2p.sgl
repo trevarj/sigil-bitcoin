@@ -39,6 +39,64 @@
                                 nonce: 0)
     transactions: (list %coinbase-tx)))
 
+(define (make-session)
+  (p2p-session-create bitcoin-mainnet-magic
+                      70015
+                      1
+                      %addr
+                      %addr
+                      #x1122334455667788
+                      "/sigil-bitcoin:0.1.0/"
+                      0
+                      #t))
+
+(define (remote-version-envelope)
+  (p2p-envelope
+    magic: bitcoin-mainnet-magic
+    command: "version"
+    payload: (version-message-serialize
+               (version-message
+                 version: 70015
+                 services: 1
+                 timestamp: 123456789
+                 addr-recv: %addr
+                 addr-from: %addr
+                 nonce: 1
+                 user-agent: "/peer:0.1.0/"
+                 start-height: 0
+                 relay?: #t))))
+
+(define (chunk-reader bytes sizes)
+  (let ((cursor 0)
+        (remaining sizes))
+    (lambda (count)
+      (let* ((requested (if (null? remaining)
+                            count
+                            (car remaining)))
+             (take (if (< requested count) requested count))
+             (end (+ cursor take)))
+        (when (not (null? remaining))
+          (set! remaining (cdr remaining)))
+        (if (> end (bytevector-length bytes))
+            #f
+            (let ((chunk (bytevector-copy bytes cursor end)))
+              (set! cursor end)
+              chunk))))))
+
+(define (partial-writer sink sizes)
+  (let ((remaining sizes))
+    (lambda (bytes)
+      (let* ((requested (if (null? remaining)
+                            (bytevector-length bytes)
+                            (car remaining)))
+             (take (if (< requested (bytevector-length bytes))
+                       requested
+                       (bytevector-length bytes))))
+        (when (not (null? remaining))
+          (set! remaining (cdr remaining)))
+        (set! sink (bytevector-append sink (bytevector-copy bytes 0 take)))
+        take))))
+
 (test-group "envelopes"
   (test "serializes and parses ping envelope"
     (let* ((payload (ping-message #x0102030405060708))
@@ -56,6 +114,23 @@
   (test "rejects overlong command"
     (assert-error
       (p2p-message bitcoin-mainnet-magic "this-command-is-too-long" #u8()))))
+
+(test-group "stream transport"
+  (test "reads envelopes across short reads"
+    (let* ((wire (p2p-message bitcoin-mainnet-magic "ping" (ping-message 7)))
+           (parsed (p2p-read-envelope (chunk-reader wire (list 5 7 12 3)))))
+      (assert-equal "ping" (p2p-envelope-command parsed))
+      (assert-equal (ping-message 7) (p2p-envelope-payload parsed))))
+
+  (test "writes envelopes across short writes"
+    (let* ((sink #u8())
+           (envelope (p2p-envelope magic: bitcoin-mainnet-magic
+                                   command: "verack"
+                                   payload: (verack-message)))
+           (writer (partial-writer sink (list 3 5)))
+           (written (p2p-write-envelope writer envelope)))
+      (assert-equal (bytevector-length (p2p-envelope-serialize envelope))
+                    written))))
 
 (test-group "handshake messages"
   (test "serializes and parses version payload"
@@ -211,5 +286,131 @@
       (assert-equal 9 (peer-state-last-pong with-pong))
       (assert-equal (list (block-header-hash %genesis-header))
                     (getheaders-message-locator-hashes getheaders)))))
+
+(test-group "peer sessions"
+  (test "starts handshake and queues version"
+    (let* ((started (p2p-session-start (make-session)))
+           (outbound (p2p-session-outbound started))
+           (version (version-message-parse
+                      (p2p-envelope-payload (car outbound)))))
+      (assert-equal 1 (length outbound))
+      (assert-equal "version" (p2p-envelope-command (car outbound)))
+      (assert-true (peer-state-version-sent? (p2p-session-state started)))
+      (assert-equal 70015 (version-message-version version))))
+
+  (test "responds to version with verack"
+    (let* ((started (p2p-session-start (make-session)))
+           (responded (p2p-session-apply-envelope started
+                                                  (remote-version-envelope)))
+           (outbound (p2p-session-outbound responded)))
+      (assert-equal 2 (length outbound))
+      (assert-equal "verack" (p2p-envelope-command (cadr outbound)))
+      (assert-true (peer-state-version-received? (p2p-session-state responded)))
+      (assert-true (peer-state-verack-sent? (p2p-session-state responded)))))
+
+  (test "responds to ping with pong"
+    (let* ((session (p2p-session-apply-envelope
+                      (make-session)
+                      (p2p-envelope magic: bitcoin-mainnet-magic
+                                    command: "ping"
+                                    payload: (ping-message 99))))
+           (outbound (p2p-session-outbound session)))
+      (assert-equal 1 (length outbound))
+      (assert-equal "pong" (p2p-envelope-command (car outbound)))
+      (assert-equal (ping-message 99) (p2p-envelope-payload (car outbound)))))
+
+  (test "schedules getdata for announced tx and blocks"
+    (let* ((block-item (inventory-vector type: inv-block
+                                         hash: (block-header-hash %genesis-header)))
+           (tx-item (inventory-vector type: inv-tx
+                                      hash: (transaction-txid %coinbase-tx)))
+           (ignored (inventory-vector type: inv-error hash: %zero32))
+           (session (p2p-session-apply-envelope
+                      (make-session)
+                      (p2p-envelope magic: bitcoin-mainnet-magic
+                                    command: "inv"
+                                    payload: (inv-message
+                                               (list block-item tx-item ignored)))))
+           (outbound (p2p-session-outbound session))
+           (requested (inventory-message-parse
+                        (p2p-envelope-payload (car outbound)))))
+      (assert-equal 1 (length outbound))
+      (assert-equal "getdata" (p2p-envelope-command (car outbound)))
+      (assert-equal 2 (length requested))
+      (assert-equal inv-block (inventory-vector-type (car requested)))
+      (assert-equal inv-tx (inventory-vector-type (cadr requested)))))
+
+  (test "queues getheaders after handshake"
+    (let* ((ready (p2p-session-apply-envelope
+                    (p2p-session-apply-envelope
+                      (p2p-session-start (make-session))
+                      (remote-version-envelope))
+                    (p2p-envelope magic: bitcoin-mainnet-magic
+                                  command: "verack"
+                                  payload: (verack-message))))
+           (with-headers (p2p-session-apply-envelope
+                           ready
+                           (p2p-envelope magic: bitcoin-mainnet-magic
+                                         command: "headers"
+                                         payload: (headers-message-serialize
+                                                    (list %genesis-header)))))
+           (queued (p2p-session-next-getheaders with-headers %zero32))
+           (outbound (p2p-session-outbound queued))
+           (msg (getheaders-message-parse
+                  (p2p-envelope-payload (car (reverse outbound))))))
+      (assert-true (peer-state-handshake-complete? (p2p-session-state queued)))
+      (assert-equal "getheaders" (p2p-envelope-command (car (reverse outbound))))
+      (assert-equal (list (block-header-hash %genesis-header))
+                    (getheaders-message-locator-hashes msg))))
+
+  (test "drains outbound queue"
+    (let* ((started (p2p-session-start (make-session)))
+           (drained (p2p-session-drain-outbound started)))
+      (assert-equal 1 (length (car drained)))
+      (assert-equal 0 (length (p2p-session-outbound (cadr drained))))))
+
+  (test "flushes queued envelopes to a transport writer"
+    (let ((written '()))
+      (let* ((started (p2p-session-start (make-session)))
+             (flushed (p2p-session-flush
+                        (lambda (envelope)
+                          (set! written (append written (list envelope)))
+                          #t)
+                        started)))
+        (assert-equal 1 (length written))
+        (assert-equal "version" (p2p-envelope-command (car written)))
+        (assert-equal 0 (length (p2p-session-outbound flushed))))))
+
+  (test "steps by reading one inbound envelope"
+    (let* ((session (p2p-session-step remote-version-envelope (make-session)))
+           (outbound (p2p-session-outbound session)))
+      (assert-true (peer-state-version-received? (p2p-session-state session)))
+      (assert-equal 1 (length outbound))
+      (assert-equal "verack" (p2p-envelope-command (car outbound)))))
+
+  (test "orchestrates handshake over read/write functions"
+    (let ((incoming (list (remote-version-envelope)
+                          (p2p-envelope magic: bitcoin-mainnet-magic
+                                        command: "verack"
+                                        payload: (verack-message))))
+          (written '()))
+      (let* ((read-envelope
+               (lambda ()
+                 (let ((next (car incoming)))
+                   (set! incoming (cdr incoming))
+                   next)))
+             (write-envelope
+               (lambda (envelope)
+                 (set! written (append written (list envelope)))
+                 #t))
+             (ready (p2p-session-handshake
+                      read-envelope
+                      write-envelope
+                      (make-session)
+                      4)))
+        (assert-true (peer-state-handshake-complete? (p2p-session-state ready)))
+        (assert-equal 2 (length written))
+        (assert-equal "version" (p2p-envelope-command (car written)))
+        (assert-equal "verack" (p2p-envelope-command (cadr written)))))))
 
 (run-tests)
