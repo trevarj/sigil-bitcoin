@@ -56,7 +56,7 @@ dump=$(mktemp "${TMPDIR:-/tmp}/sigil-bitcoin-wasm.XXXXXX")
 
 guix shell -m "$ROOT/manifest.scm" -- wasm-objdump -x "$WASM" > "$dump"
 
-for export in malloc free sigil_web_init sigil_web_start sigil_web_eval sigil_web_input; do
+for export in malloc free sigil_wasm_init sigil_wasm_start sigil_wasm_eval sigil_wasm_eval_string_length sigil_wasm_last_result_length sigil_wasm_copy_result sigil_wasm_input sigil_wasm_resume_async; do
   if ! grep -q -- "-> \"$export\"" "$dump"; then
     echo "wasm-test: missing WASM export: $export" >&2
     exit 1

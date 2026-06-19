@@ -38,11 +38,15 @@
       debug?: #f
       optimize: 2
       c-flags: (with-sigil-c-flags
-        '("-std=c99" "-D_GNU_SOURCE" "-D__SIGIL_WEB__" "-Wall" "-O2"))
-      link-flags: '("-Wl,--export=sigil_web_init"
-                    "-Wl,--export=sigil_web_start"
-                    "-Wl,--export=sigil_web_eval"
-                    "-Wl,--export=sigil_web_input"
+        '("-std=c99" "-D_GNU_SOURCE" "-D__SIGIL_WASM__" "-Wall" "-O2"))
+      link-flags: '("-Wl,--export=sigil_wasm_init"
+                    "-Wl,--export=sigil_wasm_start"
+                    "-Wl,--export=sigil_wasm_eval"
+                    "-Wl,--export=sigil_wasm_eval_string_length"
+                    "-Wl,--export=sigil_wasm_last_result_length"
+                    "-Wl,--export=sigil_wasm_copy_result"
+                    "-Wl,--export=sigil_wasm_input"
+                    "-Wl,--export=sigil_wasm_resume_async"
                     "-Wl,--export=malloc"
                     "-Wl,--export=free"
                     "-lc")

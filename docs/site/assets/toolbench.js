@@ -255,10 +255,10 @@ class SigilRuntime {
     this.stderr = [];
     const [ptr] = this.cString(code);
     try {
-      const status = this.exports.sigil_web_eval(ptr);
+      const status = this.exports.sigil_wasm_eval(ptr);
       const output = this.stdout.join("\n");
       const error = this.stderr.join("\n");
-      if (status !== 0) throw new Error(error || output || `sigil_web_eval returned ${status}`);
+      if (status !== 0) throw new Error(error || output || `sigil_wasm_eval returned ${status}`);
       const match = output.match(/__SIGIL_BITCOIN_RESULT__(.*)__END_SIGIL_BITCOIN_RESULT__/s);
       if (!match) throw new Error(output || "Sigil returned no tool result");
       return JSON.parse(match[1]);

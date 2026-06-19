@@ -6,6 +6,7 @@
  */
 
 #include <sigil/sigil.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -22,9 +23,45 @@ extern void sigil__init_sigil_crypto_module(SigilVM *vm);
 static SigilVM *g_vm = NULL;
 static Value sym_waiting = 0;
 static Value sym_exit = 0;
+static char *g_eval_string_result = NULL;
+static int32_t g_eval_string_result_len = -1;
+
+static void clear_eval_string_result(void)
+{
+    if (g_eval_string_result) {
+        free(g_eval_string_result);
+        g_eval_string_result = NULL;
+    }
+    g_eval_string_result_len = -1;
+}
+
+static int32_t retain_eval_string_result(Value result)
+{
+    clear_eval_string_result();
+    if (!sigil_is_string(result)) {
+        fprintf(stderr, "Error: WASM string result is not a string\n");
+        fflush(stderr);
+        return -1;
+    }
+
+    SigilString *str = (SigilString *)sigil_as_ptr(result);
+    g_eval_string_result_len = (int32_t)str->byte_length;
+    g_eval_string_result = malloc((size_t)g_eval_string_result_len);
+    if (g_eval_string_result_len > 0 && !g_eval_string_result) {
+        fprintf(stderr, "Error: Out of memory\n");
+        g_eval_string_result_len = -1;
+        return -1;
+    }
+
+    if (g_eval_string_result_len > 0) {
+        memcpy(g_eval_string_result, sigil_string_bytes(result),
+               (size_t)g_eval_string_result_len);
+    }
+    return g_eval_string_result_len;
+}
 
 SIGIL_EXPORT
-int sigil_web_init(void)
+int sigil_wasm_init(void)
 {
     if (g_vm) {
         return 0;
@@ -57,7 +94,7 @@ int sigil_web_init(void)
 }
 
 SIGIL_EXPORT
-int sigil_web_start(void)
+int sigil_wasm_start(void)
 {
     if (!g_vm) {
         fprintf(stderr, "Error: VM not initialized\n");
@@ -86,7 +123,7 @@ int sigil_web_start(void)
 }
 
 SIGIL_EXPORT
-int sigil_web_eval(const char *code)
+int sigil_wasm_eval(const char *code)
 {
     if (!g_vm) {
         fprintf(stderr, "Error: VM not initialized\n");
@@ -119,7 +156,52 @@ int sigil_web_eval(const char *code)
 }
 
 SIGIL_EXPORT
-int sigil_web_input(const char *input)
+int sigil_wasm_eval_string_length(const char *code)
+{
+    if (!g_vm) {
+        fprintf(stderr, "Error: VM not initialized\n");
+        return -1;
+    }
+
+    sigil_error_clear(g_vm);
+
+    Value result = sigil_eval_string(g_vm, code);
+    fflush(stdout);
+
+    const char *err = sigil_error_message(g_vm);
+    if (err) {
+        fprintf(stderr, "Error: %s\n", err);
+        fflush(stderr);
+        return -1;
+    }
+
+    return retain_eval_string_result(result);
+}
+
+SIGIL_EXPORT
+int sigil_wasm_last_result_length(void)
+{
+    return g_eval_string_result_len;
+}
+
+SIGIL_EXPORT
+int sigil_wasm_copy_result(char *dest, int32_t dest_len)
+{
+    if (!g_eval_string_result || g_eval_string_result_len < 0) {
+        return -1;
+    }
+    if (!dest || dest_len < g_eval_string_result_len) {
+        return -1;
+    }
+
+    if (g_eval_string_result_len > 0) {
+        memcpy(dest, g_eval_string_result, (size_t)g_eval_string_result_len);
+    }
+    return g_eval_string_result_len;
+}
+
+SIGIL_EXPORT
+int sigil_wasm_input(const char *input)
 {
     if (!g_vm) {
         fprintf(stderr, "Error: VM not initialized\n");
@@ -181,14 +263,20 @@ int sigil_web_input(const char *input)
     return -1;
 }
 
+SIGIL_EXPORT
+int sigil_wasm_resume_async(void)
+{
+    return 0;
+}
+
 int main(int argc, char *argv[])
 {
     (void)argc;
     (void)argv;
 
-    if (sigil_web_init() != 0) {
+    if (sigil_wasm_init() != 0) {
         return 1;
     }
 
-    return sigil_web_start() < 0 ? 1 : 0;
+    return sigil_wasm_start() < 0 ? 1 : 0;
 }

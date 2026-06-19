@@ -5,7 +5,7 @@
 (package
   name: "sigil-bitcoin-encoding"
   version: "0.1.0"
-  sigil: "^0.16"
+  sigil: "^0.17"
   description: "Bitcoin encoding formats: hex, base58, base58check, bech32/bech32m"
   url: "https://codeberg.org/sigil/sigil-bitcoin"
   license: "BSD-3-Clause"

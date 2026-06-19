@@ -5,7 +5,7 @@
 (package
   name: "sigil-bitcoin-script"
   version: "0.1.0"
-  sigil: "^0.16"
+  sigil: "^0.17"
   description: "Bitcoin script byte constructors and standard templates"
   url: "https://codeberg.org/sigil/sigil-bitcoin"
   license: "BSD-3-Clause"

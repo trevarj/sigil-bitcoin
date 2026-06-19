@@ -2,9 +2,10 @@
 (lock
   (package name: "sigil-stdlib"
            url: "codeberg:sigil/sigil"
-           ref: "^0.16"
-           sha: "0a84c0d5fc242b4ff2fb49675567cbd2c98d8009"
-           package-selector: "sigil-stdlib")
+           ref: "^0.17"
+           sha: "3431a600a8ac2d6d91c2f0c8cbf2e296e10c16df"
+           package-selector: "sigil-stdlib"
+           version: "0.17.0")
   (package name: "press"
            url: "codeberg:sigil/press"
            ref: "^0.1.0"
@@ -14,27 +15,32 @@
            url: "codeberg:sigil/sigil"
            ref: "^0.9.0"
            sha: "0123d3fc7d2dd37e5c27e9fade7d11b817deb21a"
-           package-selector: "sigil-ansi")
+           package-selector: "sigil-ansi"
+           version: "0.9.2")
   (package name: "sigil-http"
            url: "codeberg:sigil/sigil"
            ref: "^0.9.0"
            sha: "0123d3fc7d2dd37e5c27e9fade7d11b817deb21a"
-           package-selector: "sigil-http")
+           package-selector: "sigil-http"
+           version: "0.9.2")
   (package name: "sigil-json"
            url: "codeberg:sigil/sigil"
            ref: "^0.9.0"
            sha: "0123d3fc7d2dd37e5c27e9fade7d11b817deb21a"
-           package-selector: "sigil-json")
+           package-selector: "sigil-json"
+           version: "0.9.2")
   (package name: "sigil-docs"
            url: "codeberg:sigil/sigil"
            ref: "^0.9.0"
            sha: "0123d3fc7d2dd37e5c27e9fade7d11b817deb21a"
-           package-selector: "sigil-docs")
+           package-selector: "sigil-docs"
+           version: "0.9.2")
   (package name: "sigil-args"
            url: "codeberg:sigil/sigil"
            ref: "^0.9.0"
            sha: "0123d3fc7d2dd37e5c27e9fade7d11b817deb21a"
-           package-selector: "sigil-args")
+           package-selector: "sigil-args"
+           version: "0.9.2")
   (package name: "sigil-sxml"
            url: "codeberg:sigil/sigil-sxml"
            ref: "^0.9.0"

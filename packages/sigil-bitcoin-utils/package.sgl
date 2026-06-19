@@ -5,7 +5,7 @@
 (package
   name: "sigil-bitcoin-utils"
   version: "0.1.0"
-  sigil: "^0.16"
+  sigil: "^0.17"
   description: "Shared internal helpers for sigil-bitcoin packages"
   url: "https://codeberg.org/sigil/sigil-bitcoin"
   license: "BSD-3-Clause"

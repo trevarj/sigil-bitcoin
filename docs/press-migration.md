@@ -34,7 +34,7 @@ The build:
 ## Remaining Work
 
 - Update or upstream Press metadata for current Sigil:
-  add `sigil: "^0.16"` and refresh dependency ranges.
+  add `sigil: "^0.17"` and refresh dependency ranges.
 - Decide whether this repo should depend on Press as a normal package once the
   upstream package is current.
 - Remove the old `tools/docs-site.sgl` generator after the Press path has been
