@@ -6,6 +6,7 @@
           (sigil bitcoin utils)
           (sigil bitcoin primitives)
           (sigil bitcoin consensus)
+          (sigil bitcoin tx)
           (sigil bitcoin tx wire))
   (export
     bitcoin-mainnet-magic
@@ -20,6 +21,14 @@
     getheaders-message getheaders-message?
     getheaders-message-version getheaders-message-locator-hashes
     getheaders-message-stop-hash
+    inventory-vector inventory-vector?
+    inventory-vector-type inventory-vector-hash
+    inv-error inv-tx inv-block inv-filtered-block inv-witness-tx inv-witness-block
+    peer-state peer-state?
+    peer-state-version-sent? peer-state-version-received?
+    peer-state-verack-sent? peer-state-verack-received?
+    peer-state-headers peer-state-known-inventory
+    peer-state-last-ping peer-state-last-pong
     p2p-envelope p2p-envelope?
     p2p-envelope-magic p2p-envelope-command p2p-envelope-payload
     p2p-checksum
@@ -34,7 +43,22 @@
     getheaders-message-serialize
     getheaders-message-parse
     headers-message-serialize
-    headers-message-parse)
+    headers-message-parse
+    inventory-message-serialize
+    inventory-message-parse
+    inv-message
+    getdata-message
+    notfound-message
+    tx-message
+    tx-message-parse
+    block-message
+    block-message-parse
+    peer-state-create
+    peer-state-mark-version-sent
+    peer-state-mark-verack-sent
+    peer-state-handshake-complete?
+    peer-state-apply-envelope
+    peer-state-next-getheaders)
   (begin
 
     (define bitcoin-mainnet-magic #u8(#xf9 #xbe #xb4 #xd9))
@@ -62,12 +86,33 @@
       (locator-hashes list?)
       (stop-hash bytevector?))
 
+    (define-struct inventory-vector
+      (type integer?)
+      (hash bytevector?))
+
+    (define-struct peer-state
+      (version-sent? boolean?)
+      (version-received? boolean?)
+      (verack-sent? boolean?)
+      (verack-received? boolean?)
+      (headers list?)
+      (known-inventory list?)
+      (last-ping any?)
+      (last-pong any?))
+
     (define-struct p2p-envelope
       (magic bytevector?)
       (command string?)
       (payload bytevector?))
 
     (define %u8-max #xff)
+
+    (define inv-error 0)
+    (define inv-tx 1)
+    (define inv-block 2)
+    (define inv-filtered-block 3)
+    (define inv-witness-tx #x40000001)
+    (define inv-witness-block #x40000002)
 
     (define (require-network-address who addr)
       (unless (network-address? addr)
@@ -96,6 +141,20 @@
       (do ((xs hashes (cdr xs)))
           ((null? xs) hashes)
         (require-bytevector-length who (car xs) 32)))
+
+    (define (require-inventory-vector item)
+      (unless (inventory-vector? item)
+        (error "inventory-vector: expected inventory-vector"))
+      (require-uint "inventory-vector type" (inventory-vector-type item) %u32-max)
+      (require-bytevector-length "inventory-vector hash" (inventory-vector-hash item) 32)
+      item)
+
+    (define (require-inventory-list items)
+      (unless (list? items)
+        (error "inventory message: expected list"))
+      (do ((xs items (cdr xs)))
+          ((null? xs) items)
+        (require-inventory-vector (car xs))))
 
     (define (string->ascii-bytes text)
       (let* ((len (string-length text))
@@ -344,4 +403,217 @@
              (parsed (parse-headers bytes (cadr count-result) (car count-result))))
         (unless (= (cadr parsed) (bytevector-length bytes))
           (error "headers-message-parse: trailing bytes"))
-        (car parsed)))))
+        (car parsed)))
+
+    (define (inventory-vector-serialize item)
+      (require-inventory-vector item)
+      (bytevector-append
+        (u32-le (inventory-vector-type item))
+        (inventory-vector-hash item)))
+
+    (define (inventory-vector-parse bytes offset)
+      (ensure-available "inventory-vector" bytes offset 36)
+      (list
+        (inventory-vector type: (read-u32-le bytes offset "inventory-vector type")
+                          hash: (bytevector-copy bytes (+ offset 4) (+ offset 36)))
+        (+ offset 36)))
+
+    (define (inventory-message-serialize items)
+      (: list? -> bytevector?)
+      (require-inventory-list items)
+      (let ((payloads (map inventory-vector-serialize items)))
+        (if (null? payloads)
+            (compact-size-encode 0)
+            (bytevector-append
+              (compact-size-encode (length items))
+              (apply bytevector-append payloads)))))
+
+    (define (inventory-message-parse bytes)
+      (: bytevector? -> list?)
+      (require-bytevector "inventory-message-parse" bytes)
+      (let* ((count-result (compact-size-decode-at bytes 0))
+             (count (car count-result)))
+        (let loop ((i 0) (cursor (cadr count-result)) (items '()))
+          (if (>= i count)
+              (begin
+                (unless (= cursor (bytevector-length bytes))
+                  (error "inventory-message-parse: trailing bytes"))
+                (reverse items))
+              (let ((parsed (inventory-vector-parse bytes cursor)))
+                (loop (+ i 1)
+                      (cadr parsed)
+                      (cons (car parsed) items)))))))
+
+    (define (inv-message items)
+      (inventory-message-serialize items))
+
+    (define (getdata-message items)
+      (inventory-message-serialize items))
+
+    (define (notfound-message items)
+      (inventory-message-serialize items))
+
+    (define (tx-message tx)
+      (: transaction? -> bytevector?)
+      (transaction-serialize tx))
+
+    (define (tx-message-parse bytes)
+      (: bytevector? -> transaction?)
+      (transaction-parse bytes))
+
+    (define (block-message b)
+      (: block? -> bytevector?)
+      (block-serialize b))
+
+    (define (block-message-parse bytes)
+      (: bytevector? -> block?)
+      (block-parse bytes))
+
+    (define (peer-state-create)
+      (peer-state version-sent?: #f
+                  version-received?: #f
+                  verack-sent?: #f
+                  verack-received?: #f
+                  headers: '()
+                  known-inventory: '()
+                  last-ping: #f
+                  last-pong: #f))
+
+    (define (peer-state-copy state version-sent? version-received?
+                             verack-sent? verack-received? headers
+                             known-inventory last-ping last-pong)
+      (peer-state version-sent?: version-sent?
+                  version-received?: version-received?
+                  verack-sent?: verack-sent?
+                  verack-received?: verack-received?
+                  headers: headers
+                  known-inventory: known-inventory
+                  last-ping: last-ping
+                  last-pong: last-pong))
+
+    (define (peer-state-handshake-complete? state)
+      (: peer-state? -> boolean?)
+      (and (peer-state-version-sent? state)
+           (peer-state-version-received? state)
+           (peer-state-verack-sent? state)
+           (peer-state-verack-received? state)))
+
+    (define (peer-state-mark-version-sent state)
+      (: peer-state? -> peer-state?)
+      (peer-state-copy state
+                       #t
+                       (peer-state-version-received? state)
+                       (peer-state-verack-sent? state)
+                       (peer-state-verack-received? state)
+                       (peer-state-headers state)
+                       (peer-state-known-inventory state)
+                       (peer-state-last-ping state)
+                       (peer-state-last-pong state)))
+
+    (define (peer-state-mark-verack-sent state)
+      (: peer-state? -> peer-state?)
+      (peer-state-copy state
+                       (peer-state-version-sent? state)
+                       (peer-state-version-received? state)
+                       #t
+                       (peer-state-verack-received? state)
+                       (peer-state-headers state)
+                       (peer-state-known-inventory state)
+                       (peer-state-last-ping state)
+                       (peer-state-last-pong state)))
+
+    (define (nonce-payload->integer bytes who)
+      (unless (= 8 (bytevector-length bytes))
+        (error (string-append who ": expected 8-byte nonce")))
+      (read-u64-le bytes 0 who))
+
+    (define (append-known-inventory known new-items)
+      (append known new-items))
+
+    (define (peer-state-apply-envelope state envelope)
+      (: peer-state? p2p-envelope? -> peer-state?)
+      (unless (peer-state? state)
+        (error "peer-state-apply-envelope: expected peer-state"))
+      (let ((command (p2p-envelope-command envelope))
+            (payload (p2p-envelope-payload envelope)))
+        (cond
+          ((string=? command "version")
+           (version-message-parse payload)
+           (peer-state-copy state
+                            (peer-state-version-sent? state)
+                            #t
+                            (peer-state-verack-sent? state)
+                            (peer-state-verack-received? state)
+                            (peer-state-headers state)
+                            (peer-state-known-inventory state)
+                            (peer-state-last-ping state)
+                            (peer-state-last-pong state)))
+          ((string=? command "verack")
+           (unless (= 0 (bytevector-length payload))
+             (error "verack: expected empty payload"))
+           (peer-state-copy state
+                            (peer-state-version-sent? state)
+                            (peer-state-version-received? state)
+                            (peer-state-verack-sent? state)
+                            #t
+                            (peer-state-headers state)
+                            (peer-state-known-inventory state)
+                            (peer-state-last-ping state)
+                            (peer-state-last-pong state)))
+          ((string=? command "headers")
+           (peer-state-copy state
+                            (peer-state-version-sent? state)
+                            (peer-state-version-received? state)
+                            (peer-state-verack-sent? state)
+                            (peer-state-verack-received? state)
+                            (append (peer-state-headers state)
+                                    (headers-message-parse payload))
+                            (peer-state-known-inventory state)
+                            (peer-state-last-ping state)
+                            (peer-state-last-pong state)))
+          ((string=? command "inv")
+           (peer-state-copy state
+                            (peer-state-version-sent? state)
+                            (peer-state-version-received? state)
+                            (peer-state-verack-sent? state)
+                            (peer-state-verack-received? state)
+                            (peer-state-headers state)
+                            (append-known-inventory
+                              (peer-state-known-inventory state)
+                              (inventory-message-parse payload))
+                            (peer-state-last-ping state)
+                            (peer-state-last-pong state)))
+          ((string=? command "ping")
+           (peer-state-copy state
+                            (peer-state-version-sent? state)
+                            (peer-state-version-received? state)
+                            (peer-state-verack-sent? state)
+                            (peer-state-verack-received? state)
+                            (peer-state-headers state)
+                            (peer-state-known-inventory state)
+                            (nonce-payload->integer payload "ping")
+                            (peer-state-last-pong state)))
+          ((string=? command "pong")
+           (peer-state-copy state
+                            (peer-state-version-sent? state)
+                            (peer-state-version-received? state)
+                            (peer-state-verack-sent? state)
+                            (peer-state-verack-received? state)
+                            (peer-state-headers state)
+                            (peer-state-known-inventory state)
+                            (peer-state-last-ping state)
+                            (nonce-payload->integer payload "pong")))
+          (else state))))
+
+    (define (peer-state-next-getheaders state version stop-hash)
+      (: peer-state? integer? bytevector? -> bytevector?)
+      (unless (peer-state-handshake-complete? state)
+        (error "peer-state-next-getheaders: handshake incomplete"))
+      (getheaders-message-serialize
+        (getheaders-message
+          version: version
+          locator-hashes: (if (null? (peer-state-headers state))
+                              '()
+                              (list (block-header-hash
+                                      (car (reverse (peer-state-headers state))))))
+          stop-hash: stop-hash)))))

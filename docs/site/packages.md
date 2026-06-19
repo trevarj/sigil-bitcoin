@@ -36,4 +36,4 @@ Use this page as a quick map from package to responsibility.
 
 ## P2P
 
-`(sigil bitcoin p2p)` owns Bitcoin network envelopes, payload checksums, handshake payloads, ping/pong nonces, and header-sync message codecs.
+`(sigil bitcoin p2p)` owns Bitcoin network envelopes, payload checksums, handshake payloads, ping/pong nonces, header-sync message codecs, inventory/getdata/notfound relay payloads, tx/block payloads, and peer-state transitions.

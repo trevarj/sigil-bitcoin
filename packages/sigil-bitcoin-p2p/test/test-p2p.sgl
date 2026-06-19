@@ -1,7 +1,8 @@
 (import (sigil test)
         (sigil bitcoin p2p)
         (sigil bitcoin consensus)
-        (sigil bitcoin encoding))
+        (sigil bitcoin encoding)
+        (sigil bitcoin tx))
 
 (define %zero32 (make-bytevector 32 0))
 (define %ipv6-loopback
@@ -15,6 +16,28 @@
 
 (define %addr
   (network-address services: 1 ip: %ipv6-loopback port: 8333))
+
+(define %coinbase-tx
+  (transaction
+    version: 1
+    inputs: (list
+      (txin previous-output: (outpoint txid: %zero32 index: #xffffffff)
+            script-sig: #u8(#x03 #x04)
+            sequence: #xffffffff
+            witness: '()))
+    outputs: (list
+      (txout value: 50 script-pubkey: #u8(#x51)))
+    lock-time: 0))
+
+(define %block
+  (block
+    header-field: (block-header version: 1
+                                previous-block: %zero32
+                                merkle-root: (transaction-txid %coinbase-tx)
+                                time: 1
+                                bits: #x207fffff
+                                nonce: 0)
+    transactions: (list %coinbase-tx)))
 
 (test-group "envelopes"
   (test "serializes and parses ping envelope"
@@ -92,5 +115,101 @@
     (let ((payload (headers-message-serialize (list %genesis-header))))
       (bytevector-u8-set! payload 81 1)
       (assert-error (headers-message-parse payload)))))
+
+(test-group "relay messages"
+  (test "serializes and parses inventory vectors"
+    (let* ((item (inventory-vector type: inv-block
+                                   hash: (block-header-hash %genesis-header)))
+           (items (inventory-message-parse (inv-message (list item)))))
+      (assert-equal 1 (length items))
+      (assert-equal inv-block (inventory-vector-type (car items)))
+      (assert-equal (block-header-hash %genesis-header)
+                    (inventory-vector-hash (car items)))))
+
+  (test "getdata and notfound use inventory payloads"
+    (let ((item (inventory-vector type: inv-tx hash: (transaction-txid %coinbase-tx))))
+      (assert-equal (inventory-message-serialize (list item))
+                    (getdata-message (list item)))
+      (assert-equal (inventory-message-serialize (list item))
+                    (notfound-message (list item)))))
+
+  (test "serializes and parses tx and block payloads"
+    (assert-equal (transaction-txid %coinbase-tx)
+                  (transaction-txid (tx-message-parse (tx-message %coinbase-tx))))
+    (assert-equal (block-header-id (block-header-field %block))
+                  (block-header-id
+                    (block-header-field
+                      (block-message-parse (block-message %block)))))))
+
+(test-group "peer state"
+  (test "tracks handshake completion"
+    (let* ((version (version-message
+                      version: 70015
+                      services: 1
+                      timestamp: 123456789
+                      addr-recv: %addr
+                      addr-from: %addr
+                      nonce: 1
+                      user-agent: "/sigil-bitcoin:0.1.0/"
+                      start-height: 0
+                      relay?: #t))
+           (state0 (peer-state-create))
+           (state1 (peer-state-mark-version-sent state0))
+           (state2 (peer-state-apply-envelope
+                     state1
+                     (p2p-envelope magic: bitcoin-mainnet-magic
+                                   command: "version"
+                                   payload: (version-message-serialize version))))
+           (state3 (peer-state-mark-verack-sent state2))
+           (state4 (peer-state-apply-envelope
+                     state3
+                     (p2p-envelope magic: bitcoin-mainnet-magic
+                                   command: "verack"
+                                   payload: (verack-message)))))
+      (assert-false (peer-state-handshake-complete? state0))
+      (assert-true (peer-state-handshake-complete? state4))))
+
+  (test "tracks headers, inventory, ping, and pong"
+    (let* ((item (inventory-vector type: inv-block
+                                   hash: (block-header-hash %genesis-header)))
+           (ready (peer-state-mark-verack-sent
+                    (peer-state-mark-version-sent
+                      (peer-state version-sent?: #f
+                                  version-received?: #t
+                                  verack-sent?: #f
+                                  verack-received?: #t
+                                  headers: '()
+                                  known-inventory: '()
+                                  last-ping: #f
+                                  last-pong: #f))))
+           (with-headers (peer-state-apply-envelope
+                           ready
+                           (p2p-envelope magic: bitcoin-mainnet-magic
+                                         command: "headers"
+                                         payload: (headers-message-serialize
+                                                    (list %genesis-header)))))
+           (with-inv (peer-state-apply-envelope
+                       with-headers
+                       (p2p-envelope magic: bitcoin-mainnet-magic
+                                     command: "inv"
+                                     payload: (inv-message (list item)))))
+           (with-ping (peer-state-apply-envelope
+                        with-inv
+                        (p2p-envelope magic: bitcoin-mainnet-magic
+                                      command: "ping"
+                                      payload: (ping-message 9))))
+           (with-pong (peer-state-apply-envelope
+                        with-ping
+                        (p2p-envelope magic: bitcoin-mainnet-magic
+                                      command: "pong"
+                                      payload: (pong-message 9))))
+           (getheaders (getheaders-message-parse
+                         (peer-state-next-getheaders with-pong 70015 %zero32))))
+      (assert-equal 1 (length (peer-state-headers with-pong)))
+      (assert-equal 1 (length (peer-state-known-inventory with-pong)))
+      (assert-equal 9 (peer-state-last-ping with-pong))
+      (assert-equal 9 (peer-state-last-pong with-pong))
+      (assert-equal (list (block-header-hash %genesis-header))
+                    (getheaders-message-locator-hashes getheaders)))))
 
 (run-tests)
