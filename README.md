@@ -8,8 +8,8 @@ Bitcoin libraries for Sigil.
 
 Sigil Bitcoin provides packages for keys, addresses, scripts, transactions,
 PSBTs, Miniscript, block/header chain and UTXO consensus helpers with standard
-P2PKH/P2WPKH signature checks, P2P message codecs, peer selection, relay
-scheduling, and secp256k1 bindings.
+P2PKH/P2SH/P2WPKH/P2WSH signature checks, P2P message codecs, peer selection,
+relay scheduling, and secp256k1 bindings.
 
 ## Documentation
 

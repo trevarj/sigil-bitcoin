@@ -1,4 +1,5 @@
 (import (sigil test)
+        (sigil crypto)
         (sigil secp256k1)
         (sigil bitcoin consensus)
         (sigil bitcoin encoding)
@@ -17,6 +18,12 @@
 (define %generator-pub
   (hex-decode "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"))
 (define %native-secp256k1? (procedure? secp256k1-seckey-verify?))
+(define %p2pkh-redeem-script (script-p2pkh (hash160 %generator-pub)))
+(define %p2wpkh-redeem-script (script-p2wpkh (hash160 %generator-pub)))
+(define %p2wsh-witness-script
+  (script-append (script-push-data %generator-pub) (script-op op-checksig)))
+(define %p2wsh-redeem-script
+  (script-p2wsh (sha256-bytes %p2wsh-witness-script)))
 
 (define %fast-params
   (consensus-params pow-limit-bits: #x207fffff
@@ -76,6 +83,32 @@
                               (hash160 %generator-pub))))
     lock-time: 0))
 
+(define (make-p2sh-coinbase-tx value redeem-script)
+  (transaction
+    version: 1
+    inputs: (list
+      (txin previous-output: (outpoint txid: %zero32 index: #xffffffff)
+            script-sig: #u8(#x03 #x04)
+            sequence: #xffffffff
+            witness: '()))
+    outputs: (list
+      (txout value: value
+             script-pubkey: (script-p2sh (hash160 redeem-script))))
+    lock-time: 0))
+
+(define (make-p2wsh-coinbase-tx value witness-script)
+  (transaction
+    version: 1
+    inputs: (list
+      (txin previous-output: (outpoint txid: %zero32 index: #xffffffff)
+            script-sig: #u8(#x03 #x04)
+            sequence: #xffffffff
+            witness: '()))
+    outputs: (list
+      (txout value: value
+             script-pubkey: (script-p2wsh (sha256-bytes witness-script))))
+    lock-time: 0))
+
 (define (make-spend-tx prev-tx value)
   (transaction
     version: 1
@@ -101,6 +134,33 @@
     outputs: (list
       (txout value: value script-pubkey: #u8(#x51)))
     lock-time: 0))
+
+(define (sign-p2sh-p2pkh-spend unsigned redeem-script)
+  (let* ((signed (transaction-sign-p2pkh-input unsigned 0 %one))
+         (script-sig (txin-script-sig (car (transaction-inputs signed)))))
+    (transaction-set-input-script-sig
+      signed
+      0
+      (script-append script-sig (script-push-data redeem-script)))))
+
+(define (sign-p2sh-p2wpkh-spend unsigned redeem-script value)
+  (transaction-set-input-script-sig
+    (transaction-sign-p2wpkh-input unsigned 0 value %one)
+    0
+    (script-push-data redeem-script)))
+
+(define (sign-p2wsh-spend unsigned witness-script value)
+  (let* ((msghash (transaction-sighash-segwit-v0 unsigned 0 witness-script value))
+         (der (secp256k1-ecdsa-signature-serialize-der
+                (secp256k1-ecdsa-sign %one msghash)))
+         (sig (bytevector-append der #u8(#x01))))
+    (transaction-set-input-witness unsigned 0 (list sig witness-script))))
+
+(define (sign-p2sh-p2wsh-spend unsigned redeem-script witness-script value)
+  (transaction-set-input-script-sig
+    (sign-p2wsh-spend unsigned witness-script value)
+    0
+    (script-push-data redeem-script)))
 
 (define (make-test-block txs time)
   (block
@@ -392,7 +452,128 @@
                (coinbase (make-coinbase-tx (+ (block-subsidy 100) 1000)))
                (b (make-test-block (list coinbase spend) 2)))
           (assert-error
-            (connect-block bitcoin-regtest-consensus-params 100 initial b)))))
+            (connect-block bitcoin-regtest-consensus-params 100 initial b))))
+
+      (test "validates P2SH-wrapped P2PKH spends"
+        (let* ((funding (make-p2sh-coinbase-tx 5000 %p2pkh-redeem-script))
+               (initial (connect-block
+                          bitcoin-regtest-consensus-params
+                          0
+                          '()
+                          (make-test-block (list funding) 1)))
+               (unsigned (make-unsigned-spend-tx funding 4000))
+               (spend (sign-p2sh-p2pkh-spend unsigned %p2pkh-redeem-script))
+               (coinbase (make-coinbase-tx (+ (block-subsidy 100) 1000)))
+               (b (make-test-block (list coinbase spend) 2))
+               (updated (connect-block
+                          bitcoin-regtest-consensus-params
+                          100
+                          initial
+                          b)))
+          (assert-true
+            (utxo-entry?
+              (utxo-set-lookup updated
+                               (outpoint txid: (transaction-txid spend) index: 0))))))
+
+      (test "rejects P2SH spends with the wrong redeem script"
+        (let* ((funding (make-p2sh-coinbase-tx 5000 %p2pkh-redeem-script))
+               (initial (connect-block
+                          bitcoin-regtest-consensus-params
+                          0
+                          '()
+                          (make-test-block (list funding) 1)))
+               (unsigned (make-unsigned-spend-tx funding 4000))
+               (spend (sign-p2sh-p2pkh-spend
+                        unsigned
+                        (script-p2pkh (make-bytevector 20 9))))
+               (coinbase (make-coinbase-tx (+ (block-subsidy 100) 1000)))
+               (b (make-test-block (list coinbase spend) 2)))
+          (assert-error
+            (connect-block bitcoin-regtest-consensus-params 100 initial b))))
+
+      (test "validates P2SH-wrapped P2WPKH spends"
+        (let* ((funding (make-p2sh-coinbase-tx 5000 %p2wpkh-redeem-script))
+               (initial (connect-block
+                          bitcoin-regtest-consensus-params
+                          0
+                          '()
+                          (make-test-block (list funding) 1)))
+               (unsigned (make-unsigned-spend-tx funding 4000))
+               (spend (sign-p2sh-p2wpkh-spend unsigned %p2wpkh-redeem-script 5000))
+               (coinbase (make-coinbase-tx (+ (block-subsidy 100) 1000)))
+               (b (make-test-block (list coinbase spend) 2))
+               (updated (connect-block
+                          bitcoin-regtest-consensus-params
+                          100
+                          initial
+                          b)))
+          (assert-true
+            (utxo-entry?
+              (utxo-set-lookup updated
+                               (outpoint txid: (transaction-txid spend) index: 0))))))
+
+      (test "validates native P2WSH single-key CHECKSIG spends"
+        (let* ((funding (make-p2wsh-coinbase-tx 5000 %p2wsh-witness-script))
+               (initial (connect-block
+                          bitcoin-regtest-consensus-params
+                          0
+                          '()
+                          (make-test-block (list funding) 1)))
+               (unsigned (make-unsigned-spend-tx funding 4000))
+               (spend (sign-p2wsh-spend unsigned %p2wsh-witness-script 5000))
+               (coinbase (make-coinbase-tx (+ (block-subsidy 100) 1000)))
+               (b (make-test-block (list coinbase spend) 2))
+               (updated (connect-block
+                          bitcoin-regtest-consensus-params
+                          100
+                          initial
+                          b)))
+          (assert-true
+            (utxo-entry?
+              (utxo-set-lookup updated
+                               (outpoint txid: (transaction-txid spend) index: 0))))))
+
+      (test "rejects P2WSH spends with the wrong witness script"
+        (let* ((funding (make-p2wsh-coinbase-tx 5000 %p2wsh-witness-script))
+               (initial (connect-block
+                          bitcoin-regtest-consensus-params
+                          0
+                          '()
+                          (make-test-block (list funding) 1)))
+               (unsigned (make-unsigned-spend-tx funding 4000))
+               (bad-script (script-append
+                             (script-push-data (make-bytevector 33 2))
+                             (script-op op-checksig)))
+               (spend (sign-p2wsh-spend unsigned bad-script 5000))
+               (coinbase (make-coinbase-tx (+ (block-subsidy 100) 1000)))
+               (b (make-test-block (list coinbase spend) 2)))
+          (assert-error
+            (connect-block bitcoin-regtest-consensus-params 100 initial b))))
+
+      (test "validates P2SH-wrapped P2WSH single-key CHECKSIG spends"
+        (let* ((funding (make-p2sh-coinbase-tx 5000 %p2wsh-redeem-script))
+               (initial (connect-block
+                          bitcoin-regtest-consensus-params
+                          0
+                          '()
+                          (make-test-block (list funding) 1)))
+               (unsigned (make-unsigned-spend-tx funding 4000))
+               (spend (sign-p2sh-p2wsh-spend
+                        unsigned
+                        %p2wsh-redeem-script
+                        %p2wsh-witness-script
+                        5000))
+               (coinbase (make-coinbase-tx (+ (block-subsidy 100) 1000)))
+               (b (make-test-block (list coinbase spend) 2))
+               (updated (connect-block
+                          bitcoin-regtest-consensus-params
+                          100
+                          initial
+                          b)))
+          (assert-true
+            (utxo-entry?
+              (utxo-set-lookup updated
+                               (outpoint txid: (transaction-txid spend) index: 0)))))))
     #t)
 
   (test "rejects immature coinbase spends"

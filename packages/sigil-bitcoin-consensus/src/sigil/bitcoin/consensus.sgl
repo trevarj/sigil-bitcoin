@@ -3,6 +3,7 @@
 (define-library (sigil bitcoin consensus)
   (import (sigil math)
           (sigil struct)
+          (sigil crypto)
           (sigil secp256k1)
           (sigil bitcoin utils)
           (sigil bitcoin primitives)
@@ -520,6 +521,38 @@
     (define (script-push-chunk? chunk)
       (bytevector? (script-chunk-data chunk)))
 
+    (define (last-list-item xs who)
+      (when (null? xs)
+        (error (string-append who ": expected non-empty list")))
+      (if (null? (cdr xs))
+          (car xs)
+          (last-list-item (cdr xs) who)))
+
+    (define (drop-last-list-item xs who)
+      (when (null? xs)
+        (error (string-append who ": expected non-empty list")))
+      (if (null? (cdr xs))
+          '()
+          (cons (car xs) (drop-last-list-item (cdr xs) who))))
+
+    (define (input-with-script-and-witness input script-sig witness)
+      (txin previous-output: (txin-previous-output input)
+            script-sig: script-sig
+            sequence: (txin-sequence input)
+            witness: witness))
+
+    (define (chunks->push-script chunks)
+      (apply script-append (map script-push-data (map script-chunk-data chunks))))
+
+    (define (single-key-checksig-script-pubkey script who)
+      (let ((chunks (script-parse script)))
+        (unless (and (= 2 (length chunks))
+                     (script-push-chunk? (car chunks))
+                     (= op-checksig (script-chunk-opcode (cadr chunks)))
+                     (not (script-chunk-data (cadr chunks))))
+          (error (string-append who ": expected single-key CHECKSIG script")))
+        (script-chunk-data (car chunks))))
+
     (define (single-byte-sighash-all? sig)
       (and (> (bytevector-length sig) 0)
            (= sighash-all (bytevector-u8-ref sig (- (bytevector-length sig) 1)))))
@@ -577,12 +610,80 @@
             (error (string-append who ": public key hash mismatch")))
           (verify-ecdsa-sighash-all sig pubkey msghash who))))
 
+    (define (verify-p2wsh-input tx input-index input prevout)
+      (let* ((witness (txin-witness input))
+             (who "verify-standard-input-script p2wsh"))
+        (unless (and (= 0 (bytevector-length (txin-script-sig input)))
+                     (= 2 (length witness))
+                     (bytevector? (car witness))
+                     (bytevector? (cadr witness)))
+          (error (string-append who ": expected signature and witness script")))
+        (let* ((sig (car witness))
+               (witness-script (cadr witness))
+               (script-hash (script-standard-payload (txout-script-pubkey prevout)))
+               (pubkey (single-key-checksig-script-pubkey witness-script who))
+               (msghash (transaction-sighash-segwit-v0
+                          tx
+                          input-index
+                          witness-script
+                          (txout-value prevout)
+                          sighash-all)))
+          (unless (equal? script-hash (sha256-bytes witness-script))
+            (error (string-append who ": witness script hash mismatch")))
+          (verify-ecdsa-sighash-all sig pubkey msghash who))))
+
+    (define (verify-p2sh-input tx input-index input prevout)
+      (let* ((chunks (script-parse (txin-script-sig input)))
+             (who "verify-standard-input-script p2sh"))
+        (when (null? chunks)
+          (error (string-append who ": missing redeem script")))
+        (do ((xs chunks (cdr xs)))
+            ((null? xs))
+          (unless (script-push-chunk? (car xs))
+            (error (string-append who ": scriptSig must be push-only"))))
+        (let* ((redeem-script (script-chunk-data (last-list-item chunks who)))
+               (initial-chunks (drop-last-list-item chunks who))
+               (redeem-hash (script-standard-payload (txout-script-pubkey prevout)))
+               (redeem-class (script-classify redeem-script))
+               (nested-prevout (txout value: (txout-value prevout)
+                                      script-pubkey: redeem-script)))
+          (unless (equal? redeem-hash (hash160 redeem-script))
+            (error (string-append who ": redeem script hash mismatch")))
+          (case redeem-class
+            ((p2pkh)
+             (verify-p2pkh-input
+               tx
+               input-index
+               (input-with-script-and-witness
+                 input
+                 (chunks->push-script initial-chunks)
+                 '())
+               nested-prevout))
+            ((p2wpkh)
+             (unless (= 1 (length chunks))
+               (error (string-append who ": P2SH witness scriptSig must only push redeem script")))
+             (verify-p2wpkh-input
+               tx
+               input-index
+               (input-with-script-and-witness input #u8() (txin-witness input))
+               nested-prevout))
+            ((p2wsh)
+             (unless (= 1 (length chunks))
+               (error (string-append who ": P2SH witness scriptSig must only push redeem script")))
+             (verify-p2wsh-input
+               tx
+               input-index
+               (input-with-script-and-witness input #u8() (txin-witness input))
+               nested-prevout))
+            (else #t)))))
+
     ;;; Verify one input against recognized standard consensus script templates.
     ;;;
-    ;;; P2PKH uses legacy `SIGHASH_ALL`; native P2WPKH uses BIP143
-    ;;; `SIGHASH_ALL`. Unknown scripts are left to future script-engine work and
-    ;;; currently pass through so existing structural block validation remains
-    ;;; usable for nonstandard test fixtures.
+    ;;; P2PKH and P2SH-P2PKH use legacy `SIGHASH_ALL`; native and P2SH-wrapped
+    ;;; P2WPKH/P2WSH use BIP143 `SIGHASH_ALL`. P2WSH is limited to single-key
+    ;;; CHECKSIG witness scripts until the general script interpreter lands.
+    ;;; Unknown scripts pass through so existing structural block validation
+    ;;; remains usable for nonstandard test fixtures.
     ;;;
     ;;; ```scheme
     ;;; (verify-standard-input-script tx 0 prevout)
@@ -597,6 +698,10 @@
            (verify-p2pkh-input tx input-index input prevout))
           ((p2wpkh)
            (verify-p2wpkh-input tx input-index input prevout))
+          ((p2wsh)
+           (verify-p2wsh-input tx input-index input prevout))
+          ((p2sh)
+           (verify-p2sh-input tx input-index input prevout))
           (else #t))))
 
     ;;; Return true when `verify-standard-input-script` accepts an input.
