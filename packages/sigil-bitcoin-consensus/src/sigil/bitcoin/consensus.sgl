@@ -15,6 +15,12 @@
     block-header-bits block-header-nonce
     block block?
     block-header-field block-transactions
+    consensus-params consensus-params?
+    consensus-params-pow-limit-bits consensus-params-target-spacing
+    consensus-params-target-timespan consensus-params-retarget-interval
+    bitcoin-mainnet-consensus-params
+    bitcoin-testnet-consensus-params
+    bitcoin-regtest-consensus-params
     validate-block-header
     validate-block
     block-header-serialize
@@ -27,9 +33,17 @@
     block-merkle-root
     block-merkle-root-valid?
     compact-target->integer
+    integer->compact-target
     block-header-target
     block-header-work-value
-    block-header-proof-of-work-valid?)
+    block-header-proof-of-work-valid?
+    block-header-chain-work
+    next-required-bits
+    block-header-links?
+    block-header-valid-after?
+    validate-header-chain
+    header-chain-valid?
+    header-chain-work)
   (begin
 
     (define %max-target
@@ -48,6 +62,55 @@
     (define-struct block
       (header-field block-header?)
       (transactions list?))
+
+    ;;; Parameters needed for proof-of-work target transitions.
+    (define-struct consensus-params
+      (pow-limit-bits integer?)
+      (target-spacing integer?)
+      (target-timespan integer?)
+      (retarget-interval integer?))
+
+    ;;; Bitcoin mainnet proof-of-work schedule parameters.
+    (define bitcoin-mainnet-consensus-params
+      (consensus-params pow-limit-bits: #x1d00ffff
+                        target-spacing: 600
+                        target-timespan: 1209600
+                        retarget-interval: 2016))
+
+    ;;; Testnet uses the same retarget cadence; minimum-difficulty exceptions
+    ;;; are intentionally left to a future policy layer.
+    (define bitcoin-testnet-consensus-params
+      (consensus-params pow-limit-bits: #x1d00ffff
+                        target-spacing: 600
+                        target-timespan: 1209600
+                        retarget-interval: 2016))
+
+    ;;; Regtest keeps Bitcoin's spacing constants but a much easier pow limit.
+    (define bitcoin-regtest-consensus-params
+      (consensus-params pow-limit-bits: #x207fffff
+                        target-spacing: 600
+                        target-timespan: 1209600
+                        retarget-interval: 2016))
+
+    (define (validate-consensus-params params)
+      (unless (consensus-params? params)
+        (error "consensus params: expected consensus-params"))
+      (require-uint "consensus pow limit bits"
+                    (consensus-params-pow-limit-bits params)
+                    %u32-max)
+      (compact-target->integer (consensus-params-pow-limit-bits params))
+      (require-uint "consensus target spacing"
+                    (consensus-params-target-spacing params)
+                    %u32-max)
+      (require-uint "consensus target timespan"
+                    (consensus-params-target-timespan params)
+                    %u32-max)
+      (require-uint "consensus retarget interval"
+                    (consensus-params-retarget-interval params)
+                    %u32-max)
+      (when (= 0 (consensus-params-retarget-interval params))
+        (error "consensus retarget interval: expected positive integer"))
+      params)
 
     (define (validate-block-header header)
       (unless (block-header? header)
@@ -165,6 +228,29 @@
           (error "compact-target->integer: target out of range"))
         target))
 
+    (define (integer-byte-size n)
+      (let loop ((v n) (size 0))
+        (if (= v 0)
+            size
+            (loop (quotient v 256) (+ size 1)))))
+
+    ;;; Encode an integer target as Bitcoin compact target (`nBits`).
+    (define (integer->compact-target target)
+      (: integer? -> integer?)
+      (unless (and (integer? target) (> target 0) (<= target %max-target))
+        (error "integer->compact-target: target out of range"))
+      (let* ((size (integer-byte-size target))
+             (compact (if (<= size 3)
+                          (arithmetic-shift target (* 8 (- 3 size)))
+                          (arithmetic-shift target (* -8 (- size 3)))))
+             (adjust? (not (= 0 (bitwise-and compact #x00800000))))
+             (final-size (if adjust? (+ size 1) size))
+             (final-compact (if adjust?
+                                (arithmetic-shift compact -8)
+                                compact)))
+        (bitwise-ior (arithmetic-shift final-size 24)
+                     (bitwise-and final-compact #x007fffff))))
+
     (define (block-header-target header)
       (: block-header? -> integer?)
       (compact-target->integer (block-header-bits (validate-block-header header))))
@@ -185,6 +271,112 @@
       (: block-header? -> boolean?)
       (<= (block-header-work-value header)
           (block-header-target header)))
+
+    ;;; Return the amount of chain work represented by a header target.
+    (define (block-header-chain-work header)
+      (: block-header? -> integer?)
+      (quotient (+ %max-target 1)
+                (+ (block-header-target header) 1)))
+
+    (define (clamp-timespan params actual-timespan)
+      (let* ((target-timespan (consensus-params-target-timespan params))
+             (min-timespan (quotient target-timespan 4))
+             (max-timespan (* target-timespan 4)))
+        (cond ((< actual-timespan min-timespan) min-timespan)
+              ((> actual-timespan max-timespan) max-timespan)
+              (else actual-timespan))))
+
+    (define (nth xs index)
+      (if (= index 0)
+          (car xs)
+          (nth (cdr xs) (- index 1))))
+
+    (define (last-item xs)
+      (if (null? (cdr xs))
+          (car xs)
+          (last-item (cdr xs))))
+
+    (define (retarget-required-bits params previous-headers)
+      (let* ((interval (consensus-params-retarget-interval params))
+             (count (length previous-headers)))
+        (when (< count interval)
+          (error "next-required-bits: insufficient retarget history"))
+        (let* ((first (nth previous-headers (- count interval)))
+               (last (last-item previous-headers))
+               (actual-timespan (- (block-header-time last)
+                                   (block-header-time first)))
+               (adjusted-timespan (clamp-timespan params actual-timespan))
+               (old-target (block-header-target last))
+               (pow-limit (compact-target->integer
+                            (consensus-params-pow-limit-bits params)))
+               (new-target (quotient (* old-target adjusted-timespan)
+                                      (consensus-params-target-timespan params)))
+               (bounded-target (if (> new-target pow-limit)
+                                   pow-limit
+                                   new-target)))
+          (integer->compact-target bounded-target))))
+
+    ;;; Return the required `nBits` for the next header after `previous-headers`.
+    ;;;
+    ;;; `previous-headers` are ordered from oldest to newest. Genesis uses the
+    ;;; configured pow limit, non-retarget heights keep the previous header's
+    ;;; target, and retarget heights use Bitcoin's 4x clamped timespan rule.
+    (define (next-required-bits params previous-headers)
+      (: consensus-params? list? -> integer?)
+      (validate-consensus-params params)
+      (unless (list? previous-headers)
+        (error "next-required-bits: expected header list"))
+      (cond ((null? previous-headers)
+             (consensus-params-pow-limit-bits params))
+            ((not (= 0 (remainder (length previous-headers)
+                                  (consensus-params-retarget-interval params))))
+             (block-header-bits (last-item previous-headers)))
+            (else
+             (retarget-required-bits params previous-headers))))
+
+    (define (block-header-links? previous header)
+      (: block-header? block-header? -> boolean?)
+      (equal? (block-header-previous-block header)
+              (block-header-hash previous)))
+
+    ;;; Validate a header against the existing ordered header chain.
+    (define (block-header-valid-after? params previous-headers header)
+      (: consensus-params? list? block-header? -> boolean?)
+      (validate-block-header header)
+      (and (= (block-header-bits header)
+              (next-required-bits params previous-headers))
+           (block-header-proof-of-work-valid? header)
+           (or (null? previous-headers)
+               (block-header-links? (last-item previous-headers) header))))
+
+    ;;; Validate an ordered header chain and return it on success.
+    (define (validate-header-chain params headers)
+      (: consensus-params? list? -> list?)
+      (validate-consensus-params params)
+      (unless (list? headers)
+        (error "validate-header-chain: expected header list"))
+      (let loop ((remaining headers) (accepted '()))
+        (if (null? remaining)
+            headers
+            (let ((history (reverse accepted))
+                  (header (car remaining)))
+              (unless (block-header-valid-after? params history header)
+                (error "validate-header-chain: invalid header"))
+              (loop (cdr remaining) (cons header accepted))))))
+
+    (define (header-chain-valid? params headers)
+      (: consensus-params? list? -> boolean?)
+      (guard (err (else #f))
+        (validate-header-chain params headers)
+        #t))
+
+    (define (header-chain-work headers)
+      (: list? -> integer?)
+      (let loop ((xs headers) (work 0))
+        (if (null? xs)
+            work
+            (loop (cdr xs)
+                  (+ work (block-header-chain-work (car xs)))))))
 
     ;;; Serialize a block in Bitcoin wire order.
     (define (block-serialize b)

@@ -11,6 +11,12 @@
 (define %genesis-header-bytes (hex-decode %genesis-header-hex))
 (define %zero32 (make-bytevector 32 0))
 
+(define %fast-params
+  (consensus-params pow-limit-bits: #x207fffff
+                    target-spacing: 10
+                    target-timespan: 30
+                    retarget-interval: 3))
+
 (define (make-synthetic-tx n)
   (transaction
     version: 1
@@ -22,6 +28,22 @@
     outputs: (list
       (txout value: n script-pubkey: #u8(#x51)))
     lock-time: 0))
+
+(define (mine-header previous-headers time bits)
+  (let ((previous-hash (if (null? previous-headers)
+                           %zero32
+                           (block-header-hash
+                             (car (reverse previous-headers))))))
+    (let loop ((nonce 0))
+      (let ((header (block-header version: 1
+                                  previous-block: previous-hash
+                                  merkle-root: %zero32
+                                  time: time
+                                  bits: bits
+                                  nonce: nonce)))
+        (if (block-header-proof-of-work-valid? header)
+            header
+            (loop (+ nonce 1)))))))
 
 (test-group "block headers"
   (test "parses genesis header fields"
@@ -98,7 +120,55 @@
 
   (test "target decoding rejects invalid compact forms"
     (assert-error (compact-target->integer 0))
-    (assert-error (compact-target->integer #x01800000))))
+    (assert-error (compact-target->integer #x01800000)))
+
+  (test "compact targets round-trip canonical values"
+    (assert-equal #x1d00ffff
+                  (integer->compact-target
+                    (compact-target->integer #x1d00ffff)))
+    (assert-equal #x207fffff
+                  (integer->compact-target
+                    (compact-target->integer #x207fffff)))))
+
+(test-group "header chains"
+  (test "validates linked proof-of-work headers"
+    (let* ((h0 (mine-header '() 0 #x207fffff))
+           (h1 (mine-header (list h0) 10 #x207fffff))
+           (h2 (mine-header (list h0 h1) 20 #x207fffff)))
+      (assert-true (block-header-links? h0 h1))
+      (assert-true (header-chain-valid? %fast-params (list h0 h1 h2)))
+      (assert-equal (+ (block-header-chain-work h0)
+                       (block-header-chain-work h1)
+                       (block-header-chain-work h2))
+                    (header-chain-work (list h0 h1 h2)))))
+
+  (test "rejects broken previous-block links"
+    (let* ((h0 (mine-header '() 0 #x207fffff))
+           (h1 (mine-header '() 10 #x207fffff)))
+      (assert-false (block-header-links? h0 h1))
+      (assert-false (header-chain-valid? %fast-params (list h0 h1)))
+      (assert-error (validate-header-chain %fast-params (list h0 h1)))))
+
+  (test "calculates retarget window bits"
+    (let* ((h0 (mine-header '() 0 #x207fffff))
+           (h1 (mine-header (list h0) 10 #x207fffff))
+           (h2 (mine-header (list h0 h1) 20 #x207fffff))
+           (required (next-required-bits %fast-params (list h0 h1 h2)))
+           (h3 (mine-header (list h0 h1 h2) 30 required)))
+      (assert-false (= #x207fffff required))
+      (assert-true (block-header-valid-after?
+                     %fast-params
+                     (list h0 h1 h2)
+                     h3))
+      (assert-true (header-chain-valid? %fast-params (list h0 h1 h2 h3)))))
+
+  (test "rejects wrong bits at retarget height"
+    (let* ((h0 (mine-header '() 0 #x207fffff))
+           (h1 (mine-header (list h0) 10 #x207fffff))
+           (h2 (mine-header (list h0 h1) 20 #x207fffff))
+           (bad (mine-header (list h0 h1 h2) 30 #x207fffff)))
+      (assert-false
+        (block-header-valid-after? %fast-params (list h0 h1 h2) bad)))))
 
 (test-group "blocks"
   (test "serializes and parses synthetic block"
