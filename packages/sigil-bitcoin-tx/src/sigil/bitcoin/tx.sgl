@@ -25,6 +25,7 @@
     compact-size-decode
     transaction-has-witness?
     transaction-serialize
+    transaction-parse-at
     transaction-parse
     transaction-base-serialize
     transaction-stripped-size

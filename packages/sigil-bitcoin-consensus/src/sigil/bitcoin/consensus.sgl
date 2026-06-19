@@ -1,0 +1,219 @@
+;;; (sigil bitcoin consensus) — Block/header consensus helpers
+
+(define-library (sigil bitcoin consensus)
+  (import (sigil math)
+          (sigil struct)
+          (sigil bitcoin utils)
+          (sigil bitcoin primitives)
+          (sigil bitcoin encoding)
+          (sigil bitcoin tx)
+          (sigil bitcoin tx wire))
+  (export
+    block-header block-header?
+    block-header-version block-header-previous-block
+    block-header-merkle-root block-header-time
+    block-header-bits block-header-nonce
+    block block?
+    block-header-field block-transactions
+    validate-block-header
+    validate-block
+    block-header-serialize
+    block-header-parse
+    block-header-hash
+    block-header-id
+    block-serialize
+    block-parse
+    merkle-root
+    block-merkle-root
+    block-merkle-root-valid?
+    compact-target->integer
+    block-header-target
+    block-header-work-value
+    block-header-proof-of-work-valid?)
+  (begin
+
+    (define %max-target
+      #xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff)
+
+    ;;; Bitcoin block header.
+    (define-struct block-header
+      (version integer?)
+      (previous-block bytevector?)
+      (merkle-root bytevector?)
+      (time integer?)
+      (bits integer?)
+      (nonce integer?))
+
+    ;;; Bitcoin block with a header and transaction list.
+    (define-struct block
+      (header-field block-header?)
+      (transactions list?))
+
+    (define (validate-block-header header)
+      (unless (block-header? header)
+        (error "block-header: expected block-header"))
+      (require-uint "block-header version" (block-header-version header) %u32-max)
+      (require-bytevector-length "block-header previous block"
+                                 (block-header-previous-block header)
+                                 32)
+      (require-bytevector-length "block-header merkle root"
+                                 (block-header-merkle-root header)
+                                 32)
+      (require-uint "block-header time" (block-header-time header) %u32-max)
+      (require-uint "block-header bits" (block-header-bits header) %u32-max)
+      (require-uint "block-header nonce" (block-header-nonce header) %u32-max)
+      header)
+
+    (define (validate-block b)
+      (unless (block? b)
+        (error "block: expected block"))
+      (validate-block-header (block-header-field b))
+      (unless (list? (block-transactions b))
+        (error "block transactions: expected list"))
+      (when (null? (block-transactions b))
+        (error "block transactions: expected at least one transaction"))
+      (do ((xs (block-transactions b) (cdr xs)))
+          ((null? xs) b)
+        (validate-transaction (car xs))))
+
+    ;;; Serialize a block header in Bitcoin wire order.
+    (define (block-header-serialize header)
+      (: block-header? -> bytevector?)
+      (validate-block-header header)
+      (bytevector-append
+        (u32-le (block-header-version header))
+        (block-header-previous-block header)
+        (block-header-merkle-root header)
+        (u32-le (block-header-time header))
+        (u32-le (block-header-bits header))
+        (u32-le (block-header-nonce header))))
+
+    ;;; Parse exactly one 80-byte Bitcoin block header.
+    (define (block-header-parse bytes)
+      (: bytevector? -> block-header?)
+      (require-bytevector "block-header-parse" bytes)
+      (unless (= 80 (bytevector-length bytes))
+        (error "block-header-parse: expected 80 bytes"))
+      (block-header
+        version: (read-u32-le bytes 0 "block-header version")
+        previous-block: (bytevector-copy bytes 4 36)
+        merkle-root: (bytevector-copy bytes 36 68)
+        time: (read-u32-le bytes 68 "block-header time")
+        bits: (read-u32-le bytes 72 "block-header bits")
+        nonce: (read-u32-le bytes 76 "block-header nonce")))
+
+    ;;; Return the internal 32-byte double-SHA256 header hash.
+    (define (block-header-hash header)
+      (: block-header? -> bytevector?)
+      (hash256 (block-header-serialize header)))
+
+    ;;; Return the conventional display hash/id for a block header.
+    (define (block-header-id header)
+      (: block-header? -> string?)
+      (hex-encode (reverse-bytevector (block-header-hash header))))
+
+    (define (hash-pair left right)
+      (hash256 (bytevector-append left right)))
+
+    (define (merkle-layer hashes)
+      (let loop ((xs hashes) (out '()))
+        (cond ((null? xs)
+               (reverse out))
+              ((null? (cdr xs))
+               (reverse (cons (hash-pair (car xs) (car xs)) out)))
+              (else
+               (loop (cddr xs)
+                     (cons (hash-pair (car xs) (cadr xs)) out))))))
+
+    ;;; Compute the Bitcoin Merkle root from internal transaction hash bytes.
+    (define (merkle-root hashes)
+      (: list? -> bytevector?)
+      (when (null? hashes)
+        (error "merkle-root: expected at least one hash"))
+      (do ((xs hashes (cdr xs)))
+          ((null? xs))
+        (require-bytevector-length "merkle-root hash" (car xs) 32))
+      (let loop ((level hashes))
+        (if (null? (cdr level))
+            (car level)
+            (loop (merkle-layer level)))))
+
+    ;;; Compute a block's Merkle root from its transaction IDs.
+    (define (block-merkle-root b)
+      (: block? -> bytevector?)
+      (validate-block b)
+      (merkle-root (map transaction-txid (block-transactions b))))
+
+    (define (block-merkle-root-valid? b)
+      (: block? -> boolean?)
+      (equal? (block-header-merkle-root (block-header-field b))
+              (block-merkle-root b)))
+
+    ;;; Decode Bitcoin compact target (`nBits`) to an integer target.
+    (define (compact-target->integer bits)
+      (: integer? -> integer?)
+      (require-uint "compact-target->integer" bits %u32-max)
+      (let* ((size (arithmetic-shift bits -24))
+             (word (bitwise-and bits #x007fffff))
+             (negative? (not (= 0 (bitwise-and bits #x00800000))))
+             (target (if (<= size 3)
+                         (arithmetic-shift word (* 8 (- size 3)))
+                         (arithmetic-shift word (* 8 (- size 3))))))
+        (when negative?
+          (error "compact-target->integer: negative target"))
+        (when (or (= word 0) (< target 0) (> target %max-target))
+          (error "compact-target->integer: target out of range"))
+        target))
+
+    (define (block-header-target header)
+      (: block-header? -> integer?)
+      (compact-target->integer (block-header-bits (validate-block-header header))))
+
+    (define (bytes->integer-le bytes)
+      (let ((n 0))
+        (do ((i (- (bytevector-length bytes) 1) (- i 1)))
+            ((< i 0) n)
+          (set! n (+ (arithmetic-shift n 8)
+                     (bytevector-u8-ref bytes i))))))
+
+    ;;; Return the header hash interpreted as a proof-of-work integer.
+    (define (block-header-work-value header)
+      (: block-header? -> integer?)
+      (bytes->integer-le (block-header-hash header)))
+
+    (define (block-header-proof-of-work-valid? header)
+      (: block-header? -> boolean?)
+      (<= (block-header-work-value header)
+          (block-header-target header)))
+
+    ;;; Serialize a block in Bitcoin wire order.
+    (define (block-serialize b)
+      (: block? -> bytevector?)
+      (validate-block b)
+      (bytevector-append
+        (block-header-serialize (block-header-field b))
+        (serialize-vector (block-transactions b) transaction-serialize)))
+
+    (define (parse-transactions bytes offset count)
+      (let loop ((i 0) (cursor offset) (txs '()))
+        (if (>= i count)
+            (list (reverse txs) cursor)
+            (let* ((parsed (transaction-parse-at bytes cursor))
+                   (tx (car parsed))
+                   (next (cadr parsed)))
+              (loop (+ i 1) next (cons tx txs))))))
+
+    ;;; Parse a Bitcoin block with a transaction vector.
+    (define (block-parse bytes)
+      (: bytevector? -> block?)
+      (require-bytevector "block-parse" bytes)
+      (ensure-available "block-parse" bytes 0 81)
+      (let* ((header (block-header-parse (bytevector-copy bytes 0 80)))
+             (count-result (compact-size-decode-at bytes 80))
+             (count (car count-result))
+             (tx-result (parse-transactions bytes (cadr count-result) count))
+             (txs (car tx-result))
+             (end (cadr tx-result)))
+        (unless (= end (bytevector-length bytes))
+          (error "block-parse: trailing bytes"))
+        (block header-field: header transactions: txs)))))

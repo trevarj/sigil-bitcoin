@@ -1,0 +1,41 @@
+;;; sigil-bitcoin-consensus — Bitcoin block and header consensus helpers
+;;;
+;;; Pure Sigil library providing block/header wire parsing, Merkle roots, and
+;;; proof-of-work target checks.
+
+(package
+  name: "sigil-bitcoin-consensus"
+  version: "0.1.0"
+  sigil: "^0.17"
+  description: "Bitcoin block headers, Merkle roots, and proof-of-work helpers"
+  url: "https://codeberg.org/sigil/sigil-bitcoin"
+  license: "BSD-3-Clause"
+
+  dependencies: (list
+    (from-path dir: "../sigil-bitcoin-utils"
+               package: "sigil-bitcoin-utils")
+    (from-path dir: "../sigil-bitcoin-primitives"
+               package: "sigil-bitcoin-primitives")
+    (from-path dir: "../sigil-bitcoin-encoding"
+               package: "sigil-bitcoin-encoding")
+    (from-path dir: "../sigil-bitcoin-tx"
+               package: "sigil-bitcoin-tx"))
+
+  dev-dependencies: (list
+    (from-git url: "codeberg:sigil/sigil"
+              package: "sigil-stdlib" version: "^0.17")
+    (from-git url: "codeberg:sigil/sigil-ansi" version: "^0.16.0")
+    (from-git url: "codeberg:sigil/sigil-json" version: "^0.16.0")
+    (from-git url: "codeberg:sigil/sigil-version" version: "^0.16.0")
+    (from-git url: "codeberg:sigil/sigil"
+              package: "sigil-test" version: "^0.17")
+    (from-git url: "codeberg:sigil/sigil"
+              package: "sigil-test-runner" version: "^0.17"))
+
+  tasks: (list
+    (task
+      name: 'build
+      description: "Build sigil-bitcoin-consensus"
+      steps: (list
+        (compile-sigil-modules
+          sources: "src/**/*.sgl")))))

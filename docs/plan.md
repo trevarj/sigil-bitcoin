@@ -93,6 +93,7 @@ Layer 6 — Networking (sigil-bitcoin-p2p)
 - `sigil-bitcoin-script` provides script byte constructors, pushdata encoding, witness programs, and standard P2PKH/P2SH/P2WPKH/P2WSH/P2TR scriptPubKey templates.
 - `sigil-bitcoin-tx` provides transaction structs, compactSize encoding/decoding, legacy/SegWit parsing and serialization, Bitcoin Core raw transaction round-trip coverage, txid/wtxid helpers, `SIGHASH_ALL` legacy/BIP143 hashes, BIP341 key-path and script-path sighashes, P2PKH/P2WPKH/P2WSH single-key/P2TR key-path signing, and PSBT v0 support for witness UTXOs, non-witness UTXOs, redeem/witness scripts, partial signatures, input/output BIP32/Taproot derivation records, unknown/proprietary key preservation, Taproot key and script signatures, Taproot leaf scripts, finalization, and extraction.
 - `sigil-bitcoin-miniscript` provides fragment ASTs, parsing, canonical strings, type/signing metadata, hash-lock and boolean combinator script compilation, descriptor parsing/checksums, descriptor key derivation, descriptor scriptPubKey compilation including Taproot script-tree output keys, `multi_a`/`CHECKSIGADD` Tapscript compilation, descriptor and wallet-policy PSBT planning records with WSH and single-leaf Taproot script material, descriptor-plan PSBT annotation and standard P2PKH/P2WPKH/P2TR key-path/script-path signing/finalization wrappers, concrete BIP327 `musig(...)` Taproot key aggregation, and BIP388 wallet policy descriptor expansion with BIP390 `musig(...)` placeholders.
+- `sigil-bitcoin-consensus` provides block/header records, wire parsing and serialization, Merkle root construction, compact target decoding, and proof-of-work checks.
 - `sigil-bitcoin` has a standalone documentation site generator that reads compiler JSON docs, emits a docs.rs-inspired static site to `public/`, and includes concise guide pages under `docs/site/`.
 - `hash160` uses upstream `sigil-crypto`'s native `ripemd160` binding when it
   is linked in the current runtime, with a private compatibility fallback for
@@ -248,3 +249,6 @@ or pure Sigil code. No changes to the Sigil VM or compiler are required.
 - [x] Add Taproot script-path PSBT fields, sighashes, and single-key checksig signing/finalization helpers.
 - [x] Add Tapscript `multi_a`/`CHECKSIGADD` compilation and descriptor PSBT integration for multi-key Taproot script-path spends.
 - [x] Replace the repo-local docs generator with Press.
+- [x] Add `sigil-bitcoin-consensus` with block/header records, wire parsing, Merkle roots, compact target decoding, and proof-of-work checks.
+- [ ] Extend `sigil-bitcoin-consensus` with header-chain validation, difficulty adjustment windows, block subsidy/coinbase checks, and UTXO-backed block connection.
+- [ ] Add `sigil-bitcoin-p2p` with message framing, network envelopes, `version`/`verack`, `ping`/`pong`, `getheaders`, and `headers`.

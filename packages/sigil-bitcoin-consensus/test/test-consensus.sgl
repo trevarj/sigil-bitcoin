@@ -1,0 +1,142 @@
+(import (sigil test)
+        (sigil bitcoin consensus)
+        (sigil bitcoin encoding)
+        (sigil bitcoin primitives)
+        (sigil bitcoin tx)
+        (sigil bitcoin tx wire))
+
+(define %genesis-header-hex
+  "0100000000000000000000000000000000000000000000000000000000000000000000003ba3edfd7a7b12b27ac72c3e67768f617fc81bc3888a51323a9fb8aa4b1e5e4a29ab5f49ffff001d1dac2b7c")
+
+(define %genesis-header-bytes (hex-decode %genesis-header-hex))
+(define %zero32 (make-bytevector 32 0))
+
+(define (make-synthetic-tx n)
+  (transaction
+    version: 1
+    inputs: (list
+      (txin previous-output: (outpoint txid: %zero32 index: #xffffffff)
+            script-sig: (make-bytevector 1 n)
+            sequence: #xffffffff
+            witness: '()))
+    outputs: (list
+      (txout value: n script-pubkey: #u8(#x51)))
+    lock-time: 0))
+
+(test-group "block headers"
+  (test "parses genesis header fields"
+    (let ((header (block-header-parse %genesis-header-bytes)))
+      (assert-equal 1 (block-header-version header))
+      (assert-equal %zero32 (block-header-previous-block header))
+      (assert-equal
+        "3ba3edfd7a7b12b27ac72c3e67768f617fc81bc3888a51323a9fb8aa4b1e5e4a"
+        (hex-encode (block-header-merkle-root header)))
+      (assert-equal 1231006505 (block-header-time header))
+      (assert-equal #x1d00ffff (block-header-bits header))
+      (assert-equal 2083236893 (block-header-nonce header))))
+
+  (test "serializes genesis header round-trip"
+    (let ((header (block-header-parse %genesis-header-bytes)))
+      (assert-equal %genesis-header-bytes (block-header-serialize header))))
+
+  (test "computes genesis display id"
+    (assert-equal
+      "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f"
+      (block-header-id (block-header-parse %genesis-header-bytes))))
+
+  (test "rejects malformed headers"
+    (assert-error (block-header-parse (make-bytevector 79 0)))
+    (assert-error
+      (validate-block-header
+        (block-header version: 1
+                      previous-block: (make-bytevector 31 0)
+                      merkle-root: %zero32
+                      time: 0
+                      bits: #x1d00ffff
+                      nonce: 0)))))
+
+(test-group "merkle roots"
+  (test "single transaction merkle root is its txid"
+    (let* ((tx (make-synthetic-tx 1))
+           (root (merkle-root (list (transaction-txid tx)))))
+      (assert-equal (transaction-txid tx) root)))
+
+  (test "odd merkle layer duplicates the last hash"
+    (let* ((a (transaction-txid (make-synthetic-tx 1)))
+           (b (transaction-txid (make-synthetic-tx 2)))
+           (c (transaction-txid (make-synthetic-tx 3)))
+           (pair-ab (hash256 (bytevector-append a b)))
+           (pair-cc (hash256 (bytevector-append c c))))
+      (assert-equal (hash256 (bytevector-append pair-ab pair-cc))
+                    (merkle-root (list a b c)))))
+
+  (test "block merkle root validates header commitment"
+    (let* ((tx1 (make-synthetic-tx 1))
+           (tx2 (make-synthetic-tx 2))
+           (root (merkle-root (list (transaction-txid tx1)
+                                    (transaction-txid tx2))))
+           (header (block-header version: 1
+                                 previous-block: %zero32
+                                 merkle-root: root
+                                 time: 1
+                                 bits: #x207fffff
+                                 nonce: 0))
+           (b (block header-field: header transactions: (list tx1 tx2))))
+      (assert-equal root (block-merkle-root b))
+      (assert-true (block-merkle-root-valid? b)))))
+
+(test-group "targets and proof of work"
+  (test "decodes genesis compact target"
+    (assert-equal
+      #xffff0000000000000000000000000000000000000000000000000000
+      (compact-target->integer #x1d00ffff)))
+
+  (test "genesis proof of work is valid"
+    (assert-true
+      (block-header-proof-of-work-valid?
+        (block-header-parse %genesis-header-bytes))))
+
+  (test "target decoding rejects invalid compact forms"
+    (assert-error (compact-target->integer 0))
+    (assert-error (compact-target->integer #x01800000))))
+
+(test-group "blocks"
+  (test "serializes and parses synthetic block"
+    (let* ((tx (make-synthetic-tx 7))
+           (root (transaction-txid tx))
+           (header (block-header version: 2
+                                 previous-block: %zero32
+                                 merkle-root: root
+                                 time: 42
+                                 bits: #x207fffff
+                                 nonce: 99))
+           (b (block header-field: header transactions: (list tx)))
+           (parsed (block-parse (block-serialize b))))
+      (assert-equal (block-header-serialize header)
+                    (block-header-serialize (block-header-field parsed)))
+      (assert-equal 1 (length (block-transactions parsed)))
+      (assert-true (block-merkle-root-valid? parsed))))
+
+  (test "parses multi-transaction block vectors"
+    (let* ((tx1 (make-synthetic-tx 8))
+           (tx2 (make-synthetic-tx 9))
+           (root (merkle-root (list (transaction-txid tx1)
+                                    (transaction-txid tx2))))
+           (header (block-header version: 2
+                                 previous-block: %zero32
+                                 merkle-root: root
+                                 time: 43
+                                 bits: #x207fffff
+                                 nonce: 100))
+           (b (block header-field: header transactions: (list tx1 tx2)))
+           (parsed (block-parse (block-serialize b))))
+      (assert-equal 2 (length (block-transactions parsed)))
+      (assert-true (block-merkle-root-valid? parsed))))
+
+  (test "rejects empty blocks"
+    (assert-error
+      (validate-block
+        (block header-field: (block-header-parse %genesis-header-bytes)
+               transactions: '())))))
+
+(run-tests)

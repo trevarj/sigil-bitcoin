@@ -326,6 +326,12 @@
       (assert-equal 1 (length (transaction-inputs parsed)))
       (assert-equal 1 (length (transaction-outputs parsed)))))
 
+  (test "parses transaction at offset without consuming trailing bytes"
+    (let* ((bytes (bytevector-append #u8(#xaa #xbb) %legacy-serialized #u8(#xcc)))
+           (parsed (transaction-parse-at bytes 2)))
+      (assert-equal %legacy-serialized (transaction-serialize (car parsed)))
+      (assert-equal (+ 2 (bytevector-length %legacy-serialized)) (cadr parsed))))
+
   (test "txid and wtxid match for no-witness transaction"
     (assert-equal (transaction-txid %legacy-tx)
                   (transaction-wtxid %legacy-tx))))

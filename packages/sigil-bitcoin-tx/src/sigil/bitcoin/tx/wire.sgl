@@ -37,6 +37,7 @@
     parse-serialized-witness
     transaction-has-witness?
     transaction-serialize
+    transaction-parse-at
     transaction-parse
     transaction-base-serialize
     transaction-stripped-size
@@ -582,20 +583,23 @@
                 (u32-le (transaction-lock-time tx))))
             (bytevector-append base (u32-le (transaction-lock-time tx))))))
 
-    ;;; Parse Bitcoin wire bytes into a transaction record.
+    ;;; Parse a Bitcoin transaction at `offset`.
+    ;;;
+    ;;; Returns `(transaction next-offset)`.
     ;;;
     ;;; ```scheme
-    ;;; (transaction-parse (transaction-serialize tx))
+    ;;; (transaction-parse-at (transaction-serialize tx) 0)
     ;;; ```
-    (define (transaction-parse bytes)
-      (: bytevector? -> transaction?)
-      (require-bytevector "transaction-parse" bytes)
-      (let* ((version (read-u32-le bytes 0 "transaction version"))
-             (marker (read-byte bytes 4 "transaction marker"))
+    (define (transaction-parse-at bytes offset)
+      (: bytevector? integer? -> list?)
+      (require-bytevector "transaction-parse-at" bytes)
+      (let* ((version (read-u32-le bytes offset "transaction version"))
+             (marker-offset (+ offset 4))
+             (marker (read-byte bytes marker-offset "transaction marker"))
              (segwit? (and (= marker 0)
-                           (> (bytevector-length bytes) 5)
-                           (not (= 0 (read-byte bytes 5 "transaction flag")))))
-             (input-offset (if segwit? 6 4))
+                           (> (bytevector-length bytes) (+ offset 5))
+                           (not (= 0 (read-byte bytes (+ offset 5) "transaction flag")))))
+             (input-offset (if segwit? (+ offset 6) (+ offset 4)))
              (inputs-result (parse-vector bytes input-offset parse-txin))
              (outputs-result (parse-vector bytes (cadr inputs-result) parse-txout))
              (inputs (car inputs-result))
@@ -607,12 +611,25 @@
              (lock-offset (cadr witness-result))
              (lock-time (read-u32-le bytes lock-offset "transaction lock-time"))
              (end (+ lock-offset 4)))
-        (unless (= end (bytevector-length bytes))
+        (list
+          (transaction version: version
+                       inputs: (car witness-result)
+                       outputs: outputs
+                       lock-time: lock-time)
+          end)))
+
+    ;;; Parse Bitcoin wire bytes into a transaction record.
+    ;;;
+    ;;; ```scheme
+    ;;; (transaction-parse (transaction-serialize tx))
+    ;;; ```
+    (define (transaction-parse bytes)
+      (: bytevector? -> transaction?)
+      (require-bytevector "transaction-parse" bytes)
+      (let ((result (transaction-parse-at bytes 0)))
+        (unless (= (cadr result) (bytevector-length bytes))
           (error "transaction-parse: trailing bytes"))
-        (transaction version: version
-                     inputs: (car witness-result)
-                     outputs: outputs
-                     lock-time: lock-time)))
+        (car result)))
 
     ;;; Serialize a transaction without SegWit marker, flag, or witnesses.
     ;;;

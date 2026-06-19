@@ -19,6 +19,7 @@
     "packages/sigil-bitcoin-script"
     "packages/sigil-bitcoin-tx"
     "packages/sigil-bitcoin-miniscript"
+    "packages/sigil-bitcoin-consensus"
     "packages/sigil-bitcoin-demo")
 
   configs: (list
