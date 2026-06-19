@@ -10,6 +10,7 @@
           (sigil bitcoin encoding)
           (sigil bitcoin script)
           (sigil bitcoin tx)
+          (sigil bitcoin tx sighash)
           (sigil bitcoin tx wire))
   (export
     block-header block-header?
@@ -553,6 +554,11 @@
           (error (string-append who ": expected single-key CHECKSIG script")))
         (script-chunk-data (car chunks))))
 
+    (define (single-key-tapscript-pubkey script who)
+      (let ((pubkey (single-key-checksig-script-pubkey script who)))
+        (require-bytevector-length who pubkey 32)
+        pubkey))
+
     (define (single-byte-sighash-all? sig)
       (and (> (bytevector-length sig) 0)
            (= sighash-all (bytevector-u8-ref sig (- (bytevector-length sig) 1)))))
@@ -568,6 +574,31 @@
                   (signature-der-bytes sig))
                 msghash
                 pubkey)
+        (error (string-append who ": signature check failed")))
+      #t)
+
+    (define (taproot-signature-hash-type sig who)
+      (let ((len (bytevector-length sig)))
+        (cond ((= len 64) sighash-default)
+              ((= len 65)
+               (let ((sighash-type (bytevector-u8-ref sig 64)))
+                 (unless (or (= sighash-type sighash-default)
+                             (= sighash-type sighash-all))
+                   (error (string-append who ": unsupported Taproot sighash type")))
+                 sighash-type))
+              (else
+               (error (string-append who ": expected 64 or 65 byte Schnorr signature"))))))
+
+    (define (taproot-signature-bytes sig)
+      (if (= 64 (bytevector-length sig))
+          sig
+          (bytevector-copy sig 0 64)))
+
+    (define (verify-schnorr-taproot-sig sig msghash xonly who)
+      (unless (secp256k1-schnorrsig-verify
+                (taproot-signature-bytes sig)
+                msghash
+                xonly)
         (error (string-append who ": signature check failed")))
       #t)
 
@@ -632,6 +663,66 @@
             (error (string-append who ": witness script hash mismatch")))
           (verify-ecdsa-sighash-all sig pubkey msghash who))))
 
+    (define (verify-p2tr-keypath-input tx input-index prevouts input prevout)
+      (let* ((witness (txin-witness input))
+             (who "verify-standard-input-script p2tr keypath"))
+        (unless (and (= 0 (bytevector-length (txin-script-sig input)))
+                     (= 1 (length witness))
+                     (bytevector? (car witness)))
+          (error (string-append who ": expected single signature witness")))
+        (let* ((sig (car witness))
+               (sighash-type (taproot-signature-hash-type sig who))
+               (output-xonly (script-standard-payload (txout-script-pubkey prevout)))
+               (msghash (transaction-sighash-taproot-keypath
+                          tx
+                          input-index
+                          prevouts
+                          sighash-type)))
+          (verify-schnorr-taproot-sig sig msghash output-xonly who))))
+
+    (define (verify-p2tr-scriptpath-input tx input-index prevouts input prevout)
+      (let* ((witness (txin-witness input))
+             (who "verify-standard-input-script p2tr scriptpath"))
+        (unless (and (= 0 (bytevector-length (txin-script-sig input)))
+                     (= 3 (length witness))
+                     (bytevector? (car witness))
+                     (bytevector? (cadr witness))
+                     (bytevector? (caddr witness)))
+          (error (string-append who ": expected signature, script, and control block witness")))
+        (validate-taproot-control-block who (caddr witness))
+        (let* ((sig (car witness))
+               (script (cadr witness))
+               (control-block (caddr witness))
+               (leaf-version (bitwise-and (bytevector-u8-ref control-block 0) #xfe))
+               (leaf-hash (taproot-leaf-hash script leaf-version))
+               (output-xonly (script-standard-payload (txout-script-pubkey prevout)))
+               (control-output-xonly (taproot-control-block-output-xonly
+                                       leaf-hash
+                                       control-block))
+               (pubkey (single-key-tapscript-pubkey script who))
+               (sighash-type (taproot-signature-hash-type sig who))
+               (msghash (transaction-sighash-taproot-scriptpath
+                          tx
+                          input-index
+                          prevouts
+                          script
+                          leaf-version
+                          sighash-type)))
+          (unless (= #xc0 leaf-version)
+            (error (string-append who ": unsupported Taproot leaf version")))
+          (unless (equal? output-xonly control-output-xonly)
+            (error (string-append who ": control block does not match output key")))
+          (verify-schnorr-taproot-sig sig msghash pubkey who))))
+
+    (define (verify-p2tr-input tx input-index prevouts input prevout)
+      (let ((witness (txin-witness input))
+            (who "verify-standard-input-script p2tr"))
+        (when (null? witness)
+          (error (string-append who ": missing witness")))
+        (if (= 1 (length witness))
+            (verify-p2tr-keypath-input tx input-index prevouts input prevout)
+            (verify-p2tr-scriptpath-input tx input-index prevouts input prevout))))
+
     (define (verify-p2sh-input tx input-index input prevout)
       (let* ((chunks (script-parse (txin-script-sig input)))
              (who "verify-standard-input-script p2sh"))
@@ -680,19 +771,23 @@
     ;;; Verify one input against recognized standard consensus script templates.
     ;;;
     ;;; P2PKH and P2SH-P2PKH use legacy `SIGHASH_ALL`; native and P2SH-wrapped
-    ;;; P2WPKH/P2WSH use BIP143 `SIGHASH_ALL`. P2WSH is limited to single-key
-    ;;; CHECKSIG witness scripts until the general script interpreter lands.
+    ;;; P2WPKH/P2WSH use BIP143 `SIGHASH_ALL`. P2TR supports key-path Schnorr
+    ;;; signatures and single-key Tapscript CHECKSIG leaves. P2WSH and script
+    ;;; path P2TR stay intentionally narrow until the general interpreter lands.
     ;;; Unknown scripts pass through so existing structural block validation
     ;;; remains usable for nonstandard test fixtures.
     ;;;
     ;;; ```scheme
     ;;; (verify-standard-input-script tx 0 prevout)
     ;;; ```
-    (define (verify-standard-input-script tx input-index prevout)
-      (: transaction? integer? txout? -> boolean?)
+    (define (verify-standard-input-script tx input-index prevout . maybe-prevouts)
+      (: transaction? integer? txout? list? ... -> boolean?)
       (validate-transaction tx)
       (validate-txout prevout)
-      (let ((input (nth (transaction-inputs tx) input-index)))
+      (let ((input (nth (transaction-inputs tx) input-index))
+            (prevouts (if (null? maybe-prevouts)
+                          (list prevout)
+                          (car maybe-prevouts))))
         (case (script-classify (txout-script-pubkey prevout))
           ((p2pkh)
            (verify-p2pkh-input tx input-index input prevout))
@@ -702,6 +797,8 @@
            (verify-p2wsh-input tx input-index input prevout))
           ((p2sh)
            (verify-p2sh-input tx input-index input prevout))
+          ((p2tr)
+           (verify-p2tr-input tx input-index prevouts input prevout))
           (else #t))))
 
     ;;; Return true when `verify-standard-input-script` accepts an input.
@@ -709,10 +806,12 @@
     ;;; ```scheme
     ;;; (standard-input-script-valid? tx 0 prevout)
     ;;; ```
-    (define (standard-input-script-valid? tx input-index prevout)
-      (: transaction? integer? txout? -> boolean?)
+    (define (standard-input-script-valid? tx input-index prevout . maybe-prevouts)
+      (: transaction? integer? txout? list? ... -> boolean?)
       (guard (err (else #f))
-        (verify-standard-input-script tx input-index prevout)
+        (if (null? maybe-prevouts)
+            (verify-standard-input-script tx input-index prevout)
+            (verify-standard-input-script tx input-index prevout (car maybe-prevouts)))
         #t))
 
     (define (verify-transaction-standard-scripts tx prevouts)
@@ -720,7 +819,7 @@
         (if (null? xs)
             #t
             (begin
-              (verify-standard-input-script tx input-index (car xs))
+              (verify-standard-input-script tx input-index (car xs) prevouts)
               (loop (cdr xs) (+ input-index 1))))))
 
     (define (spend-transaction-inputs utxos tx height)
@@ -759,8 +858,9 @@
           (- input-value output-value))))
 
     ;;; Validate a block's transactions against `utxos` and return the updated
-    ;;; UTXO set. Recognized standard P2PKH and native P2WPKH inputs execute
-    ;;; signature checks; remaining script templates are tracked in the roadmap.
+    ;;; UTXO set. Recognized standard P2PKH, P2SH, P2WPKH, P2WSH, and P2TR
+    ;;; inputs execute signature checks; remaining deployment-era rules are
+    ;;; tracked in the roadmap.
     ;;; The connector also enforces structural block transaction rules, UTXO
     ;;; availability, value conservation, coinbase maturity, subsidy, and fees.
     (define (connect-block params height utxos b)

@@ -6,6 +6,7 @@
         (sigil bitcoin primitives)
         (sigil bitcoin script)
         (sigil bitcoin tx)
+        (sigil bitcoin tx sighash)
         (sigil bitcoin tx wire))
 
 (define %genesis-header-hex
@@ -15,6 +16,8 @@
 (define %zero32 (make-bytevector 32 0))
 (define %one
   (hex-decode "0000000000000000000000000000000000000000000000000000000000000001"))
+(define %two
+  (hex-decode "0000000000000000000000000000000000000000000000000000000000000002"))
 (define %generator-pub
   (hex-decode "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"))
 (define %native-secp256k1? (procedure? secp256k1-seckey-verify?))
@@ -24,6 +27,11 @@
   (script-append (script-push-data %generator-pub) (script-op op-checksig)))
 (define %p2wsh-redeem-script
   (script-p2wsh (sha256-bytes %p2wsh-witness-script)))
+
+(define (make-p2tr-script)
+  (script-append (script-push-data (secp256k1-keypair-xonly-pub
+                                     (secp256k1-keypair-create %one)))
+                 (script-op op-checksig)))
 
 (define %fast-params
   (consensus-params pow-limit-bits: #x207fffff
@@ -109,6 +117,18 @@
              script-pubkey: (script-p2wsh (sha256-bytes witness-script))))
     lock-time: 0))
 
+(define (make-p2tr-coinbase-tx value xonly)
+  (transaction
+    version: 1
+    inputs: (list
+      (txin previous-output: (outpoint txid: %zero32 index: #xffffffff)
+            script-sig: #u8(#x03 #x04)
+            sequence: #xffffffff
+            witness: '()))
+    outputs: (list
+      (txout value: value script-pubkey: (script-p2tr xonly)))
+    lock-time: 0))
+
 (define (make-spend-tx prev-tx value)
   (transaction
     version: 1
@@ -161,6 +181,42 @@
     (sign-p2wsh-spend unsigned witness-script value)
     0
     (script-push-data redeem-script)))
+
+(define (bip86-tweaked-keypair private-key)
+  (let* ((keypair (secp256k1-keypair-create private-key))
+         (internal-xonly (secp256k1-keypair-xonly-pub keypair))
+         (tweak (tagged-hash "TapTweak" internal-xonly)))
+    (secp256k1-keypair-xonly-tweak-add keypair tweak)))
+
+(define (taproot-test-leaf-hash script)
+  (tagged-hash "TapLeaf"
+               (bytevector-append #u8(#xc0)
+                                  (compact-size-encode (bytevector-length script))
+                                  script)))
+
+(define (taproot-script-output-data internal-key script)
+  (let* ((leaf-hash (taproot-test-leaf-hash script))
+         (tweak (tagged-hash "TapTweak"
+                             (bytevector-append internal-key leaf-hash)))
+         (tweaked (secp256k1-xonly-pubkey-tweak-add internal-key tweak))
+         (output-xonly (secp256k1-pubkey-xonly tweaked))
+         (parity (if (= #x03 (bytevector-u8-ref tweaked 0)) 1 0))
+         (control-block (bytevector-append
+                          (make-bytevector 1 (+ #xc0 parity))
+                          internal-key)))
+    (list output-xonly control-block)))
+
+(define (sign-p2tr-scriptpath-spend unsigned prevouts script control-block)
+  (let* ((keypair (secp256k1-keypair-create %one))
+         (msghash (transaction-sighash-taproot-scriptpath
+                    unsigned
+                    0
+                    prevouts
+                    script
+                    #xc0
+                    sighash-default))
+         (sig (secp256k1-schnorrsig-sign32 keypair msghash)))
+    (transaction-set-input-witness unsigned 0 (list sig script control-block))))
 
 (define (make-test-block txs time)
   (block
@@ -573,7 +629,130 @@
           (assert-true
             (utxo-entry?
               (utxo-set-lookup updated
-                               (outpoint txid: (transaction-txid spend) index: 0)))))))
+                               (outpoint txid: (transaction-txid spend) index: 0))))))
+
+      (test "validates Taproot key-path spends"
+        (let* ((tweaked (bip86-tweaked-keypair %one))
+               (xonly (secp256k1-keypair-xonly-pub tweaked))
+               (funding (make-p2tr-coinbase-tx 5000 xonly))
+               (prevout (txout value: 5000
+                               script-pubkey: (txout-script-pubkey
+                                                (car (transaction-outputs funding)))))
+               (initial (connect-block
+                          bitcoin-regtest-consensus-params
+                          0
+                          '()
+                          (make-test-block (list funding) 1)))
+               (unsigned (make-unsigned-spend-tx funding 4000))
+               (spend (transaction-sign-p2tr-keypath-input
+                        unsigned
+                        0
+                        (list prevout)
+                        %one))
+               (coinbase (make-coinbase-tx (+ (block-subsidy 100) 1000)))
+               (b (make-test-block (list coinbase spend) 2))
+               (updated (connect-block
+                          bitcoin-regtest-consensus-params
+                          100
+                          initial
+                          b)))
+          (assert-true (standard-input-script-valid? spend 0 prevout (list prevout)))
+          (assert-true
+            (utxo-entry?
+              (utxo-set-lookup updated
+                               (outpoint txid: (transaction-txid spend) index: 0))))))
+
+      (test "rejects invalid Taproot key-path signatures"
+        (let* ((tweaked (bip86-tweaked-keypair %one))
+               (xonly (secp256k1-keypair-xonly-pub tweaked))
+               (funding (make-p2tr-coinbase-tx 5000 xonly))
+               (prevout (txout value: 5000
+                               script-pubkey: (txout-script-pubkey
+                                                (car (transaction-outputs funding)))))
+               (initial (connect-block
+                          bitcoin-regtest-consensus-params
+                          0
+                          '()
+                          (make-test-block (list funding) 1)))
+               (unsigned (make-unsigned-spend-tx funding 4000))
+               (spend (transaction-set-input-witness
+                        unsigned
+                        0
+                        (list (make-bytevector 64 0))))
+               (coinbase (make-coinbase-tx (+ (block-subsidy 100) 1000)))
+               (b (make-test-block (list coinbase spend) 2)))
+          (assert-false (standard-input-script-valid? spend 0 prevout (list prevout)))
+          (assert-error
+            (connect-block bitcoin-regtest-consensus-params 100 initial b))))
+
+      (test "validates Taproot single-key script-path spends"
+        (let* ((keypair (secp256k1-keypair-create %one))
+               (internal-xonly (secp256k1-keypair-xonly-pub keypair))
+               (script (make-p2tr-script))
+               (output-data (taproot-script-output-data internal-xonly script))
+               (output-xonly (car output-data))
+               (control-block (cadr output-data))
+               (funding (make-p2tr-coinbase-tx 5000 output-xonly))
+               (prevout (txout value: 5000
+                               script-pubkey: (txout-script-pubkey
+                                                (car (transaction-outputs funding)))))
+               (initial (connect-block
+                          bitcoin-regtest-consensus-params
+                          0
+                          '()
+                          (make-test-block (list funding) 1)))
+               (unsigned (make-unsigned-spend-tx funding 4000))
+               (spend (sign-p2tr-scriptpath-spend
+                        unsigned
+                        (list prevout)
+                        script
+                        control-block))
+               (coinbase (make-coinbase-tx (+ (block-subsidy 100) 1000)))
+               (b (make-test-block (list coinbase spend) 2))
+               (updated (connect-block
+                          bitcoin-regtest-consensus-params
+                          100
+                          initial
+                          b)))
+          (assert-true (standard-input-script-valid? spend 0 prevout (list prevout)))
+          (assert-true
+            (utxo-entry?
+              (utxo-set-lookup updated
+                               (outpoint txid: (transaction-txid spend) index: 0))))))
+
+      (test "rejects Taproot script-path spends with wrong control block"
+        (let* ((keypair (secp256k1-keypair-create %one))
+               (internal-xonly (secp256k1-keypair-xonly-pub keypair))
+               (script (make-p2tr-script))
+               (output-data (taproot-script-output-data internal-xonly script))
+               (output-xonly (car output-data))
+               (control-block (cadr output-data))
+               (wrong-internal-xonly (secp256k1-keypair-xonly-pub
+                                       (secp256k1-keypair-create %two)))
+               (bad-control (bytevector-append
+                              (bytevector-copy control-block 0 1)
+                              wrong-internal-xonly))
+               (funding (make-p2tr-coinbase-tx 5000 output-xonly))
+               (prevout (txout value: 5000
+                               script-pubkey: (txout-script-pubkey
+                                                (car (transaction-outputs funding)))))
+               (initial (connect-block
+                          bitcoin-regtest-consensus-params
+                          0
+                          '()
+                          (make-test-block (list funding) 1)))
+               (unsigned (make-unsigned-spend-tx funding 4000))
+               (spend (sign-p2tr-scriptpath-spend
+                        unsigned
+                        (list prevout)
+                        script
+                        bad-control))
+               (coinbase (make-coinbase-tx (+ (block-subsidy 100) 1000)))
+               (b (make-test-block (list coinbase spend) 2)))
+          (assert-false (standard-input-script-valid? spend 0 prevout (list prevout)))
+          (assert-error
+            (connect-block bitcoin-regtest-consensus-params 100 initial b))))
+      #t)
     #t)
 
   (test "rejects immature coinbase spends"
