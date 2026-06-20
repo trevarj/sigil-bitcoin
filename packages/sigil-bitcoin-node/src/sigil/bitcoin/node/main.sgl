@@ -7,7 +7,8 @@
           (sigil socket)
           (sigil bitcoin node)
           (sigil bitcoin p2p))
-  (export main)
+  (export main
+          run-loop)
   (begin
 
     (define (usage)
@@ -20,7 +21,7 @@
       (println "  sigil-bitcoin-node peers test HOST:PORT [--chain CHAIN] [--data-dir DIR] [--resolve-timeout N] [--connect-timeout N] [--read-timeout N]")
       (println "  sigil-bitcoin-node header-sync --peer HOST:PORT [--chain CHAIN] [--data-dir DIR] [--max-steps N] [--resolve-timeout N] [--connect-timeout N] [--read-timeout N]")
       (println "  sigil-bitcoin-node sync [--peer HOST:PORT] [--chain CHAIN] [--data-dir DIR] [--max-steps N] [--max-blocks N] [--max-peers N] [--max-retries N] [--resolve-timeout N] [--connect-timeout N] [--read-timeout N]")
-      (println "  sigil-bitcoin-node run [--peer HOST:PORT] [--chain CHAIN] [--data-dir DIR] [--max-steps N] [--max-blocks N] [--iterations N] [--max-peers N] [--max-retries N] [--retry-delay N] [--resolve-timeout N] [--connect-timeout N] [--read-timeout N]")
+      (println "  sigil-bitcoin-node run [--peer HOST:PORT] [--chain CHAIN] [--data-dir DIR] [--max-steps N] [--max-blocks N] [--iterations N|0] [--max-peers N] [--max-retries N] [--retry-delay N] [--resolve-timeout N] [--connect-timeout N] [--read-timeout N]")
       (println "")
       (println "chains: bitcoin-mainnet, bitcoin-testnet, bitcoin-regtest, sigilcoin"))
 
@@ -64,6 +65,12 @@
       (println "requested-blocks: ~a" (node-status-snapshot-requested-block-count status))
       (println "failed-blocks: ~a" (node-status-snapshot-failed-block-count status))
       (println "sync-stage: ~a" (node-status-snapshot-sync-stage status))
+      (println "sync-failed-stage: ~a" (node-status-snapshot-sync-failed-stage status))
+      (println "sync-last-error: ~a" (node-status-snapshot-sync-last-error status))
+      (println "run-attempts: ~a" (node-status-snapshot-run-attempts status))
+      (println "run-last-result: ~a" (node-status-snapshot-run-last-result status))
+      (println "run-last-error: ~a" (node-status-snapshot-run-last-error status))
+      (println "last-peer-error: ~a" (node-status-snapshot-last-peer-error status))
       (println "sync-progress: ~a/~a"
                (node-status-snapshot-best-block-height status)
                (node-status-snapshot-best-height status)))
@@ -270,63 +277,82 @@
                                        write-envelope
                                        max-steps)))))))))
 
+    (define (sync-node-once n args command)
+      (let* ((peer-text (arg-value args "--peer" #f))
+             (max-steps (status-number args "--max-steps" "64"))
+             (max-blocks (status-number args "--max-blocks" "16"))
+             (max-peers (status-number args "--max-peers" "8"))
+             (max-retries (status-number args "--max-retries" "0"))
+             (timeouts (peer-timeouts args)))
+        (if peer-text
+            (let ((peer (selected-peer n args command)))
+              (node-add-peer n (car peer) (cdr peer))
+              (with-peer-socket n
+                                peer
+                                (car timeouts)
+                                (cadr timeouts)
+                                (caddr timeouts)
+                (lambda (read-envelope write-envelope)
+                  (node-sync-with-peer n
+                                       (car peer)
+                                       (cdr peer)
+                                       read-envelope
+                                       write-envelope
+                                       max-steps
+                                       max-blocks))))
+            (node-sync-with-peers n
+                                  (connect-node-peer-with-timeouts
+                                    (car timeouts)
+                                    (cadr timeouts)
+                                    (caddr timeouts))
+                                  max-peers
+                                  max-retries
+                                  max-steps
+                                  max-blocks))))
+
     (define (run-sync-once args command)
       (with-node args
         (lambda (n)
-          (let* ((peer-text (arg-value args "--peer" #f))
-                 (max-steps (status-number args "--max-steps" "64"))
-                 (max-blocks (status-number args "--max-blocks" "16"))
-                 (max-peers (status-number args "--max-peers" "8"))
-                 (max-retries (status-number args "--max-retries" "0"))
-                 (timeouts (peer-timeouts args)))
-            (if peer-text
-                (let ((peer (selected-peer n args command)))
-                  (node-add-peer n (car peer) (cdr peer))
-                  (with-peer-socket n
-                                    peer
-                                    (car timeouts)
-                                    (cadr timeouts)
-                                    (caddr timeouts)
-                    (lambda (read-envelope write-envelope)
-                      (print-status
-                        (node-sync-with-peer n
-                                             (car peer)
-                                             (cdr peer)
-                                             read-envelope
-                                             write-envelope
-                                             max-steps
-                                             max-blocks)))))
-                (print-status
-                  (node-sync-with-peers n
-                                        (connect-node-peer-with-timeouts
-                                          (car timeouts)
-                                          (cadr timeouts)
-                                          (caddr timeouts))
-                                        max-peers
-                                        max-retries
-                                        max-steps
-                                        max-blocks)))))))
+          (print-status (sync-node-once n args command)))))
 
-    (define (run-sync-attempt args command)
+    (define (run-sync-attempt n args command)
       (guard (err (else #f))
-        (run-sync-once args command)
+        (sync-node-once n args command)
         #t))
 
+    (define (run-loop-sync-attempt n args)
+      (guard (err
+              (else
+               (node-record-run-failure n)
+               (print-status (node-status n))
+               #f))
+        (sync-node-once n args "run")
+        (node-record-run-attempt n "success" "")
+        (print-status (node-status n))
+        #t))
+
+    (define (iteration-limit-reached? iterations completed)
+      (and (> iterations 0)
+           (>= completed iterations)))
+
     (define (run-loop args)
-      (let ((iterations (status-number args "--iterations" "1"))
-            (max-retries (status-number args "--max-retries" "3"))
-            (retry-delay (status-number args "--retry-delay" "0")))
-        (let loop ((remaining iterations) (retries 0) (last #f))
-          (if (<= remaining 0)
-              last
-              (if (run-sync-attempt args "run")
-                  (loop (- remaining 1) 0 #t)
-                  (if (>= retries max-retries)
-                      (error "run: max retries exceeded")
+      (with-node args
+        (lambda (n)
+          (let ((iterations (status-number args "--iterations" "1"))
+                (max-retries (status-number args "--max-retries" "3"))
+                (retry-delay (status-number args "--retry-delay" "0")))
+            (let loop ((completed 0) (retries 0) (last #f))
+              (if (iteration-limit-reached? iterations completed)
+                  last
+                  (if (run-loop-sync-attempt n args)
+                      (loop (+ completed 1) 0 #t)
                       (begin
-                        (when (> retry-delay 0)
-                          (sleep retry-delay))
-                        (loop remaining (+ retries 1) last))))))))
+                        (if (>= retries max-retries)
+                            (error "run: max retries exceeded")
+                            (begin
+                              (when (> retry-delay 0)
+                                (sleep retry-delay))
+                              (loop completed (+ retries 1) last)))))))))))
 
     (define (main)
       (: -> void?)

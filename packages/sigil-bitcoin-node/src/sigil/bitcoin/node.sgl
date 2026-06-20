@@ -35,6 +35,12 @@
     node-status-snapshot-requested-block-count
     node-status-snapshot-failed-block-count
     node-status-snapshot-sync-stage
+    node-status-snapshot-sync-failed-stage
+    node-status-snapshot-sync-last-error
+    node-status-snapshot-run-attempts
+    node-status-snapshot-run-last-result
+    node-status-snapshot-run-last-error
+    node-status-snapshot-last-peer-error
     node-peer node-peer?
     node-peer-address node-peer-port node-peer-score
     node-peer-failures node-peer-last-seen
@@ -54,6 +60,8 @@
     node-bootstrap-peers
     node-bootstrap-discovered-peers
     node-test-peer
+    node-record-run-attempt
+    node-record-run-failure
     node-store-block
     node-download-blocks
     node-validate-blocks
@@ -133,7 +141,13 @@
       (pending-block-count integer?)
       (requested-block-count integer?)
       (failed-block-count integer?)
-      (sync-stage string?))
+      (sync-stage string?)
+      (sync-failed-stage string?)
+      (sync-last-error string?)
+      (run-attempts integer?)
+      (run-last-result string?)
+      (run-last-error string?)
+      (last-peer-error string?))
 
     ;;; Persisted peer metadata used by node sync commands.
     ;;;
@@ -368,6 +382,14 @@
       (db-set-metadata db "sync-failed-stage" stage)
       (db-set-metadata db "sync-last-error" reason))
 
+    (define (db-clear-sync-failure db)
+      (db-set-metadata db "sync-failed-stage" "")
+      (db-set-metadata db "sync-last-error" ""))
+
+    (define (metadata-number db key default)
+      (let ((value (string->number (db-metadata db key (number->string default)))))
+        (if value value default)))
+
     (define (db-header-row db hash-text)
       (sqlite-query-row
         db
@@ -546,6 +568,11 @@
                   "chain"
                   (chain-config-name chain))
       (db-ensure-metadata db "sync-stage" "idle")
+      (db-ensure-metadata db "sync-failed-stage" "")
+      (db-ensure-metadata db "sync-last-error" "")
+      (db-ensure-metadata db "run-attempts" "0")
+      (db-ensure-metadata db "run-last-result" "")
+      (db-ensure-metadata db "run-last-error" "")
       (let* ((genesis (chain-config-genesis-header chain))
              (hash-text (hex-encode (chain-config-genesis-hash chain))))
         (unless (db-header-row db hash-text)
@@ -568,6 +595,37 @@
                  last-error: (row-ref row "last_error")
                  source: (row-ref row "source")
                  seed-host: (row-ref row "seed_host")))
+
+    (define (db-last-peer-error db)
+      (let ((row (sqlite-query-row
+                   db
+                   "SELECT address, port, last_error FROM peers WHERE last_error <> '' ORDER BY failures DESC, score ASC, address ASC, port ASC LIMIT 1")))
+        (if row
+            (string-append (row-ref row "address")
+                           ":"
+                           (number->string (row-ref row "port"))
+                           " "
+                           (row-ref row "last_error"))
+            "")))
+
+    (define (run-last-error-value db)
+      (let ((attempts (metadata-number db "run-attempts" 0))
+            (result (db-metadata db "run-last-result" ""))
+            (reason (db-metadata db "run-last-error" "")))
+        (if (and (> attempts 0)
+                 (or (string=? result "failure")
+                     (string=? result ""))
+                 (string=? reason ""))
+            "run failed"
+            reason)))
+
+    (define (run-last-result-value db)
+      (let ((attempts (metadata-number db "run-attempts" 0))
+            (result (db-metadata db "run-last-result" "")))
+        (if (and (> attempts 0)
+                 (string=? result ""))
+            "failure"
+            result)))
 
     (define (db-block-row db hash-text)
       (sqlite-query-row
@@ -740,7 +798,13 @@
           pending-block-count: (pending-chain-block-count db rows)
           requested-block-count: (requested-chain-block-count db rows)
           failed-block-count: (failed-chain-block-count db rows)
-          sync-stage: (db-metadata db "sync-stage" "idle"))))
+          sync-stage: (db-metadata db "sync-stage" "idle")
+          sync-failed-stage: (db-metadata db "sync-failed-stage" "")
+          sync-last-error: (db-metadata db "sync-last-error" "")
+          run-attempts: (metadata-number db "run-attempts" 0)
+          run-last-result: (run-last-result-value db)
+          run-last-error: (run-last-error-value db)
+          last-peer-error: (db-last-peer-error db))))
 
     (define (locator-heights best-height)
       (let loop ((height best-height) (step 1) (count 0) (heights '()))
@@ -989,6 +1053,24 @@
 
     (define (node-peer-failure n address port)
       (node-peer-failure-with-error n address port "failure"))
+
+    ;;; Record one long-running node loop attempt.
+    ;;;
+    ;;; ```scheme
+    ;;; (node-record-run-attempt n "success" "")
+    ;;; ```
+    (define (node-record-run-attempt n result reason)
+      (: node? string? string? -> node-status-snapshot?)
+      (let* ((db (node-db n))
+             (attempts (+ 1 (metadata-number db "run-attempts" 0))))
+        (db-set-metadata db "run-attempts" (number->string attempts))
+        (db-set-metadata db "run-last-error" reason)
+        (db-set-metadata db "run-last-result" result)
+        (node-status n)))
+
+    (define (node-record-run-failure n)
+      (: node? -> node-status-snapshot?)
+      (node-record-run-attempt n "failure" "run failed"))
 
     ;;; Test whether a peer transport can be opened and update peer health.
     ;;;
@@ -1275,15 +1357,25 @@
     ;;; ```
     (define (node-sync-headers n read-envelope write-envelope max-steps)
       (: node? procedure? procedure? integer? -> node-status-snapshot?)
-      (db-set-sync-stage (node-db n) "header-sync")
       (let* ((start (node-status-snapshot-best-height (node-status n)))
-             (session (make-node-session n start))
-             (ready (p2p-session-handshake read-envelope
-                                           write-envelope
-                                           session
-                                           max-steps)))
-        (sync-headers-loop n read-envelope write-envelope max-steps)
+             (session (make-node-session n start)))
+        (db-set-sync-stage (node-db n) "handshake")
+        (guard (err
+                (else
+                 (db-set-sync-failure (node-db n) "handshake" "handshake failed")
+                 (raise err)))
+          (p2p-session-handshake read-envelope
+                                 write-envelope
+                                 session
+                                 max-steps))
+        (db-set-sync-stage (node-db n) "header-sync")
+        (guard (err
+                (else
+                 (db-set-sync-failure (node-db n) "header-sync" "header sync failed")
+                 (raise err)))
+          (sync-headers-loop n read-envelope write-envelope max-steps))
         (db-set-sync-stage (node-db n) "idle")
+        (db-clear-sync-failure (node-db n))
         (node-status n)))
 
     ;;; Run headers, block download, and block validation over one transport.
@@ -1308,20 +1400,30 @@
       (node-add-peer n address port)
       (guard (err
               (else
-               (db-set-sync-failure (node-db n) "sync" "sync failed")
-               (node-peer-failure-with-error n address port "sync failed")
+               (node-peer-failure-with-error
+                 n
+                 address
+                 port
+                 (db-metadata (node-db n) "sync-last-error" "sync failed"))
                (raise err)))
         (node-sync-headers n read-envelope write-envelope max-steps)
-        (node-download-blocks-for-peer n
-                                       (peer-key address port)
-                                       read-envelope
-                                       write-envelope
-                                       max-steps
-                                       max-blocks)
-        (node-validate-blocks n)
-        (let ((status (node-status n)))
-          (node-peer-success n address port)
-          status)))
+        (guard (err
+                (else
+                 (db-set-sync-failure (node-db n) "block-download" "block download failed")
+                 (raise err)))
+          (node-download-blocks-for-peer n
+                                         (peer-key address port)
+                                         read-envelope
+                                         write-envelope
+                                         max-steps
+                                         max-blocks))
+        (guard (err
+                (else
+                 (db-set-sync-failure (node-db n) "validation" "validation failed")
+                 (raise err)))
+          (node-validate-blocks n))
+        (node-peer-success n address port)
+        (node-status n)))
 
     (define (take-up-to items count)
       (let loop ((xs items) (remaining count) (out '()))
@@ -1356,7 +1458,6 @@
         (if transport
             (guard (err
                     (else
-                     (db-set-sync-failure (node-db n) "sync" "sync failed")
                      (transport-close transport)
                      #f))
               (let ((status (node-sync-with-peer n
@@ -1426,6 +1527,12 @@
     (%module-export! 'node-status-snapshot-requested-block-count)
     (%module-export! 'node-status-snapshot-failed-block-count)
     (%module-export! 'node-status-snapshot-sync-stage)
+    (%module-export! 'node-status-snapshot-sync-failed-stage)
+    (%module-export! 'node-status-snapshot-sync-last-error)
+    (%module-export! 'node-status-snapshot-run-attempts)
+    (%module-export! 'node-status-snapshot-run-last-result)
+    (%module-export! 'node-status-snapshot-run-last-error)
+    (%module-export! 'node-status-snapshot-last-peer-error)
     (%module-export! 'node-peer)
     (%module-export! 'node-peer?)
     (%module-export! 'node-peer-address)
@@ -1450,6 +1557,8 @@
     (%module-export! 'node-bootstrap-peers)
     (%module-export! 'node-bootstrap-discovered-peers)
     (%module-export! 'node-test-peer)
+    (%module-export! 'node-record-run-attempt)
+    (%module-export! 'node-record-run-failure)
     (%module-export! 'node-store-block)
     (%module-export! 'node-download-blocks)
     (%module-export! 'node-validate-blocks)
