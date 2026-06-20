@@ -25,6 +25,7 @@
       (println "  sigil-bitcoin-node peers remove HOST[:PORT]|[IPv6]:PORT [--chain CHAIN] [--data-dir DIR]")
       (println "  sigil-bitcoin-node peers test HOST[:PORT]|[IPv6]:PORT [--chain CHAIN] [--data-dir DIR] [--socks5 HOST[:PORT]] [--resolve-timeout N] [--connect-timeout N] [--read-timeout N]")
       (println "  sigil-bitcoin-node header-sync --peer HOST[:PORT]|[IPv6]:PORT [--chain CHAIN] [--data-dir DIR] [--socks5 HOST[:PORT]] [--max-steps N] [--resolve-timeout N] [--connect-timeout N] [--read-timeout N]")
+      (println "  sigil-bitcoin-node block-sync [--peer HOST[:PORT]|[IPv6]:PORT] [--chain CHAIN] [--data-dir DIR] [--socks5 HOST[:PORT]] [--max-steps N] [--max-blocks N] [--max-peers N] [--max-retries N] [--resolve-timeout N] [--connect-timeout N] [--read-timeout N]")
       (println "  sigil-bitcoin-node sync [--peer HOST[:PORT]|[IPv6]:PORT] [--chain CHAIN] [--data-dir DIR] [--socks5 HOST[:PORT]] [--max-steps N] [--max-blocks N] [--max-peers N] [--max-retries N] [--resolve-timeout N] [--connect-timeout N] [--read-timeout N]")
       (println "  sigil-bitcoin-node run [--peer HOST[:PORT]|[IPv6]:PORT] [--chain CHAIN] [--data-dir DIR] [--socks5 HOST[:PORT]] [--max-steps N] [--max-blocks N] [--iterations N|0] [--max-peers N] [--max-retries N] [--retry-delay N] [--resolve-timeout N] [--connect-timeout N] [--read-timeout N]")
       (println "  sigil-bitcoin-node probe [--tcp-only] [--peer HOST[:PORT]|[IPv6]:PORT] [--chain CHAIN] [--data-dir DIR] [--socks5 HOST[:PORT]] [--max-steps N] [--max-blocks N] [--max-peers N] [--resolve-timeout N] [--connect-timeout N] [--read-timeout N] [--max-seeds N] [--max-addresses N]")
@@ -560,6 +561,25 @@
                   (loop (cdr texts))
                   status)))))
 
+    (define (fetch-blocks-configured-peer-texts n peer-texts connect-peer max-steps max-blocks command)
+      (let loop ((texts peer-texts))
+        (if (null? texts)
+            (error (string-append command ": block sync failed"))
+            (let* ((peer (parse-peer
+                           (car texts)
+                           (chain-config-default-port (node-chain n))))
+                   (status (node-fetch-blocks-configured-peer
+                             n
+                             (car peer)
+                             (cdr peer)
+                             connect-peer
+                             max-steps
+                             max-blocks)))
+              (if (string=? "failed"
+                            (node-status-snapshot-sync-stage status))
+                  (loop (cdr texts))
+                  status)))))
+
     (define (sync-node-once n args command)
       (let* ((peer-texts (arg-values args "--peer"))
              (max-steps (status-number args "--max-steps" "64"))
@@ -590,6 +610,34 @@
                                   max-retries
                                   max-steps
                                   max-blocks))))
+
+    (define (fetch-blocks-once n args command)
+      (let* ((peer-texts (arg-values args "--peer"))
+             (max-steps (status-number args "--max-steps" "64"))
+             (max-blocks (status-number args "--max-blocks" "1"))
+             (max-peers (status-number args "--max-peers" "8"))
+             (max-retries (status-number args "--max-retries" "0"))
+             (timeouts (peer-timeouts args))
+             (proxy (socks5-endpoint args))
+             (connect-peer (connect-node-peer-with-timeouts
+                             (car timeouts)
+                             (cadr timeouts)
+                             (caddr timeouts)
+                             proxy)))
+        (if (not (null? peer-texts))
+            (fetch-blocks-configured-peer-texts
+              n
+              peer-texts
+              connect-peer
+              max-steps
+              max-blocks
+              command)
+            (node-fetch-blocks-with-peers n
+                                          connect-peer
+                                          max-peers
+                                          max-retries
+                                          max-steps
+                                          max-blocks))))
 
     (define (add-configured-peer-texts n peer-texts)
       (for-each
@@ -636,6 +684,11 @@
       (with-node args
         (lambda (n)
           (print-status (sync-node-once n args command)))))
+
+    (define (run-block-sync-once args)
+      (with-node args
+        (lambda (n)
+          (print-status (fetch-blocks-once n args "block-sync")))))
 
     (define (run-sync-attempt n args command)
       (guard (err (else #f))
@@ -746,6 +799,8 @@
                (run-peers (cdr args)))
               ((string=? (car args) "header-sync")
                (run-header-sync (cdr args)))
+              ((string=? (car args) "block-sync")
+               (run-block-sync-once (cdr args)))
               ((string=? (car args) "sync")
                (run-sync-once (cdr args) "sync"))
               ((string=? (car args) "run")

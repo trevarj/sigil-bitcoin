@@ -55,6 +55,8 @@
 (define node-store-block* (module-ref %node-module 'node-store-block))
 (define node-download-blocks* (module-ref %node-module 'node-download-blocks))
 (define node-validate-blocks* (module-ref %node-module 'node-validate-blocks))
+(define node-fetch-blocks-with-peer*
+  (module-ref %node-module 'node-fetch-blocks-with-peer))
 (define node-sync-with-peer* (module-ref %node-module 'node-sync-with-peer))
 (define node-sync-configured-peer*
   (module-ref %node-module 'node-sync-configured-peer))
@@ -1040,6 +1042,41 @@
         (assert-equal inv-block (inventory-vector-type (car items)))
         (assert-equal (block-header-hash h1)
                       (inventory-vector-hash (car items))))
+      (assert-equal 1
+                    (node-status-snapshot-block-count* (node-status* n)))
+      (node-close* n)))
+
+  (test "fetches pending blocks after handshake without header sync"
+    (let* ((dir (test-data-dir))
+           (n (node-open* bitcoin-regtest-chain* dir))
+           (h0 (chain-config-genesis-header* bitcoin-regtest-chain*))
+           (b1 (make-coinbase-block (list h0) 1 1296688602))
+           (h1 (block-header-field b1))
+           (writes '()))
+      (node-ingest-headers* n (list h1))
+      (node-fetch-blocks-with-peer*
+        n
+        "blocks.example"
+        18444
+        (one-envelope-reader
+          (append
+            (empty-sync-envelopes bitcoin-regtest-chain*)
+            (list (p2p-envelope magic: (chain-config-magic* bitcoin-regtest-chain*)
+                                command: "block"
+                                payload: (block-message b1)))))
+        (lambda (envelope)
+          (set! writes (cons envelope writes)))
+        8
+        1)
+      (let ((requests (filter
+                        (lambda (envelope)
+                          (string=? "getdata" (p2p-envelope-command envelope)))
+                        writes)))
+        (assert-equal 1 (length requests))
+        (assert-equal 1
+                      (length
+                        (inventory-message-parse
+                          (p2p-envelope-payload (car requests))))))
       (assert-equal 1
                     (node-status-snapshot-block-count* (node-status* n)))
       (node-close* n)))

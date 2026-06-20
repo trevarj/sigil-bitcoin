@@ -82,6 +82,9 @@
     node-download-blocks
     node-validate-blocks
     node-sync-headers
+    node-fetch-blocks-with-peer
+    node-fetch-blocks-configured-peer
+    node-fetch-blocks-with-peers
     node-sync-with-peer
     node-sync-configured-peer
     node-sync-with-peers
@@ -489,6 +492,9 @@
                (string-append "connect timed out: " message))
               (else
                (string-append "connect failed: " message)))))
+
+    (define (stage-failure-reason stage err)
+      (string-append stage ": " (exception-message-or err stage)))
 
     (define (db-header-row db hash-text)
       (sqlite-query-row
@@ -1566,7 +1572,9 @@
               (let ((next-utxos (validate-block-row n (car remaining) utxos)))
                 (if next-utxos
                     (loop (cdr remaining) next-utxos (+ validated 1))
-                    validated))))))
+                    (begin
+                      (db-set-sync-stage (node-db n) "idle")
+                      validated)))))))
 
     ;;; Run a bounded peer handshake/header sync and persist received headers.
     ;;;
@@ -1606,7 +1614,61 @@
       (node-sync-headers n read-envelope write-envelope max-steps)
       (node-download-blocks n read-envelope write-envelope max-steps max-blocks)
       (node-validate-blocks n)
+      (db-clear-sync-failure (node-db n))
       (node-status n))
+
+    ;;; Handshake with a peer, then download and validate currently pending blocks.
+    ;;;
+    ;;; Use this after a bounded header sync has already persisted headers and
+    ;;; the caller wants to exercise the block path without waiting for another
+    ;;; full header walk.
+    ;;;
+    ;;; ```scheme
+    ;;; (node-fetch-blocks-with-peer n "127.0.0.1" 18444 read write 64 1)
+    ;;; ```
+    (define (node-fetch-blocks-with-peer n address port read-envelope write-envelope max-steps max-blocks)
+      (: node? string? integer? procedure? procedure? integer? integer? -> node-status-snapshot?)
+      (node-ensure-peer n address port)
+      (guard (err
+              (else
+               (node-peer-failure-with-error
+                 n
+                 address
+                 port
+                 (db-metadata (node-db n) "sync-last-error" "sync failed"))
+               (raise err)))
+        (let* ((start (node-status-snapshot-best-height (node-status n)))
+               (session (make-node-session n start)))
+          (db-set-sync-stage (node-db n) "handshake")
+          (guard (err
+                  (else
+                   (db-set-sync-failure (node-db n) "handshake" "handshake failed")
+                   (raise err)))
+            (p2p-session-handshake read-envelope
+                                   write-envelope
+                                   session
+                                   max-steps)))
+        (guard (err
+                (else
+                 (db-set-sync-failure (node-db n) "block-download" "block download failed")
+                 (raise err)))
+          (node-download-blocks-for-peer n
+                                         (peer-key address port)
+                                         read-envelope
+                                         write-envelope
+                                         max-steps
+                                         max-blocks))
+        (guard (err
+                (else
+                 (db-set-sync-failure
+                   (node-db n)
+                   "validation"
+                   (stage-failure-reason "validation failed" err))
+                 (raise err)))
+          (node-validate-blocks n))
+        (db-clear-sync-failure (node-db n))
+        (node-peer-success n address port)
+        (node-status n)))
 
     ;;; Run a sync attempt for a persisted peer and update peer score.
     ;;;
@@ -1637,9 +1699,13 @@
                                          max-blocks))
         (guard (err
                 (else
-                 (db-set-sync-failure (node-db n) "validation" "validation failed")
+                 (db-set-sync-failure
+                   (node-db n)
+                   "validation"
+                   (stage-failure-reason "validation failed" err))
                  (raise err)))
           (node-validate-blocks n))
+        (db-clear-sync-failure (node-db n))
         (node-peer-success n address port)
         (node-status n)))
 
@@ -1754,6 +1820,90 @@
             status
             (node-status n))))
 
+    (define (fetch-blocks-peer-via-connector n peer connect-peer max-steps max-blocks)
+      (let ((address (node-peer-address peer))
+            (port (node-peer-port peer))
+            (transport #f))
+        (node-ensure-peer n address port)
+        (guard (err
+                (else
+                 (let ((reason (connect-failure-reason err)))
+                   (db-set-sync-failure (node-db n) "connect" reason)
+                   (node-peer-failure-with-error n address port reason))
+                 #f))
+          (set! transport (connect-peer peer)))
+        (if transport
+            (guard (err
+                    (else
+                     (transport-close transport)
+                     #f))
+              (let ((status (node-fetch-blocks-with-peer n
+                                                         address
+                                                         port
+                                                         (transport-read transport)
+                                                         (transport-write transport)
+                                                         max-steps
+                                                         max-blocks)))
+                (transport-close transport)
+                status))
+            #f)))
+
+    ;;; Fetch pending blocks from one explicitly configured peer.
+    ;;;
+    ;;; ```scheme
+    ;;; (node-fetch-blocks-configured-peer n "127.0.0.1" 18444 connect-peer 64 1)
+    ;;; ```
+    (define (node-fetch-blocks-configured-peer n address port connect-peer max-steps max-blocks)
+      (: node? string? integer? procedure? integer? integer? -> node-status-snapshot?)
+      (let ((status (fetch-blocks-peer-via-connector
+                      n
+                      (node-add-peer n address port)
+                      connect-peer
+                      max-steps
+                      max-blocks)))
+        (if status
+            status
+            (node-status n))))
+
+    (define (try-peer-block-list n peers connect-peer max-steps max-blocks)
+      (let loop ((xs peers))
+        (cond ((null? xs) #f)
+              (else
+               (let ((status (fetch-blocks-peer-via-connector n
+                                                              (car xs)
+                                                              connect-peer
+                                                              max-steps
+                                                              max-blocks)))
+                 (if status
+                     status
+                     (loop (cdr xs))))))))
+
+    ;;; Fetch pending blocks from persisted peers, falling back by score.
+    ;;;
+    ;;; ```scheme
+    ;;; (node-fetch-blocks-with-peers n connect-peer 4 1 64 1)
+    ;;; ```
+    (define (node-fetch-blocks-with-peers n connect-peer max-peers max-retries max-steps max-blocks)
+      (: node? procedure? integer? integer? integer? integer? -> node-status-snapshot?)
+      (when (<= max-peers 0)
+        (error "node-fetch-blocks-with-peers: max-peers must be positive"))
+      (let loop ((attempt 0))
+        (let ((peers (if (= max-peers 1)
+                         (take-up-to (node-peers n) max-peers)
+                         (diverse-take-peers (node-peers n) max-peers))))
+          (when (null? peers)
+            (error "node-fetch-blocks-with-peers: no peers configured"))
+          (let ((status (try-peer-block-list n
+                                             peers
+                                             connect-peer
+                                             max-steps
+                                             max-blocks)))
+            (cond (status status)
+                  ((>= attempt max-retries)
+                   (error "node-fetch-blocks-with-peers: max retries exceeded"))
+                  (else
+                   (loop (+ attempt 1))))))))
+
     (define (try-peer-list n peers connect-peer max-steps max-blocks)
       (let loop ((xs peers))
         (cond ((null? xs) #f)
@@ -1860,6 +2010,9 @@
     (%module-export! 'node-store-block)
     (%module-export! 'node-download-blocks)
     (%module-export! 'node-validate-blocks)
+    (%module-export! 'node-fetch-blocks-with-peer)
+    (%module-export! 'node-fetch-blocks-configured-peer)
+    (%module-export! 'node-fetch-blocks-with-peers)
     (%module-export! 'node-sync-with-peer)
     (%module-export! 'node-sync-configured-peer)
     (%module-export! 'node-sync-with-peers)
