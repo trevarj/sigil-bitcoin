@@ -358,9 +358,11 @@
     ;;; ```
     (define (p2p-socket-connect-timeout host port timeout-ms)
       (: string? integer? integer? -> any?)
-      (let ((sock (%tcp-connect-ip-timeout host port timeout-ms)))
+      (let* ((result (%tcp-connect-ip-timeout-status host port timeout-ms))
+             (status (car result))
+             (sock (cdr result)))
         (unless sock
-          (error "p2p-socket-connect-timeout: connection failed"))
+          (error (string-append "p2p-socket-connect-timeout: " status)))
         sock))
 
     (define (p2p-socket-read-envelope sock)

@@ -181,8 +181,13 @@
 
 (test-group "socket transport"
   (test "reports refused timed numeric connects"
-    (assert-error
-      (p2p-socket-connect-timeout "127.0.0.1" 1 100)))
+    (guard (err
+             (else
+               (assert-equal
+                 "p2p-socket-connect-timeout: connection refused"
+                 (exception-message err))))
+      (p2p-socket-connect-timeout "127.0.0.1" 1 100)
+      (assert-false #t)))
 
   (test "times out idle socket envelope reads"
     (let* ((listener (tcp-listen 0 1 "127.0.0.1"))
