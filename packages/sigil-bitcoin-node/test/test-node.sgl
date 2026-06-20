@@ -1,5 +1,7 @@
 (import (sigil test)
         (sigil fs)
+        (sigil io)
+        (sigil string)
         (sigil bitcoin encoding)
         (sigil bitcoin consensus)
         (sigil bitcoin node)
@@ -99,6 +101,7 @@
   (module-ref %node-module 'node-status-snapshot-run-last-error))
 (define node-status-snapshot-last-peer-error*
   (module-ref %node-module 'node-status-snapshot-last-peer-error))
+(define run-peers* (module-ref %node-main-module 'run-peers))
 (define run-loop* (module-ref %node-main-module 'run-loop))
 (define run-probe* (module-ref %node-main-module 'run-probe))
 
@@ -962,6 +965,42 @@
           "connect failed: p2p-socket-connect-timeout: connection refused"
           (node-peer-last-error* peer)))
       (node-close* n)))
+
+  (test "summarizes peer failure categories"
+    (let* ((dir (test-data-dir))
+           (n (node-open* bitcoin-regtest-chain* dir)))
+      (node-add-peer* n "untried.example" 18444)
+      (node-sync-configured-peer*
+        n
+        "refused.example"
+        18444
+        (lambda (peer)
+          (error "p2p-socket-connect-timeout: connection refused"))
+        1
+        0)
+      (node-sync-configured-peer*
+        n
+        "timeout.example"
+        18444
+        (lambda (peer)
+          (error "p2p-socket-connect-timeout: connection timed out"))
+        1
+        0)
+      (node-close* n)
+      (let ((output
+              (with-output-to-string
+                (lambda ()
+                  (run-peers* (list "summary"
+                                    "--chain"
+                                    "bitcoin-regtest"
+                                    "--data-dir"
+                                    dir))))))
+        (assert-true (string-find output "total: 3"))
+        (assert-true (string-find output "manual: 3"))
+        (assert-true (string-find output "untried: 1"))
+        (assert-true (string-find output "connect-refused: 1"))
+        (assert-true (string-find output "connect-timeout: 1"))
+        (assert-true (string-find output "other-failed: 0")))))
 
   (test "run loop persists failed attempts"
     (let ((dir (test-data-dir)))

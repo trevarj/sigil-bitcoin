@@ -131,6 +131,10 @@ guix shell -m ../../manifest.scm -- \
 
 guix shell -m ../../manifest.scm -- \
   "$SIGIL" run --redirects ../../dev-redirects.sgl -- \
+    peers summary --chain "$CHAIN" --data-dir "$DATA_DIR" || true
+
+guix shell -m ../../manifest.scm -- \
+  "$SIGIL" run --redirects ../../dev-redirects.sgl -- \
     peers list --chain "$CHAIN" --data-dir "$DATA_DIR" || true
 
 exit 1

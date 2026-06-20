@@ -9,6 +9,7 @@
           (sigil bitcoin node)
           (sigil bitcoin p2p))
   (export main
+          run-peers
           run-loop
           run-probe)
   (begin
@@ -19,6 +20,7 @@
       (println "  sigil-bitcoin-node peers bootstrap [--chain CHAIN] [--data-dir DIR] [--resolve-timeout N] [--max-seeds N] [--max-addresses N]")
       (println "  sigil-bitcoin-node peers add HOST:PORT [--chain CHAIN] [--data-dir DIR]")
       (println "  sigil-bitcoin-node peers list [--chain CHAIN] [--data-dir DIR]")
+      (println "  sigil-bitcoin-node peers summary [--chain CHAIN] [--data-dir DIR]")
       (println "  sigil-bitcoin-node peers remove HOST:PORT [--chain CHAIN] [--data-dir DIR]")
       (println "  sigil-bitcoin-node peers test HOST:PORT [--chain CHAIN] [--data-dir DIR] [--resolve-timeout N] [--connect-timeout N] [--read-timeout N]")
       (println "  sigil-bitcoin-node header-sync --peer HOST:PORT [--chain CHAIN] [--data-dir DIR] [--max-steps N] [--resolve-timeout N] [--connect-timeout N] [--read-timeout N]")
@@ -93,6 +95,47 @@
                (node-peer-last-result peer)
                (node-peer-last-error peer)))
 
+    (define (peer-error-category peer)
+      (let ((result (node-peer-last-result peer))
+            (err (node-peer-last-error peer)))
+        (cond ((string=? result "success") "success")
+              ((string=? result "") "untried")
+              ((string-find err "connection refused") "connect-refused")
+              ((string-find err "timed out") "connect-timeout")
+              ((string-find err "DNS") "dns-failed")
+              (else "other-failed"))))
+
+    (define (count-peers-by-category peers category)
+      (let loop ((xs peers) (count 0))
+        (cond ((null? xs) count)
+              ((string=? category (peer-error-category (car xs)))
+               (loop (cdr xs) (+ count 1)))
+              (else
+               (loop (cdr xs) count)))))
+
+    (define (count-peers-by-source peers source)
+      (let loop ((xs peers) (count 0))
+        (cond ((null? xs) count)
+              ((string=? source (node-peer-source (car xs)))
+               (loop (cdr xs) (+ count 1)))
+              (else
+               (loop (cdr xs) count)))))
+
+    (define (print-peer-summary peers)
+      (println "peer-summary:")
+      (println "total: ~a" (length peers))
+      (println "manual: ~a" (count-peers-by-source peers "manual"))
+      (println "discovered: ~a" (count-peers-by-source peers "discovered"))
+      (println "untried: ~a" (count-peers-by-category peers "untried"))
+      (println "success: ~a" (count-peers-by-category peers "success"))
+      (println "connect-refused: ~a"
+               (count-peers-by-category peers "connect-refused"))
+      (println "connect-timeout: ~a"
+               (count-peers-by-category peers "connect-timeout"))
+      (println "dns-failed: ~a" (count-peers-by-category peers "dns-failed"))
+      (println "other-failed: ~a"
+               (count-peers-by-category peers "other-failed")))
+
     (define (fd-list-contains? fd xs)
       (cond ((null? xs) #f)
             ((= fd (car xs)) #t)
@@ -128,7 +171,13 @@
         (lambda (n)
           (print-status (node-status n)))))
 
+    ;;; Run a `peers` CLI subcommand with parsed argument strings.
+    ;;;
+    ;;; ```scheme
+    ;;; (run-peers '("summary" "--chain" "bitcoin-regtest"))
+    ;;; ```
     (define (run-peers args)
+      (: list? -> any?)
       (if (null? args)
           (begin
             (usage)
@@ -161,6 +210,8 @@
                                     max-addresses))))
                       ((string=? subcommand "list")
                        (for-each print-peer (node-peers n)))
+                      ((string=? subcommand "summary")
+                       (print-peer-summary (node-peers n)))
                       ((string=? subcommand "remove")
                        (when (null? rest)
                          (error "peers remove: missing HOST:PORT"))
