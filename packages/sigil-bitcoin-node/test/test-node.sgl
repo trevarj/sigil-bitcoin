@@ -576,6 +576,32 @@
         (assert-equal "seed.example" (node-peer-seed-host* discovered)))
       (node-close* n)))
 
+  (test "preserves discovered peer metadata during TCP health tests"
+    (let* ((dir (test-data-dir))
+           (chain (test-chain '(("seed.example" . 18444)) '()))
+           (n (node-open* chain dir)))
+      (assert-equal
+        1
+        (node-bootstrap-discovered-peers*
+          n
+          (lambda (host port timeout-ms)
+            '("93.184.216.7"))
+          100
+          1
+          1))
+      (let ((tested (node-test-peer*
+                      n
+                      "93.184.216.7"
+                      18444
+                      (lambda (peer)
+                        (error "p2p-socket-connect-timeout: connection refused")))))
+        (assert-equal "discovered" (node-peer-source* tested))
+        (assert-equal "seed.example" (node-peer-seed-host* tested))
+        (assert-equal
+          "connect failed: p2p-socket-connect-timeout: connection refused"
+          (node-peer-last-error* tested)))
+      (node-close* n)))
+
   (test "builds a database backed header locator"
     (let* ((dir (test-data-dir))
            (n (node-open* bitcoin-regtest-chain* dir))
@@ -687,7 +713,8 @@
                       (lambda (peer)
                         (error "simulated test failure")))))
         (assert-equal "failure" (node-peer-last-result* failed))
-        (assert-equal "test failed" (node-peer-last-error* failed)))
+        (assert-equal "connect failed: simulated test failure"
+                      (node-peer-last-error* failed)))
       (let ((passed (node-test-peer* n "health.example" 18444 good-transport)))
         (assert-equal "success" (node-peer-last-result* passed))
         (assert-equal "" (node-peer-last-error* passed))

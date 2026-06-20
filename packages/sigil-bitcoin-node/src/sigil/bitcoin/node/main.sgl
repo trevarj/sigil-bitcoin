@@ -26,7 +26,7 @@
       (println "  sigil-bitcoin-node header-sync --peer HOST[:PORT]|[IPv6]:PORT [--chain CHAIN] [--data-dir DIR] [--max-steps N] [--resolve-timeout N] [--connect-timeout N] [--read-timeout N]")
       (println "  sigil-bitcoin-node sync [--peer HOST[:PORT]|[IPv6]:PORT] [--chain CHAIN] [--data-dir DIR] [--max-steps N] [--max-blocks N] [--max-peers N] [--max-retries N] [--resolve-timeout N] [--connect-timeout N] [--read-timeout N]")
       (println "  sigil-bitcoin-node run [--peer HOST[:PORT]|[IPv6]:PORT] [--chain CHAIN] [--data-dir DIR] [--max-steps N] [--max-blocks N] [--iterations N|0] [--max-peers N] [--max-retries N] [--retry-delay N] [--resolve-timeout N] [--connect-timeout N] [--read-timeout N]")
-      (println "  sigil-bitcoin-node probe [--peer HOST[:PORT]|[IPv6]:PORT] [--chain CHAIN] [--data-dir DIR] [--max-steps N] [--max-blocks N] [--max-peers N] [--resolve-timeout N] [--connect-timeout N] [--read-timeout N] [--max-seeds N] [--max-addresses N]")
+      (println "  sigil-bitcoin-node probe [--tcp-only] [--peer HOST[:PORT]|[IPv6]:PORT] [--chain CHAIN] [--data-dir DIR] [--max-steps N] [--max-blocks N] [--max-peers N] [--resolve-timeout N] [--connect-timeout N] [--read-timeout N] [--max-seeds N] [--max-addresses N]")
       (println "")
       (println "chains: bitcoin-mainnet, bitcoin-testnet, bitcoin-testnet4, bitcoin-signet, bitcoin-regtest, sigilcoin"))
 
@@ -45,6 +45,11 @@
                (loop (cddr xs) (cons (cadr xs) out)))
               (else
                (loop (cdr xs) out)))))
+
+    (define (arg-present? args name)
+      (cond ((null? args) #f)
+            ((string=? (car args) name) #t)
+            (else (arg-present? (cdr args) name))))
 
     (define (string-prefix? prefix text)
       (let ((len (string-length prefix)))
@@ -171,6 +176,12 @@
                (loop (cdr xs) (+ count 1)))
               (else
                (loop (cdr xs) count)))))
+
+    (define (take-up-to items count)
+      (let loop ((xs items) (remaining count) (out '()))
+        (if (or (null? xs) (<= remaining 0))
+            (reverse out)
+            (loop (cdr xs) (- remaining 1) (cons (car xs) out)))))
 
     (define (print-peer-summary peers)
       (println "peer-summary:")
@@ -432,6 +443,45 @@
                                   max-steps
                                   max-blocks))))
 
+    (define (add-configured-peer-texts n peer-texts)
+      (for-each
+        (lambda (text)
+          (let ((peer (parse-peer
+                        text
+                        (chain-config-default-port (node-chain n)))))
+            (node-add-peer n (car peer) (cdr peer))))
+        peer-texts))
+
+    (define (probe-tcp-connects n args)
+      (let* ((peer-texts (arg-values args "--peer"))
+             (max-peers (status-number args "--max-peers" "8"))
+             (timeouts (peer-timeouts args))
+             (connect-peer (connect-node-peer-with-timeouts
+                             (car timeouts)
+                             (cadr timeouts)
+                             (caddr timeouts))))
+        (unless (null? peer-texts)
+          (add-configured-peer-texts n peer-texts))
+        (let loop ((peers (take-up-to (node-peers n) max-peers))
+                   (successes 0)
+                   (failures 0))
+          (if (null? peers)
+              (begin
+                (print-peer-summary (node-peers n))
+                (print-status (node-status n))
+                (when (= successes 0)
+                  (error "probe: tcp connect failed"))
+                successes)
+              (let ((tested (node-test-peer
+                              n
+                              (node-peer-address (car peers))
+                              (node-peer-port (car peers))
+                              connect-peer)))
+                (print-peer tested)
+                (if (string=? "success" (node-peer-last-result tested))
+                    (loop (cdr peers) (+ successes 1) failures)
+                    (loop (cdr peers) successes (+ failures 1))))))))
+
     (define (run-sync-once args command)
       (with-node args
         (lambda (n)
@@ -497,11 +547,13 @@
         (lambda (n)
           (let ((bootstrapped (maybe-bootstrap-probe-peers n args)))
             (println "bootstrapped-peers: ~a" bootstrapped)
-            (guard (err
-                    (else
-                     (print-status (node-status n))
-                     (error "probe: sync failed")))
-              (print-status (sync-node-once n args "probe")))))))
+            (if (arg-present? args "--tcp-only")
+                (probe-tcp-connects n args)
+                (guard (err
+                        (else
+                         (print-status (node-status n))
+                         (error "probe: sync failed")))
+                  (print-status (sync-node-once n args "probe"))))))))
 
     (define (after-arg-separator args)
       (cond ((null? args) '())

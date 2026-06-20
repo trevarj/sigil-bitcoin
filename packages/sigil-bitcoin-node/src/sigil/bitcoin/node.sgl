@@ -1226,13 +1226,17 @@
     ;;; ```
     (define (node-test-peer n address port connect-peer)
       (: node? string? integer? procedure? -> node-peer?)
-      (let ((peer (node-add-peer n address port))
+      (let ((peer (node-ensure-peer n address port))
             (transport #f))
         (guard (err
                 (else
                  (when transport
                    (transport-close transport))
-                 (node-peer-failure-with-error n address port "test failed")
+                 (node-peer-failure-with-error
+                   n
+                   address
+                   port
+                   (connect-failure-reason err))
                  (db-peer-row->peer (node-peer-row n address port))))
           (set! transport (connect-peer peer))
           (transport-close transport)

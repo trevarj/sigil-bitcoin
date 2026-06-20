@@ -16,6 +16,7 @@ RESOLVE_TIMEOUT=${SIGIL_BITCOIN_LIVE_RESOLVE_TIMEOUT:-2000}
 CONNECT_TIMEOUT=${SIGIL_BITCOIN_LIVE_CONNECT_TIMEOUT:-5000}
 READ_TIMEOUT=${SIGIL_BITCOIN_LIVE_READ_TIMEOUT:-5000}
 DEADLINE=${SIGIL_BITCOIN_LIVE_DEADLINE:-120}
+TCP_ONLY=${SIGIL_BITCOIN_LIVE_TCP_ONLY:-0}
 
 usage() {
   cat <<'EOF'
@@ -35,6 +36,7 @@ Options:
   --connect-timeout N    TCP connect timeout in milliseconds.
   --read-timeout N       Socket read timeout in milliseconds.
   --deadline N           Whole probe deadline in seconds, 0 disables it.
+  --tcp-only             Open TCP connections only; skip Bitcoin handshake/sync.
   -h, --help             Show this help.
 EOF
 }
@@ -110,6 +112,10 @@ while [ "$#" -gt 0 ]; do
       DEADLINE=$2
       shift 2
       ;;
+    --tcp-only)
+      TCP_ONLY=1
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -136,6 +142,10 @@ set -- probe \
   --resolve-timeout "$RESOLVE_TIMEOUT" \
   --connect-timeout "$CONNECT_TIMEOUT" \
   --read-timeout "$READ_TIMEOUT"
+
+if [ "$TCP_ONLY" -eq 1 ]; then
+  set -- "$@" --tcp-only
+fi
 
 if [ -n "$PEERS" ]; then
   for peer in $PEERS; do
