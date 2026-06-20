@@ -125,10 +125,18 @@
                (node-status-snapshot-best-block-height status)
                (node-status-snapshot-best-height status)))
 
+    (define (peer-endpoint-text address port)
+      (string-append
+        (if (string-contains? address ":")
+            (string-append "[" address "]")
+            address)
+        ":"
+        (number->string port)))
+
     (define (print-peer peer)
-      (println "~a:~a source=~a seed=~a score=~a failures=~a last-seen=~a last-attempt=~a last-result=~a last-error=~a"
-               (node-peer-address peer)
-               (node-peer-port peer)
+      (println "~a source=~a seed=~a score=~a failures=~a last-seen=~a last-attempt=~a last-result=~a last-error=~a"
+               (peer-endpoint-text (node-peer-address peer)
+                                   (node-peer-port peer))
                (node-peer-source peer)
                (node-peer-seed-host peer)
                (node-peer-score peer)
@@ -262,7 +270,9 @@
                                                (chain-config-default-port
                                                  (node-chain n)))))
                          (node-remove-peer n (car peer) (cdr peer))
-                         (println "removed ~a:~a" (car peer) (cdr peer))))
+                         (println "removed ~a"
+                                  (peer-endpoint-text (car peer)
+                                                      (cdr peer)))))
                       ((string=? subcommand "test")
                        (when (null? rest)
                          (error "peers test: missing HOST:PORT"))

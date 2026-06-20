@@ -464,7 +464,17 @@
         (assert-true second)
         (assert-equal 38333 (node-peer-port* first))
         (assert-equal 38333 (node-peer-port* second))
-        (node-close* n))))
+        (node-close* n))
+      (let ((output
+              (with-output-to-string
+                (lambda ()
+                  (run-peers* (list "list"
+                                    "--chain"
+                                    "bitcoin-signet"
+                                    "--data-dir"
+                                    dir))))))
+        (assert-true (string-find output "[2001:db8::1]:38333"))
+        (assert-true (string-find output "[2001:db8::2]:38333")))))
 
   (test "resolves configured seed peers"
     (let* ((dir (test-data-dir))
@@ -1037,6 +1047,22 @@
         (assert-equal
           "connect failed: p2p-socket-connect-timeout: connection refused"
           (node-peer-last-error* peer))
+      (node-close* n)))
+
+  (test "formats IPv6 peer errors with bracketed endpoints"
+    (let* ((dir (test-data-dir))
+           (n (node-open* bitcoin-regtest-chain* dir))
+           (status (node-sync-configured-peer*
+                     n
+                     "2001:db8::1"
+                     18444
+                     (lambda (peer)
+                       (error "p2p-socket-connect-timeout: connection timed out"))
+                     1
+                     0)))
+      (assert-equal
+        "[2001:db8::1]:18444 connect timed out: p2p-socket-connect-timeout: connection timed out"
+        (node-status-snapshot-last-peer-error* status))
       (node-close* n)))
 
   (test "preserves discovered peer metadata across failed sync attempts"

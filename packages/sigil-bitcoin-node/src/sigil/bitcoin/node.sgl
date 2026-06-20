@@ -679,14 +679,21 @@
                  source: (row-ref row "source")
                  seed-host: (row-ref row "seed_host")))
 
+    (define (peer-endpoint-text address port)
+      (string-append
+        (if (string-contains? address ":")
+            (string-append "[" address "]")
+            address)
+        ":"
+        (number->string port)))
+
     (define (db-last-peer-error db)
       (let ((row (sqlite-query-row
                    db
                    "SELECT address, port, last_error FROM peers WHERE last_error <> '' ORDER BY failures DESC, score ASC, address ASC, port ASC LIMIT 1")))
         (if row
-            (string-append (row-ref row "address")
-                           ":"
-                           (number->string (row-ref row "port"))
+            (string-append (peer-endpoint-text (row-ref row "address")
+                                               (row-ref row "port"))
                            " "
                            (row-ref row "last_error"))
             "")))
