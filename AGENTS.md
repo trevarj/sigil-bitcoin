@@ -72,6 +72,45 @@ Bitcoin-related work has mandatory research and test gates.
 - In the final handoff, list the BIPs/specs and external APIs consulted for any
   Bitcoin feature or behavior change.
 
+## Node Runtime Notes
+
+`sigil-bitcoin-node` is chain-config driven. Keep Bitcoin behavior unchanged
+when adding SigilCoin support, and put network constants, seeds, ports, magic,
+genesis data, activation heights, and similar policy in chain config records
+rather than hard-coding Bitcoin assumptions in sync or peer logic.
+
+Current CLI surface:
+
+- `status`
+- `peers bootstrap|add|list|summary|remove|test`
+- `probe`
+- `header-sync`
+- `block-sync`
+- `sync`
+- `run`
+
+The node currently persists peers, headers, blocks, validation state, status,
+and run-loop metadata in SQLite. Prefer extending that persisted state over
+adding ad hoc sidecar files.
+
+Live P2P guidance:
+
+- Prefer `bitcoin-signet` for lightweight live probes.
+- Use bounded `--resolve-timeout`, `--connect-timeout`, `--read-timeout`, and
+  script-level deadlines for live networking.
+- If direct peer access is blocked by VPN or local network policy, try native
+  SOCKS5 support with `--socks5 127.0.0.1:9050`; do not assume `torsocks`
+  works for this runtime.
+- Treat live peer failures as environmental unless mocked P2P and node harnesses
+  fail too.
+- Use `scripts/live-testnet-probe.sh --chain bitcoin-signet` for bounded live
+  probes. It also accepts `--socks5 127.0.0.1:9050`, or
+  `SIGIL_BITCOIN_LIVE_SOCKS5=127.0.0.1:9050`.
+
+Consensus gotcha from live signet testing: BIP34 coinbase height commitments
+must accept minimally encoded script-number small-int opcodes `OP_0` through
+`OP_16`, not only bytevector pushes.
+
 ## Testing and Coverage
 
 Every meaningful behavior change needs tests.
@@ -117,11 +156,38 @@ guix shell -m ../../manifest.scm -- sigil test test/test-miniscript.sgl \
   --redirects ../../dev-redirects.sgl --no-color
 ```
 
+```sh
+cd packages/sigil-bitcoin-consensus
+guix shell -m ../../manifest.scm -- sigil test test/test-consensus.sgl \
+  --redirects ../../dev-redirects.sgl --no-color
+```
+
+```sh
+cd packages/sigil-bitcoin-p2p
+guix shell -m ../../manifest.scm -- sigil test test/test-p2p.sgl \
+  --redirects ../../dev-redirects.sgl --no-color
+```
+
+```sh
+cd packages/sigil-bitcoin-node
+guix shell -m ../../manifest.scm -- ../../../sigil/build/dev/bin/sigil test \
+  test/test-node.sgl --redirects ../../dev-redirects.sgl --no-color
+```
+
 For substantial Bitcoin, native, cross-package, or release-facing changes, run:
 
 ```sh
 ./scripts/test-all.sh
 ```
+
+`./scripts/test-all.sh` includes the root workspace tests, native package
+harnesses, consensus/P2P/node harnesses, and the WebAssembly smoke test. The
+Wasmtime smoke path is expected to run from the manifest environment; if it is
+skipped, report the missing tool explicitly.
+
+Root workspace tests can intentionally skip native-only assertions. Package
+harnesses are authoritative for native secp256k1, keys, transaction,
+miniscript, consensus, P2P, and node behavior.
 
 If native package harnesses fail to locate `libsecp256k1`, run them from the
 Guix manifest environment and report the exact command used.
@@ -135,6 +201,9 @@ Guix manifest environment and report the exact command used.
 ```sh
 ./scripts/docs-build.sh
 ```
+
+The prior docs macro blocker is fixed; treat new docs-build failures as fresh
+regressions unless the error clearly points at a new upstream/runtime issue.
 
 - Commit the resulting `public/` changes together with the source docs/API
   changes.
