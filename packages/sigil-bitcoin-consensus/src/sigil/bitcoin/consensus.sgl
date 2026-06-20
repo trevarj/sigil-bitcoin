@@ -29,6 +29,7 @@
     consensus-params-segwit-height consensus-params-taproot-height
     bitcoin-mainnet-consensus-params
     bitcoin-testnet-consensus-params
+    bitcoin-testnet4-consensus-params
     bitcoin-regtest-consensus-params
     validate-block-header
     validate-block
@@ -136,6 +137,22 @@
                         csv-height: 770112
                         segwit-height: 834624
                         taproot-height: 0))
+
+    ;;; Testnet 4 parameters from BIP94 / Bitcoin Core chainparams.
+    ;;;
+    ;;; The current header target code does not yet model BIP94's retarget base
+    ;;; rule, but these activation heights keep block validation chain-driven.
+    (define bitcoin-testnet4-consensus-params
+      (consensus-params pow-limit-bits: #x1d00ffff
+                        target-spacing: 600
+                        target-timespan: 1209600
+                        retarget-interval: 2016
+                        bip34-height: 1
+                        bip66-height: 1
+                        bip65-height: 1
+                        csv-height: 1
+                        segwit-height: 1
+                        taproot-height: 1))
 
     ;;; Regtest keeps Bitcoin's spacing constants but a much easier pow limit.
     (define bitcoin-regtest-consensus-params

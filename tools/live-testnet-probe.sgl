@@ -19,6 +19,8 @@
 
 (define data-dir
   (env-value "SIGIL_BITCOIN_LIVE_DATA_DIR" "/tmp/sigil-bitcoin-live-probe"))
+(define chain-name
+  (env-value "SIGIL_BITCOIN_LIVE_CHAIN" "bitcoin-testnet"))
 (define manual-peers
   (env-value "SIGIL_BITCOIN_LIVE_PEERS" ""))
 (define max-peers
@@ -79,7 +81,7 @@
            (node-status-snapshot-sync-last-error status)
            (node-status-snapshot-last-peer-error status)))
 
-(define n (node-open bitcoin-testnet-chain data-dir))
+(define n (node-open (chain-config-by-name chain-name) data-dir))
 (let* ((peers (manual-peer-list))
        (manual-added
          (begin
@@ -92,6 +94,7 @@
        (added (if (> manual-added 0)
                   0
                   (node-bootstrap-peers n))))
+  (println "chain: ~a" chain-name)
   (println "data-dir: ~a" data-dir)
   (println "manual-peers-added: ~a" manual-added)
   (println "bootstrap-added: ~a" added)

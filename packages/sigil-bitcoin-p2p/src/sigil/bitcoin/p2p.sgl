@@ -12,6 +12,7 @@
   (export
     bitcoin-mainnet-magic
     bitcoin-testnet-magic
+    bitcoin-testnet4-magic
     bitcoin-regtest-magic
     p2p-max-payload-size
     p2p-max-headers-per-message
@@ -98,6 +99,7 @@
 
     (define bitcoin-mainnet-magic #u8(#xf9 #xbe #xb4 #xd9))
     (define bitcoin-testnet-magic #u8(#x0b #x11 #x09 #x07))
+    (define bitcoin-testnet4-magic #u8(#x1c #x16 #x3f #x28))
     (define bitcoin-regtest-magic #u8(#xfa #xbf #xb5 #xda))
     (define p2p-max-payload-size (* 32 1024 1024))
     (define p2p-max-headers-per-message 2000)

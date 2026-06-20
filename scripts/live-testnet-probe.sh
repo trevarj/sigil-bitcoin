@@ -4,11 +4,13 @@ set -eu
 ROOT=$(CDPATH= cd "$(dirname "$0")/.." && pwd)
 SIGIL=${SIGIL:-"$ROOT/../sigil/build/dev/bin/sigil"}
 DATA_DIR=${SIGIL_BITCOIN_LIVE_DATA_DIR:-/tmp/sigil-bitcoin-live-probe}
+CHAIN=${SIGIL_BITCOIN_LIVE_CHAIN:-bitcoin-testnet}
 PEERS=${SIGIL_BITCOIN_LIVE_PEERS:-}
 MAX_PEERS=${SIGIL_BITCOIN_LIVE_MAX_PEERS:-35}
 MAX_RETRIES=${SIGIL_BITCOIN_LIVE_MAX_RETRIES:-0}
 MAX_STEPS=${SIGIL_BITCOIN_LIVE_MAX_STEPS:-64}
 MAX_BLOCKS=${SIGIL_BITCOIN_LIVE_MAX_BLOCKS:-1}
+RESOLVE_TIMEOUT=${SIGIL_BITCOIN_LIVE_RESOLVE_TIMEOUT:-2000}
 CONNECT_TIMEOUT=${SIGIL_BITCOIN_LIVE_CONNECT_TIMEOUT:-5000}
 READ_TIMEOUT=${SIGIL_BITCOIN_LIVE_READ_TIMEOUT:-5000}
 
@@ -18,11 +20,13 @@ usage: scripts/live-testnet-probe.sh [options]
 
 Options:
   --peer HOST:PORT       Add a manual testnet peer. May be repeated.
+  --chain CHAIN          Chain to probe, default bitcoin-testnet.
   --data-dir DIR         Probe database directory.
   --max-peers N          Maximum persisted peers to try.
   --max-retries N        Per-peer retry limit.
   --max-steps N          P2P handshake/header sync step limit.
   --max-blocks N         Maximum blocks to request after headers.
+  --resolve-timeout N    DNS resolve timeout in milliseconds.
   --connect-timeout N    TCP connect timeout in milliseconds.
   --read-timeout N       Socket read timeout in milliseconds.
   -h, --help             Show this help.
@@ -45,6 +49,11 @@ while [ "$#" -gt 0 ]; do
       DATA_DIR=$2
       shift 2
       ;;
+    --chain)
+      [ "$#" -ge 2 ] || { echo "missing value for --chain" >&2; exit 2; }
+      CHAIN=$2
+      shift 2
+      ;;
     --max-peers)
       [ "$#" -ge 2 ] || { echo "missing value for --max-peers" >&2; exit 2; }
       MAX_PEERS=$2
@@ -63,6 +72,11 @@ while [ "$#" -gt 0 ]; do
     --max-blocks)
       [ "$#" -ge 2 ] || { echo "missing value for --max-blocks" >&2; exit 2; }
       MAX_BLOCKS=$2
+      shift 2
+      ;;
+    --resolve-timeout)
+      [ "$#" -ge 2 ] || { echo "missing value for --resolve-timeout" >&2; exit 2; }
+      RESOLVE_TIMEOUT=$2
       shift 2
       ;;
     --connect-timeout)
@@ -89,23 +103,34 @@ done
 
 cd "$ROOT/packages/sigil-bitcoin-node"
 
+set -- probe \
+  --chain "$CHAIN" \
+  --data-dir "$DATA_DIR" \
+  --max-peers "$MAX_PEERS" \
+  --max-retries "$MAX_RETRIES" \
+  --max-steps "$MAX_STEPS" \
+  --max-blocks "$MAX_BLOCKS" \
+  --resolve-timeout "$RESOLVE_TIMEOUT" \
+  --connect-timeout "$CONNECT_TIMEOUT" \
+  --read-timeout "$READ_TIMEOUT"
+
+if [ -n "$PEERS" ]; then
+  for peer in $PEERS; do
+    set -- "$@" --peer "$peer"
+  done
+fi
+
 if guix shell -m ../../manifest.scm -- \
-  env SIGIL_REDIRECTS=../../dev-redirects.sgl \
-    SIGIL_BITCOIN_LIVE_DATA_DIR="$DATA_DIR" \
-    SIGIL_BITCOIN_LIVE_PEERS="$PEERS" \
-    SIGIL_BITCOIN_LIVE_MAX_PEERS="$MAX_PEERS" \
-    SIGIL_BITCOIN_LIVE_MAX_RETRIES="$MAX_RETRIES" \
-    SIGIL_BITCOIN_LIVE_MAX_STEPS="$MAX_STEPS" \
-    SIGIL_BITCOIN_LIVE_MAX_BLOCKS="$MAX_BLOCKS" \
-    SIGIL_BITCOIN_LIVE_CONNECT_TIMEOUT="$CONNECT_TIMEOUT" \
-    SIGIL_BITCOIN_LIVE_READ_TIMEOUT="$READ_TIMEOUT" \
-    "$SIGIL" eval -f ../../tools/live-testnet-probe.sgl; then
+  "$SIGIL" run --redirects ../../dev-redirects.sgl -- "$@"; then
   exit 0
 fi
 
 guix shell -m ../../manifest.scm -- \
-  env SIGIL_REDIRECTS=../../dev-redirects.sgl \
-    SIGIL_BITCOIN_LIVE_DATA_DIR="$DATA_DIR" \
-    "$SIGIL" eval -f ../../tools/live-testnet-status.sgl || true
+  "$SIGIL" run --redirects ../../dev-redirects.sgl -- \
+    status --chain "$CHAIN" --data-dir "$DATA_DIR" || true
+
+guix shell -m ../../manifest.scm -- \
+  "$SIGIL" run --redirects ../../dev-redirects.sgl -- \
+    peers list --chain "$CHAIN" --data-dir "$DATA_DIR" || true
 
 exit 1

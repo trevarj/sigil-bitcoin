@@ -397,6 +397,26 @@
                     (compact-target->integer #x207fffff)))))
 
 (test-group "header chains"
+  (test "keeps testnet4 buried deployments at BIP94 heights"
+    (assert-equal 1
+                  (consensus-params-bip34-height
+                    bitcoin-testnet4-consensus-params))
+    (assert-equal 1
+                  (consensus-params-bip66-height
+                    bitcoin-testnet4-consensus-params))
+    (assert-equal 1
+                  (consensus-params-bip65-height
+                    bitcoin-testnet4-consensus-params))
+    (assert-equal 1
+                  (consensus-params-csv-height
+                    bitcoin-testnet4-consensus-params))
+    (assert-equal 1
+                  (consensus-params-segwit-height
+                    bitcoin-testnet4-consensus-params))
+    (assert-equal 1
+                  (consensus-params-taproot-height
+                    bitcoin-testnet4-consensus-params)))
+
   (test "validates linked proof-of-work headers"
     (let* ((h0 (mine-header '() 0 #x207fffff))
            (h1 (mine-header (list h0) 10 #x207fffff))

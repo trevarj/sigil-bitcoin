@@ -4,6 +4,7 @@
   (import (sigil core)
           (sigil string)
           (sigil time)
+          (sigil process)
           (sigil socket)
           (sigil bitcoin node)
           (sigil bitcoin p2p))
@@ -25,7 +26,7 @@
       (println "  sigil-bitcoin-node run [--peer HOST:PORT] [--chain CHAIN] [--data-dir DIR] [--max-steps N] [--max-blocks N] [--iterations N|0] [--max-peers N] [--max-retries N] [--retry-delay N] [--resolve-timeout N] [--connect-timeout N] [--read-timeout N]")
       (println "  sigil-bitcoin-node probe [--peer HOST:PORT] [--chain CHAIN] [--data-dir DIR] [--max-steps N] [--max-blocks N] [--max-peers N] [--resolve-timeout N] [--connect-timeout N] [--read-timeout N] [--max-seeds N] [--max-addresses N]")
       (println "")
-      (println "chains: bitcoin-mainnet, bitcoin-testnet, bitcoin-regtest, sigilcoin"))
+      (println "chains: bitcoin-mainnet, bitcoin-testnet, bitcoin-testnet4, bitcoin-regtest, sigilcoin"))
 
     (define (arg-value args name default)
       (let loop ((xs args))
@@ -199,22 +200,32 @@
                     (cons (node-peer-address peer)
                           (node-peer-port peer))))))))
 
+    (define (exception-message-or err fallback)
+      (let ((message (exception-message err)))
+        (if (string? message) message fallback)))
+
     (define (try-connect-peer-address address port timeout-ms)
-      (guard (err (else #f))
-        (p2p-socket-connect-timeout address port timeout-ms)))
+      (guard (err
+              (else
+               (list 'error (exception-message-or err "transport unavailable"))))
+        (let ((sock (p2p-socket-connect-timeout address port timeout-ms)))
+          (if sock
+              (list 'socket sock)
+              (list 'error "transport unavailable")))))
 
     (define (connect-peer-socket host port resolve-timeout connect-timeout)
-      (let loop ((addresses (resolve-seed-host host port resolve-timeout)))
+      (let loop ((addresses (resolve-seed-host host port resolve-timeout))
+                 (last-error "no resolved addresses"))
         (cond ((null? addresses)
-               (error "connect-peer-socket: connection failed"))
+               (error (string-append "connect-peer-socket: " last-error)))
               (else
-               (let ((sock (try-connect-peer-address
-                             (car addresses)
-                             port
-                             connect-timeout)))
-                 (if sock
-                     sock
-                     (loop (cdr addresses))))))))
+               (let ((result (try-connect-peer-address
+                                (car addresses)
+                                port
+                                connect-timeout)))
+                 (if (eq? (car result) 'socket)
+                     (cadr result)
+                     (loop (cdr addresses) (cadr result))))))))
 
     (define (with-peer-socket n peer resolve-timeout connect-timeout read-timeout proc)
       (let ((sock (connect-peer-socket (car peer)
@@ -385,9 +396,20 @@
                      (error "probe: sync failed")))
               (print-status (sync-node-once n args "probe")))))))
 
+    (define (after-arg-separator args)
+      (cond ((null? args) '())
+            ((string=? (car args) "--") (cdr args))
+            (else (after-arg-separator (cdr args)))))
+
+    (define (application-args raw-args)
+      (if (and (not (null? raw-args))
+               (string=? (car raw-args) "run"))
+          (after-arg-separator raw-args)
+          raw-args))
+
     (define (main)
       (: -> void?)
-      (let ((args (cdr (command-line))))
+      (let ((args (application-args (cdr (command-line)))))
         (cond ((null? args)
                (usage))
               ((string=? (car args) "status")

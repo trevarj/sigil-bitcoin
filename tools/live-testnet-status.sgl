@@ -10,8 +10,10 @@
 
 (define data-dir
   (env-value "SIGIL_BITCOIN_LIVE_DATA_DIR" "/tmp/sigil-bitcoin-live-probe"))
+(define chain-name
+  (env-value "SIGIL_BITCOIN_LIVE_CHAIN" "bitcoin-testnet"))
 
-(define n (node-open bitcoin-testnet-chain data-dir))
+(define n (node-open (chain-config-by-name chain-name) data-dir))
 (define status (node-status n))
 
 (println "status chain=~a peers=~a headers=~a best-height=~a best-header-time=~a header-sync-lag=~a blocks=~a validated=~a stage=~a failed-stage=~a sync-error=~a last-peer-error=~a"
