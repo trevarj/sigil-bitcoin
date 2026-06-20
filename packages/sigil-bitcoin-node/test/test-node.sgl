@@ -28,8 +28,11 @@
 (define node-store-block* (module-ref %node-module 'node-store-block))
 (define node-download-blocks* (module-ref %node-module 'node-download-blocks))
 (define node-validate-blocks* (module-ref %node-module 'node-validate-blocks))
+(define node-sync-with-peer* (module-ref %node-module 'node-sync-with-peer))
 (define node-peer-address* (module-ref %node-module 'node-peer-address))
 (define node-peer-port* (module-ref %node-module 'node-peer-port))
+(define node-peer-score* (module-ref %node-module 'node-peer-score))
+(define node-peer-failures* (module-ref %node-module 'node-peer-failures))
 (define node-block-info-status* (module-ref %node-module 'node-block-info-status))
 (define node-status-snapshot-chain*
   (module-ref %node-module 'node-status-snapshot-chain))
@@ -43,6 +46,10 @@
   (module-ref %node-module 'node-status-snapshot-validated-block-count))
 (define node-status-snapshot-best-block-height*
   (module-ref %node-module 'node-status-snapshot-best-block-height))
+(define node-status-snapshot-peer-count*
+  (module-ref %node-module 'node-status-snapshot-peer-count))
+(define node-status-snapshot-pending-block-count*
+  (module-ref %node-module 'node-status-snapshot-pending-block-count))
 
 (define (test-data-dir)
   (let ((dir (make-temp-directory)))
@@ -73,12 +80,12 @@
 (define (mine-next previous-headers time)
   (mine-header previous-headers time #x207fffff))
 
-(define (make-coinbase-tx value)
+(define (make-coinbase-tx height value)
   (transaction
     version: 1
     inputs: (list
       (txin previous-output: (outpoint txid: %zero32 index: #xffffffff)
-            script-sig: #u8(#x03 #x04)
+            script-sig: (bytevector #x03 height)
             sequence: #xffffffff
             witness: '()))
     outputs: (list
@@ -102,8 +109,21 @@
 
 (define (make-coinbase-block previous-headers height time)
   (mine-block previous-headers
-              (list (make-coinbase-tx (block-subsidy height)))
+              (list (make-coinbase-tx height (block-subsidy height)))
               time))
+
+(define (make-coinbase-chain genesis count start-time)
+  (let loop ((headers (list genesis))
+             (blocks '())
+             (height 1)
+             (time start-time))
+    (if (> height count)
+        (reverse blocks)
+        (let ((b (make-coinbase-block headers height time)))
+          (loop (append headers (list (block-header-field b)))
+                (cons b blocks)
+                (+ height 1)
+                (+ time 600))))))
 
 (define (one-envelope-reader envelopes)
   (let ((remaining envelopes))
@@ -233,7 +253,90 @@
       (let ((status (node-status* n)))
         (assert-equal 1 (node-status-snapshot-block-count* status))
         (assert-equal 1 (node-status-snapshot-validated-block-count* status))
-        (assert-equal 1 (node-status-snapshot-best-block-height* status)))
+        (assert-equal 1 (node-status-snapshot-best-block-height* status))
+        (assert-equal 0 (node-status-snapshot-peer-count* status))
+        (assert-equal 0 (node-status-snapshot-pending-block-count* status)))
+      (node-close* n)))
+
+  (test "resumes validation from persisted UTXO state"
+    (let* ((dir (test-data-dir))
+           (first (node-open* bitcoin-regtest-chain* dir))
+           (h0 (chain-config-genesis-header* bitcoin-regtest-chain*))
+           (blocks (make-coinbase-chain h0 2 1296688602))
+           (b1 (car blocks))
+           (b2 (cadr blocks)))
+      (node-ingest-headers* first
+                            (list (block-header-field b1)
+                                  (block-header-field b2)))
+      (node-store-block* first b1)
+      (assert-equal 1 (node-validate-blocks* first))
+      (node-close* first)
+      (let ((second (node-open* bitcoin-regtest-chain* dir)))
+        (node-store-block* second b2)
+        (assert-equal 1 (node-validate-blocks* second))
+        (let ((status (node-status* second)))
+          (assert-equal 2 (node-status-snapshot-validated-block-count* status))
+          (assert-equal 2 (node-status-snapshot-best-block-height* status)))
+        (node-close* second))))
+
+  (test "resumes interrupted validation after missing block download"
+    (let* ((dir (test-data-dir))
+           (n (node-open* bitcoin-regtest-chain* dir))
+           (h0 (chain-config-genesis-header* bitcoin-regtest-chain*))
+           (blocks (make-coinbase-chain h0 2 1296688602))
+           (b1 (car blocks))
+           (b2 (cadr blocks)))
+      (node-ingest-headers* n
+                            (list (block-header-field b1)
+                                  (block-header-field b2)))
+      (node-store-block* n b1)
+      (assert-equal 1 (node-validate-blocks* n))
+      (assert-equal 1
+                    (node-status-snapshot-pending-block-count*
+                      (node-status* n)))
+      (node-store-block* n b2)
+      (assert-equal 1 (node-validate-blocks* n))
+      (assert-equal 0
+                    (node-status-snapshot-pending-block-count*
+                      (node-status* n)))
+      (node-close* n)))
+
+  (test "scores peer failures during bounded sync"
+    (let* ((dir (test-data-dir))
+           (n (node-open* bitcoin-regtest-chain* dir)))
+      (assert-error
+        (node-sync-with-peer*
+          n
+          "127.0.0.1"
+          18444
+          (lambda () (error "simulated read failure"))
+          (lambda (envelope) #t)
+          1
+          1))
+      (let ((peer (car (node-peers* n))))
+        (assert-equal -1 (node-peer-score* peer))
+        (assert-equal 1 (node-peer-failures* peer)))
+      (node-close* n)))
+
+  (test "rolls validation forward onto a stronger fork"
+    (let* ((dir (test-data-dir))
+           (n (node-open* bitcoin-regtest-chain* dir))
+           (h0 (chain-config-genesis-header* bitcoin-regtest-chain*))
+           (old-blocks (make-coinbase-chain h0 2 1296688602))
+           (new-blocks (make-coinbase-chain h0 3 1296698602)))
+      (node-ingest-headers* n
+                            (map block-header-field old-blocks))
+      (for-each (lambda (b) (node-store-block* n b)) old-blocks)
+      (assert-equal 2 (node-validate-blocks* n))
+      (node-ingest-headers* n
+                            (map block-header-field new-blocks))
+      (for-each (lambda (b) (node-store-block* n b)) new-blocks)
+      (assert-equal 3 (node-validate-blocks* n))
+      (let ((status (node-status* n)))
+        (assert-equal 3 (node-status-snapshot-best-height* status))
+        (assert-equal 3 (node-status-snapshot-best-block-height* status))
+        (assert-equal 3
+                      (node-status-snapshot-validated-block-count* status)))
       (node-close* n)))
 
   (test "downloads missing blocks with getdata"

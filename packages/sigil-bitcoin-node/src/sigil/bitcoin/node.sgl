@@ -27,6 +27,8 @@
     node-status-snapshot-block-count
     node-status-snapshot-validated-block-count
     node-status-snapshot-best-block-height
+    node-status-snapshot-peer-count
+    node-status-snapshot-pending-block-count
     node-peer node-peer?
     node-peer-address node-peer-port node-peer-score
     node-peer-failures node-peer-last-seen
@@ -44,6 +46,7 @@
     node-download-blocks
     node-validate-blocks
     node-sync-headers
+    node-sync-with-peer
     node-sync)
   (begin
 
@@ -110,7 +113,9 @@
       (header-count integer?)
       (block-count integer?)
       (validated-block-count integer?)
-      (best-block-height integer?))
+      (best-block-height integer?)
+      (peer-count integer?)
+      (pending-block-count integer?))
 
     ;;; Persisted peer metadata used by node sync commands.
     ;;;
@@ -227,6 +232,9 @@
       (sqlite-exec
         db
         "CREATE TABLE IF NOT EXISTS blocks (hash TEXT PRIMARY KEY, height INTEGER NOT NULL, status TEXT NOT NULL, block_hex TEXT, validated INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0)")
+      (sqlite-exec
+        db
+        "CREATE TABLE IF NOT EXISTS utxos (txid TEXT NOT NULL, output_index INTEGER NOT NULL, value INTEGER NOT NULL, script_pubkey TEXT NOT NULL, coinbase INTEGER NOT NULL, height INTEGER NOT NULL, time INTEGER NOT NULL, created_by TEXT NOT NULL, spent_by TEXT, spent_height INTEGER, active INTEGER NOT NULL DEFAULT 1, PRIMARY KEY(txid, output_index))")
       (sqlite-run db
                   "INSERT OR REPLACE INTO metadata(key, value) VALUES (?, ?)"
                   "schema-version"
@@ -274,6 +282,28 @@
             (row-ref row "height")
             0)))
 
+    (define (db-peer-count db)
+      (let ((row (sqlite-query-row db "SELECT COUNT(*) AS count FROM peers")))
+        (if row (row-ref row "count") 0)))
+
+    (define (pending-chain-block-count db rows)
+      (let loop ((xs rows) (count 0))
+        (if (null? xs)
+            count
+            (let* ((row (car xs))
+                   (height (header-row-height row))
+                   (block-row (db-block-row-by-height-and-hash
+                                db
+                                height
+                                (row-ref row "hash"))))
+              (loop (cdr xs)
+                    (if (or (= 0 height)
+                            (and block-row
+                                 (row-ref block-row "block_hex")
+                                 (= 1 (row-ref block-row "validated"))))
+                        count
+                        (+ count 1)))))))
+
     (define (best-row rows)
       (let loop ((xs rows) (best #f))
         (cond ((null? xs) best)
@@ -295,6 +325,13 @@
         "SELECT hash, prev_hash, height, work, header_hex, time, bits, valid FROM headers WHERE height = ? AND valid = 1"
         height))
 
+    (define (db-header-row-by-height-and-hash db height hash-text)
+      (sqlite-query-row
+        db
+        "SELECT hash, prev_hash, height, work, header_hex, time, bits, valid FROM headers WHERE height = ? AND hash = ? AND valid = 1"
+        height
+        hash-text))
+
     (define (db-header-rows-missing-blocks db limit)
       (sqlite-query
         db
@@ -310,6 +347,16 @@
               (else
                (loop (db-header-row db (row-ref current "prev_hash"))
                      (cons (header-row->header current) headers))))))
+
+    (define (db-chain-rows-to-row db row)
+      (let loop ((current row) (rows '()))
+        (cond ((not current)
+               rows)
+              ((= 0 (header-row-height current))
+               (cons current rows))
+              (else
+               (loop (db-header-row db (row-ref current "prev_hash"))
+                     (cons current rows))))))
 
     (define (db-initialize-chain db chain)
       (sqlite-run db
@@ -365,6 +412,65 @@
         db
         "SELECT hash, height, status, block_hex, validated, updated_at FROM blocks WHERE block_hex IS NOT NULL ORDER BY height ASC"))
 
+    (define (db-block-row-by-height-and-hash db height hash-text)
+      (sqlite-query-row
+        db
+        "SELECT hash, height, status, block_hex, validated, updated_at FROM blocks WHERE height = ? AND hash = ?"
+        height
+        hash-text))
+
+    (define (db-active-utxo-rows db)
+      (sqlite-query
+        db
+        "SELECT txid, output_index, value, script_pubkey, coinbase, height, time, created_by, spent_by, spent_height, active FROM utxos WHERE active = 1 ORDER BY height ASC, txid ASC, output_index ASC"))
+
+    (define (utxo-row->pair row)
+      (cons
+        (outpoint txid: (hex-decode (row-ref row "txid"))
+                  index: (row-ref row "output_index"))
+        (utxo-entry output: (txout value: (row-ref row "value")
+                                   script-pubkey: (hex-decode
+                                                    (row-ref row "script_pubkey")))
+                    coinbase?: (= 1 (row-ref row "coinbase"))
+                    height: (row-ref row "height")
+                    time: (row-ref row "time"))))
+
+    (define (db-active-utxos db)
+      (map utxo-row->pair (db-active-utxo-rows db)))
+
+    (define (db-spend-utxo db op block-hash height)
+      (sqlite-run
+        db
+        "UPDATE utxos SET active = 0, spent_by = ?, spent_height = ? WHERE txid = ? AND output_index = ? AND active = 1"
+        block-hash
+        height
+        (hex-encode (outpoint-txid op))
+        (outpoint-index op)))
+
+    (define (db-insert-utxo db op output coinbase? height block-time block-hash)
+      (sqlite-run
+        db
+        "INSERT OR REPLACE INTO utxos(txid, output_index, value, script_pubkey, coinbase, height, time, created_by, spent_by, spent_height, active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, 1)"
+        (hex-encode (outpoint-txid op))
+        (outpoint-index op)
+        (txout-value output)
+        (hex-encode (txout-script-pubkey output))
+        (if coinbase? 1 0)
+        height
+        block-time
+        block-hash))
+
+    (define (db-rollback-active-chain-to-height db height)
+      (sqlite-run db
+                  "DELETE FROM utxos WHERE created_by IN (SELECT hash FROM blocks WHERE height > ? AND validated = 1)"
+                  height)
+      (sqlite-run db
+                  "UPDATE utxos SET active = 1, spent_by = NULL, spent_height = NULL WHERE spent_height > ?"
+                  height)
+      (sqlite-run db
+                  "UPDATE blocks SET validated = 0, status = CASE WHEN block_hex IS NULL THEN 'header' ELSE 'downloaded' END WHERE height > ? AND validated = 1"
+                  height))
+
     (define (node-db-file data-dir chain)
       (string-append data-dir "/" (chain-config-name chain) ".sqlite"))
 
@@ -414,7 +520,8 @@
     (define (node-status n)
       (: node? -> node-status-snapshot?)
       (let* ((db (node-db n))
-             (row (db-best-header-row db)))
+             (row (db-best-header-row db))
+             (rows (if row (db-chain-rows-to-row db row) '())))
         (node-status-snapshot
           chain: (chain-config-name (node-chain n))
           best-hash: (if row (row-ref row "hash") "")
@@ -423,7 +530,9 @@
           header-count: (db-header-count db)
           block-count: (db-block-count db)
           validated-block-count: (db-validated-block-count db)
-          best-block-height: (db-best-block-height db))))
+          best-block-height: (db-best-block-height db)
+          peer-count: (db-peer-count db)
+          pending-block-count: (pending-chain-block-count db rows))))
 
     (define (locator-heights best-height)
       (let loop ((height best-height) (step 1) (count 0) (heights '()))
@@ -659,6 +768,84 @@
     (define (downloaded-block-row->block row)
       (block-parse (hex-decode (row-ref row "block_hex"))))
 
+    (define (outpoint-for-output tx index)
+      (outpoint txid: (transaction-txid tx) index: index))
+
+    (define (apply-block-utxo-transition db b height hash-text)
+      (let ((block-time (block-header-time (block-header-field b))))
+        (let spend-loop ((txs (cdr (block-transactions b))))
+          (unless (null? txs)
+            (let input-loop ((inputs (transaction-inputs (car txs))))
+              (unless (null? inputs)
+                (db-spend-utxo db
+                               (txin-previous-output (car inputs))
+                               hash-text
+                               height)
+                (input-loop (cdr inputs))))
+            (spend-loop (cdr txs))))
+        (let tx-loop ((txs (block-transactions b)) (coinbase? #t))
+          (unless (null? txs)
+            (let output-loop ((outputs (transaction-outputs (car txs)))
+                              (index 0))
+              (unless (null? outputs)
+                (db-insert-utxo db
+                                (outpoint-for-output (car txs) index)
+                                (car outputs)
+                                coinbase?
+                                height
+                                block-time
+                                hash-text)
+                (output-loop (cdr outputs) (+ index 1))))
+            (tx-loop (cdr txs) #f)))))
+
+    (define (best-chain-rows n)
+      (db-chain-rows-to-row (node-db n) (db-best-header-row (node-db n))))
+
+    (define (validated-on-best-chain-height db rows)
+      (let loop ((xs rows) (height 0))
+        (if (null? xs)
+            height
+            (let* ((row (car xs))
+                   (row-height (header-row-height row))
+                   (block-row (db-block-row-by-height-and-hash
+                                db
+                                row-height
+                                (row-ref row "hash"))))
+              (if (= 0 row-height)
+                  (loop (cdr xs) height)
+                  (if (and block-row (= 1 (row-ref block-row "validated")))
+                      (loop (cdr xs) row-height)
+                      height))))))
+
+    (define (rows-after-height rows height)
+      (filter (lambda (row) (> (header-row-height row) height)) rows))
+
+    (define (validate-block-row n row utxos)
+      (let* ((db (node-db n))
+             (height (header-row-height row))
+             (hash-text (row-ref row "hash"))
+             (block-row (db-block-row-by-height-and-hash db height hash-text)))
+        (if (or (not block-row) (not (row-ref block-row "block_hex")))
+            #f
+            (let ((b (downloaded-block-row->block block-row)))
+              (unless (equal? (block-header-serialize (block-header-field b))
+                              (block-header-serialize
+                                (header-row->header row)))
+                (error "node-validate-blocks: block header mismatch"))
+              (let ((next-utxos (connect-block
+                                  (chain-config-consensus-params (node-chain n))
+                                  height
+                                  utxos
+                                  b)))
+                (apply-block-utxo-transition db b height hash-text)
+                (db-set-block-status db
+                                     hash-text
+                                     height
+                                     "valid"
+                                     (row-ref block-row "block_hex")
+                                     #t)
+                next-utxos)))))
+
     ;;; Validate downloaded blocks in height order and mark accepted blocks.
     ;;;
     ;;; ```scheme
@@ -666,33 +853,19 @@
     ;;; ```
     (define (node-validate-blocks n)
       (: node? -> integer?)
-      (let ((params (chain-config-consensus-params (node-chain n))))
-        (let loop ((rows (db-downloaded-block-rows (node-db n)))
-                   (utxos '())
+      (let* ((db (node-db n))
+             (rows (best-chain-rows n))
+             (resume-height (validated-on-best-chain-height db rows)))
+        (db-rollback-active-chain-to-height db resume-height)
+        (let loop ((remaining (rows-after-height rows resume-height))
+                   (utxos (db-active-utxos db))
                    (validated 0))
-          (if (null? rows)
+          (if (null? remaining)
               validated
-              (let* ((row (car rows))
-                     (height (row-ref row "height"))
-                     (hash-text (row-ref row "hash"))
-                     (b (downloaded-block-row->block row))
-                     (header-row (db-header-row (node-db n) hash-text)))
-                (unless header-row
-                  (error "node-validate-blocks: block header is unknown"))
-                (unless (= height (header-row-height header-row))
-                  (error "node-validate-blocks: block height mismatch"))
-                (unless (equal? (block-header-serialize (block-header-field b))
-                                (block-header-serialize
-                                  (header-row->header header-row)))
-                  (error "node-validate-blocks: block header mismatch"))
-                (let ((next-utxos (connect-block params height utxos b)))
-                  (db-set-block-status (node-db n)
-                                       hash-text
-                                       height
-                                       "valid"
-                                       (row-ref row "block_hex")
-                                       #t)
-                  (loop (cdr rows) next-utxos (+ validated 1))))))))
+              (let ((next-utxos (validate-block-row n (car remaining) utxos)))
+                (if next-utxos
+                    (loop (cdr remaining) next-utxos (+ validated 1))
+                    validated))))))
 
     ;;; Run a bounded peer handshake/header sync and persist received headers.
     ;;;
@@ -722,10 +895,28 @@
       (node-validate-blocks n)
       (node-status n))
 
+    ;;; Run a sync attempt for a persisted peer and update peer score.
+    ;;;
+    ;;; ```scheme
+    ;;; (node-sync-with-peer n "127.0.0.1" 18444 read write 64 16)
+    ;;; ```
+    (define (node-sync-with-peer n address port read-envelope write-envelope max-steps max-blocks)
+      (: node? string? integer? procedure? procedure? integer? integer? -> node-status-snapshot?)
+      (node-add-peer n address port)
+      (guard (err
+              (else
+               (node-peer-failure n address port)
+               (error "node-sync-with-peer: peer sync failed")))
+        (let ((status (node-sync n read-envelope write-envelope max-steps max-blocks)))
+          (node-peer-success n address port)
+          status)))
+
     ;; Keep the VM export table in sync with the generated module sidecar.
     (%module-export! 'node-status-snapshot-block-count)
     (%module-export! 'node-status-snapshot-validated-block-count)
     (%module-export! 'node-status-snapshot-best-block-height)
+    (%module-export! 'node-status-snapshot-peer-count)
+    (%module-export! 'node-status-snapshot-pending-block-count)
     (%module-export! 'node-peer)
     (%module-export! 'node-peer?)
     (%module-export! 'node-peer-address)
@@ -745,4 +936,5 @@
     (%module-export! 'node-store-block)
     (%module-export! 'node-download-blocks)
     (%module-export! 'node-validate-blocks)
+    (%module-export! 'node-sync-with-peer)
     (%module-export! 'node-sync)))
