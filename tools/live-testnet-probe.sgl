@@ -1,17 +1,64 @@
 (import (sigil core)
+        (sigil process)
+        (sigil string)
         (sigil socket)
         (sigil bitcoin node)
         (sigil bitcoin p2p))
 
-(define data-dir "/tmp/sigil-bitcoin-live-probe")
+(define (env-value name default)
+  (let ((value (getenv name)))
+    (if (and value (> (string-length value) 0))
+        value
+        default)))
+
+(define (env-number name default)
+  (let ((value (string->number (env-value name (number->string default)))))
+    (unless value
+      (error (string-append "live-testnet-probe: expected numeric " name)))
+    value))
+
+(define data-dir
+  (env-value "SIGIL_BITCOIN_LIVE_DATA_DIR" "/tmp/sigil-bitcoin-live-probe"))
+(define manual-peers
+  (env-value "SIGIL_BITCOIN_LIVE_PEERS" ""))
+(define max-peers
+  (env-number "SIGIL_BITCOIN_LIVE_MAX_PEERS" 35))
+(define max-retries
+  (env-number "SIGIL_BITCOIN_LIVE_MAX_RETRIES" 0))
+(define max-steps
+  (env-number "SIGIL_BITCOIN_LIVE_MAX_STEPS" 64))
+(define max-blocks
+  (env-number "SIGIL_BITCOIN_LIVE_MAX_BLOCKS" 1))
+(define connect-timeout
+  (env-number "SIGIL_BITCOIN_LIVE_CONNECT_TIMEOUT" 5000))
+(define read-timeout
+  (env-number "SIGIL_BITCOIN_LIVE_READ_TIMEOUT" 5000))
+
+(define (parse-peer text)
+  (let ((parts (string-split text ":")))
+    (cond ((= 1 (length parts))
+           (cons (car parts) 18333))
+          ((= 2 (length parts))
+           (let ((port (string->number (cadr parts))))
+             (unless port
+               (error "live-testnet-probe: peer port must be a number"))
+             (cons (car parts) port)))
+          (else
+           (error "live-testnet-probe: expected HOST or HOST:PORT")))))
+
+(define (manual-peer-list)
+  (if (= 0 (string-length manual-peers))
+      '()
+      (filter (lambda (item) (> (string-length item) 0))
+              (string-split manual-peers " "))))
 
 (define (connect-live-peer peer)
   (let ((sock (p2p-socket-connect-timeout
                 (node-peer-address peer)
                 (node-peer-port peer)
-                5000)))
+                connect-timeout)))
     (list
-      (lambda () (p2p-socket-read-envelope-timeout sock 5000))
+      (lambda () (p2p-socket-read-envelope-timeout sock read-timeout))
       (lambda (envelope)
         (p2p-socket-write-envelope sock envelope))
       (lambda () (socket-close sock)))))
@@ -33,11 +80,29 @@
            (node-status-snapshot-last-peer-error status)))
 
 (define n (node-open bitcoin-testnet-chain data-dir))
-(let ((added (node-bootstrap-peers n)))
+(let* ((peers (manual-peer-list))
+       (manual-added
+         (begin
+           (for-each
+             (lambda (peer-text)
+               (let ((peer (parse-peer peer-text)))
+                 (node-add-peer n (car peer) (cdr peer))))
+             peers)
+           (length peers)))
+       (added (if (> manual-added 0)
+                  0
+                  (node-bootstrap-peers n))))
+  (println "data-dir: ~a" data-dir)
+  (println "manual-peers-added: ~a" manual-added)
   (println "bootstrap-added: ~a" added)
   (let ((result (guard (err
                         (else #f))
-                  (node-sync-with-peers n connect-live-peer 35 0 64 1))))
+                  (node-sync-with-peers n
+                                        connect-live-peer
+                                        max-peers
+                                        max-retries
+                                        max-steps
+                                        max-blocks))))
     (if result
         (begin
           (print-probe-status "result" result)
