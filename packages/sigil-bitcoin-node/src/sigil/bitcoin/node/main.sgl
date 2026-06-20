@@ -13,7 +13,7 @@
     (define (usage)
       (println "usage:")
       (println "  sigil-bitcoin-node status [--chain CHAIN] [--data-dir DIR]")
-      (println "  sigil-bitcoin-node peers bootstrap [--chain CHAIN] [--data-dir DIR]")
+      (println "  sigil-bitcoin-node peers bootstrap [--chain CHAIN] [--data-dir DIR] [--resolve-timeout N] [--max-seeds N] [--max-addresses N]")
       (println "  sigil-bitcoin-node peers add HOST:PORT [--chain CHAIN] [--data-dir DIR]")
       (println "  sigil-bitcoin-node peers list [--chain CHAIN] [--data-dir DIR]")
       (println "  sigil-bitcoin-node peers remove HOST:PORT [--chain CHAIN] [--data-dir DIR]")
@@ -22,7 +22,7 @@
       (println "  sigil-bitcoin-node sync [--peer HOST:PORT] [--chain CHAIN] [--data-dir DIR] [--max-steps N] [--max-blocks N] [--max-peers N] [--max-retries N]")
       (println "  sigil-bitcoin-node run [--peer HOST:PORT] [--chain CHAIN] [--data-dir DIR] [--max-steps N] [--max-blocks N] [--iterations N] [--max-peers N] [--max-retries N] [--retry-delay N]")
       (println "")
-      (println "chains: bitcoin-mainnet, bitcoin-testnet, bitcoin-regtest"))
+      (println "chains: bitcoin-mainnet, bitcoin-testnet, bitcoin-regtest, sigilcoin"))
 
     (define (arg-value args name default)
       (let loop ((xs args))
@@ -69,15 +69,34 @@
                (node-status-snapshot-best-height status)))
 
     (define (print-peer peer)
-      (println "~a:~a score=~a failures=~a last-seen=~a last-attempt=~a last-result=~a last-error=~a"
+      (println "~a:~a source=~a seed=~a score=~a failures=~a last-seen=~a last-attempt=~a last-result=~a last-error=~a"
                (node-peer-address peer)
                (node-peer-port peer)
+               (node-peer-source peer)
+               (node-peer-seed-host peer)
                (node-peer-score peer)
                (node-peer-failures peer)
                (node-peer-last-seen peer)
                (node-peer-last-attempt peer)
                (node-peer-last-result peer)
                (node-peer-last-error peer)))
+
+    (define (fd-list-contains? fd xs)
+      (cond ((null? xs) #f)
+            ((= fd (car xs)) #t)
+            (else (fd-list-contains? fd (cdr xs)))))
+
+    (define (resolve-seed-host host port timeout-ms)
+      (let ((fd (%resolve-start host)))
+        (if fd
+            (let ((ready (fd-select (list fd) '() timeout-ms)))
+              (if (and ready (fd-list-contains? fd (car ready)))
+                  (let ((addresses (%resolve-take fd)))
+                    (if addresses addresses '()))
+                  (begin
+                    (%resolve-cancel fd)
+                    (error "resolve-seed-host: DNS resolve timed out"))))
+            (error "resolve-seed-host: DNS resolver unavailable"))))
 
     (define (with-node args proc)
       (let* ((chain-name (arg-value args "--chain" "bitcoin-mainnet"))
@@ -115,8 +134,19 @@
                               (saved (node-add-peer n (car peer) (cdr peer))))
                          (print-peer saved)))
                       ((string=? subcommand "bootstrap")
-                       (println "bootstrapped-peers: ~a"
-                                (node-bootstrap-peers n)))
+                       (let ((resolve-timeout
+                               (status-number rest "--resolve-timeout" "2000"))
+                             (max-seeds
+                               (status-number rest "--max-seeds" "8"))
+                             (max-addresses
+                               (status-number rest "--max-addresses" "16")))
+                         (println "bootstrapped-peers: ~a"
+                                  (node-bootstrap-discovered-peers
+                                    n
+                                    resolve-seed-host
+                                    resolve-timeout
+                                    max-seeds
+                                    max-addresses))))
                       ((string=? subcommand "list")
                        (for-each print-peer (node-peers n)))
                       ((string=? subcommand "remove")

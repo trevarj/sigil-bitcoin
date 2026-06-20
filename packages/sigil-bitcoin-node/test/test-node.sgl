@@ -35,6 +35,8 @@
 (define node-remove-peer* (module-ref %node-module 'node-remove-peer))
 (define node-peers* (module-ref %node-module 'node-peers))
 (define node-bootstrap-peers* (module-ref %node-module 'node-bootstrap-peers))
+(define node-bootstrap-discovered-peers*
+  (module-ref %node-module 'node-bootstrap-discovered-peers))
 (define node-test-peer* (module-ref %node-module 'node-test-peer))
 (define node-store-block* (module-ref %node-module 'node-store-block))
 (define node-download-blocks* (module-ref %node-module 'node-download-blocks))
@@ -47,6 +49,8 @@
 (define node-peer-failures* (module-ref %node-module 'node-peer-failures))
 (define node-peer-last-result* (module-ref %node-module 'node-peer-last-result))
 (define node-peer-last-error* (module-ref %node-module 'node-peer-last-error))
+(define node-peer-source* (module-ref %node-module 'node-peer-source))
+(define node-peer-seed-host* (module-ref %node-module 'node-peer-seed-host))
 (define node-block-info-status* (module-ref %node-module 'node-block-info-status))
 (define node-status-snapshot-chain*
   (module-ref %node-module 'node-status-snapshot-chain))
@@ -206,10 +210,16 @@
         (else (find-peer-by-address (cdr peers) address))))
 
 (test-group "chain configs"
+  (test "exports header locator"
+    (assert-true (procedure? node-header-locator*)))
+
+  (test "exports header ingest"
+    (assert-true (procedure? node-ingest-headers*)))
+
+  (test "exports peer add"
+    (assert-true (procedure? node-add-peer*)))
+
   (test "looks up builtin chains"
-    (assert-true (procedure? node-header-locator*))
-    (assert-true (procedure? node-ingest-headers*))
-    (assert-true (procedure? node-add-peer*))
     (assert-equal "bitcoin-mainnet"
                   (chain-config-name*
                     (chain-config-by-name* "mainnet")))
@@ -220,7 +230,9 @@
                   (chain-config-name*
                     (chain-config-by-name* "regtest")))
     (assert-equal 18444
-                  (chain-config-default-port* bitcoin-regtest-chain*))
+                  (chain-config-default-port* bitcoin-regtest-chain*)))
+
+  (test "keeps bitcoin bootstrap and mining defaults"
     (assert-true (> (length (chain-config-seed-peers*
                               bitcoin-mainnet-chain*))
                     0))
@@ -229,6 +241,15 @@
     (assert-equal '()
                   (chain-config-mining-metadata*
                     bitcoin-mainnet-chain*)))
+
+  (test "looks up sigilcoin placeholder chain"
+    (let ((chain (chain-config-by-name* "sigilcoin")))
+      (assert-equal "sigilcoin"
+                    (chain-config-name* chain))
+      (assert-equal 19444
+                    (chain-config-default-port* chain))
+      (assert-true (> (length (chain-config-mining-metadata* chain))
+                      0))))
 
   (test "attaches chain mining metadata without changing bitcoin"
     (let* ((metadata '((irc-channel . "#sigilcoin")
@@ -315,21 +336,71 @@
         (assert-equal 0 (length (node-peers* second)))
         (node-close* second))))
 
-  (test "bootstraps configured seed peers"
+  (test "resolves configured seed peers"
     (let* ((dir (test-data-dir))
            (chain (test-chain '(("seed-one.example" . 18444)
                                 ("seed-two.example" . 18445))
                               '()))
+           (resolved '())
+           (resolver
+             (lambda (host port timeout-ms)
+               (set! resolved (cons (list host port timeout-ms) resolved))
+               (cond ((string=? host "seed-one.example")
+                      '("203.0.113.10" "203.0.113.11"))
+                     ((string=? host "seed-two.example")
+                      (list (cons "203.0.113.12" 18446)))
+                     (else
+                      '()))))
            (n (node-open* chain dir)))
       (assert-equal 0
                     (node-status-snapshot-peer-count*
                       (node-status* n)))
-      (assert-equal 2 (node-bootstrap-peers* n))
-      (assert-equal 0 (node-bootstrap-peers* n))
+      (assert-equal 3
+                    (node-bootstrap-discovered-peers*
+                      n
+                      resolver
+                      2500
+                      2
+                      4))
       (let ((peers (node-peers* n)))
-        (assert-equal 2 (length peers))
-        (assert-true (find-peer-by-address peers "seed-one.example"))
-        (assert-true (find-peer-by-address peers "seed-two.example")))
+        (assert-equal 3 (length peers))
+        (let ((first (find-peer-by-address peers "203.0.113.10"))
+              (second (find-peer-by-address peers "203.0.113.12")))
+          (assert-equal "discovered" (node-peer-source* first))
+          (assert-equal "seed-one.example" (node-peer-seed-host* first))
+          (assert-equal 18446 (node-peer-port* second))
+          (assert-equal "seed-two.example" (node-peer-seed-host* second))))
+      (assert-equal 2 (length resolved))
+      (assert-equal 0
+                    (node-bootstrap-discovered-peers*
+                      n
+                      resolver
+                      2500
+                      2
+                      4))
+      (node-close* n)))
+
+  (test "keeps manual and discovered peer sources separate"
+    (let* ((dir (test-data-dir))
+           (chain (test-chain '(("seed.example" . 18444)) '()))
+           (n (node-open* chain dir)))
+      (node-add-peer* n "203.0.113.20" 18444)
+      (assert-equal
+        1
+        (node-bootstrap-discovered-peers*
+          n
+          (lambda (host port timeout-ms)
+            '("203.0.113.20" "203.0.113.21"))
+          100
+          1
+          8))
+      (let* ((peers (node-peers* n))
+             (manual (find-peer-by-address peers "203.0.113.20"))
+             (discovered (find-peer-by-address peers "203.0.113.21")))
+        (assert-equal "manual" (node-peer-source* manual))
+        (assert-equal "" (node-peer-seed-host* manual))
+        (assert-equal "discovered" (node-peer-source* discovered))
+        (assert-equal "seed.example" (node-peer-seed-host* discovered)))
       (node-close* n)))
 
   (test "builds a database backed header locator"
@@ -495,6 +566,63 @@
       (let ((peer (car (node-peers* n))))
         (assert-equal 2 (node-peer-failures* peer))
         (assert-equal "success" (node-peer-last-result* peer)))
+      (node-close* n)))
+
+  (test "recovers from mid-download peer disconnect"
+    (let* ((dir (test-data-dir))
+           (n (node-open* bitcoin-regtest-chain* dir))
+           (h0 (chain-config-genesis-header* bitcoin-regtest-chain*))
+           (b1 (make-coinbase-block (list h0) 1 1296688602))
+           (h1 (block-header-field b1))
+           (first-writes 0)
+           (second-writes 0))
+      (node-ingest-headers* n (list h1))
+      (node-add-peer* n "disconnect.example" 18444)
+      (node-add-peer* n "recover.example" 18444)
+      (define (connect-peer peer)
+        (if (string=? "disconnect.example"
+                      (node-peer-address* peer))
+            (let ((remaining (empty-sync-envelopes
+                               bitcoin-regtest-chain*)))
+              (list
+                (lambda ()
+                  (if (null? remaining)
+                      (error "simulated mid-download disconnect")
+                      (let ((envelope (car remaining)))
+                        (set! remaining (cdr remaining))
+                        envelope)))
+                (lambda (envelope)
+                  (set! first-writes (+ first-writes 1)))
+                (lambda () #t)))
+            (list
+              (one-envelope-reader
+                (append
+                  (empty-sync-envelopes bitcoin-regtest-chain*)
+                  (list (p2p-envelope
+                          magic: (chain-config-magic*
+                                   bitcoin-regtest-chain*)
+                          command: "block"
+                          payload: (block-message b1)))))
+              (lambda (envelope)
+                (set! second-writes (+ second-writes 1)))
+              (lambda () #t))))
+      (let ((status (node-sync-with-peers* n connect-peer 2 0 8 4)))
+        (assert-equal 1
+                      (node-status-snapshot-block-count* status))
+        (assert-equal 0
+                      (node-status-snapshot-requested-block-count*
+                        status))
+        (assert-equal 0
+                      (node-status-snapshot-failed-block-count*
+                        status)))
+      (assert-true (> first-writes 0))
+      (assert-true (> second-writes 0))
+      (let* ((peers (node-peers* n))
+             (bad (find-peer-by-address peers "disconnect.example"))
+             (good (find-peer-by-address peers "recover.example")))
+        (assert-equal 1 (node-peer-failures* bad))
+        (assert-equal "sync failed" (node-peer-last-error* bad))
+        (assert-equal "success" (node-peer-last-result* good)))
       (node-close* n)))
 
   (test "rolls validation forward onto a stronger fork"
