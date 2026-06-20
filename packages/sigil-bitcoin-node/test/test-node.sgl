@@ -494,6 +494,27 @@
         (assert-true (string-find output "[2001:db8::1]:38333"))
         (assert-true (string-find output "[2001:db8::2]:38333")))))
 
+  (test "routes peer tests through configured SOCKS5 proxy"
+    (let ((dir (test-data-dir)))
+      (run-peers* (list "test"
+                        "target.example"
+                        "--chain"
+                        "bitcoin-signet"
+                        "--data-dir"
+                        dir
+                        "--socks5"
+                        "127.0.0.1:1"
+                        "--connect-timeout"
+                        "100"
+                        "--read-timeout"
+                        "100"))
+      (let* ((n (node-open* bitcoin-signet-chain* dir))
+             (peer (find-peer-by-address (node-peers* n) "target.example")))
+        (assert-equal "failure" (node-peer-last-result* peer))
+        (assert-true
+          (string-find (node-peer-last-error* peer) "connect failed"))
+        (node-close* n))))
+
   (test "resolves configured seed peers"
     (let* ((dir (test-data-dir))
            (chain (test-chain '(("seed-one.example" . 18444)

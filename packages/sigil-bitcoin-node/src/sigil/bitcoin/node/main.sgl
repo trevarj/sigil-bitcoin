@@ -3,6 +3,7 @@
 (define-library (sigil bitcoin node main)
   (import (sigil core)
           (sigil string)
+          (sigil math)
           (sigil time)
           (sigil process)
           (sigil socket)
@@ -22,11 +23,11 @@
       (println "  sigil-bitcoin-node peers list [--chain CHAIN] [--data-dir DIR]")
       (println "  sigil-bitcoin-node peers summary [--chain CHAIN] [--data-dir DIR]")
       (println "  sigil-bitcoin-node peers remove HOST[:PORT]|[IPv6]:PORT [--chain CHAIN] [--data-dir DIR]")
-      (println "  sigil-bitcoin-node peers test HOST[:PORT]|[IPv6]:PORT [--chain CHAIN] [--data-dir DIR] [--resolve-timeout N] [--connect-timeout N] [--read-timeout N]")
-      (println "  sigil-bitcoin-node header-sync --peer HOST[:PORT]|[IPv6]:PORT [--chain CHAIN] [--data-dir DIR] [--max-steps N] [--resolve-timeout N] [--connect-timeout N] [--read-timeout N]")
-      (println "  sigil-bitcoin-node sync [--peer HOST[:PORT]|[IPv6]:PORT] [--chain CHAIN] [--data-dir DIR] [--max-steps N] [--max-blocks N] [--max-peers N] [--max-retries N] [--resolve-timeout N] [--connect-timeout N] [--read-timeout N]")
-      (println "  sigil-bitcoin-node run [--peer HOST[:PORT]|[IPv6]:PORT] [--chain CHAIN] [--data-dir DIR] [--max-steps N] [--max-blocks N] [--iterations N|0] [--max-peers N] [--max-retries N] [--retry-delay N] [--resolve-timeout N] [--connect-timeout N] [--read-timeout N]")
-      (println "  sigil-bitcoin-node probe [--tcp-only] [--peer HOST[:PORT]|[IPv6]:PORT] [--chain CHAIN] [--data-dir DIR] [--max-steps N] [--max-blocks N] [--max-peers N] [--resolve-timeout N] [--connect-timeout N] [--read-timeout N] [--max-seeds N] [--max-addresses N]")
+      (println "  sigil-bitcoin-node peers test HOST[:PORT]|[IPv6]:PORT [--chain CHAIN] [--data-dir DIR] [--socks5 HOST[:PORT]] [--resolve-timeout N] [--connect-timeout N] [--read-timeout N]")
+      (println "  sigil-bitcoin-node header-sync --peer HOST[:PORT]|[IPv6]:PORT [--chain CHAIN] [--data-dir DIR] [--socks5 HOST[:PORT]] [--max-steps N] [--resolve-timeout N] [--connect-timeout N] [--read-timeout N]")
+      (println "  sigil-bitcoin-node sync [--peer HOST[:PORT]|[IPv6]:PORT] [--chain CHAIN] [--data-dir DIR] [--socks5 HOST[:PORT]] [--max-steps N] [--max-blocks N] [--max-peers N] [--max-retries N] [--resolve-timeout N] [--connect-timeout N] [--read-timeout N]")
+      (println "  sigil-bitcoin-node run [--peer HOST[:PORT]|[IPv6]:PORT] [--chain CHAIN] [--data-dir DIR] [--socks5 HOST[:PORT]] [--max-steps N] [--max-blocks N] [--iterations N|0] [--max-peers N] [--max-retries N] [--retry-delay N] [--resolve-timeout N] [--connect-timeout N] [--read-timeout N]")
+      (println "  sigil-bitcoin-node probe [--tcp-only] [--peer HOST[:PORT]|[IPv6]:PORT] [--chain CHAIN] [--data-dir DIR] [--socks5 HOST[:PORT]] [--max-steps N] [--max-blocks N] [--max-peers N] [--resolve-timeout N] [--connect-timeout N] [--read-timeout N] [--max-seeds N] [--max-addresses N]")
       (println "")
       (println "chains: bitcoin-mainnet, bitcoin-testnet, bitcoin-testnet4, bitcoin-signet, bitcoin-regtest, sigilcoin"))
 
@@ -103,6 +104,22 @@
         (unless value
           (error (string-append "expected numeric value for " name)))
         value))
+
+    (define (string->ascii-bytes text context)
+      (let* ((len (string-length text))
+             (out (make-bytevector len 0)))
+        (do ((i 0 (+ i 1)))
+            ((>= i len) out)
+          (let ((ch (char->integer (string-ref text i))))
+            (when (> ch #x7f)
+              (error (string-append context ": expected ASCII text")))
+            (bytevector-u8-set! out i ch)))))
+
+    (define (socks5-endpoint args)
+      (let ((proxy (arg-value args "--socks5" #f)))
+        (if proxy
+            (parse-peer proxy 9050)
+            #f)))
 
     (define (print-status status)
       (println "chain: ~a" (node-status-snapshot-chain status))
@@ -302,13 +319,15 @@
                                                 (chain-config-default-port
                                                   (node-chain n))))
                               (timeouts (peer-timeouts rest))
+                              (proxy (socks5-endpoint rest))
                               (tested (node-test-peer n
                                                       (car peer)
                                                       (cdr peer)
                                                       (connect-node-peer-with-timeouts
                                                         (car timeouts)
                                                         (cadr timeouts)
-                                                        (caddr timeouts)))))
+                                                        (caddr timeouts)
+                                                        proxy))))
                          (print-peer tested)))
                       (else
                        (usage)
@@ -328,7 +347,104 @@
               (list 'socket sock)
               (list 'error "transport unavailable")))))
 
-    (define (connect-peer-socket host port resolve-timeout connect-timeout)
+    (define (read-socket-bytes sock count timeout-ms context)
+      (let ((out (make-bytevector count 0)))
+        (let loop ((offset 0))
+          (if (>= offset count)
+              out
+              (begin
+                (unless (socket-ready? sock timeout-ms)
+                  (error (string-append context ": read timed out")))
+                (let ((chunk (socket-read-bytevector sock (- count offset))))
+                  (when (or (eof-object? chunk) (not chunk))
+                    (error (string-append context ": proxy closed connection")))
+                  (when (= 0 (bytevector-length chunk))
+                    (error (string-append context ": empty proxy read")))
+                  (do ((i 0 (+ i 1)))
+                      ((>= i (bytevector-length chunk)))
+                    (bytevector-u8-set! out
+                                        (+ offset i)
+                                        (bytevector-u8-ref chunk i)))
+                  (loop (+ offset (bytevector-length chunk)))))))))
+
+    (define (socks5-status-text code)
+      (cond ((= code #x01) "general failure")
+            ((= code #x02) "connection not allowed")
+            ((= code #x03) "network unreachable")
+            ((= code #x04) "host unreachable")
+            ((= code #x05) "connection refused")
+            ((= code #x06) "TTL expired")
+            ((= code #x07) "command not supported")
+            ((= code #x08) "address type not supported")
+            (else "unknown error")))
+
+    (define (socks5-request host port)
+      (let* ((host-bytes (string->ascii-bytes host "socks5 host"))
+             (len (bytevector-length host-bytes)))
+        (when (> len 255)
+          (error "socks5 host: host name too long"))
+        (let ((out (make-bytevector (+ 7 len) 0)))
+          (bytevector-u8-set! out 0 #x05)
+          (bytevector-u8-set! out 1 #x01)
+          (bytevector-u8-set! out 2 #x00)
+          (bytevector-u8-set! out 3 #x03)
+          (bytevector-u8-set! out 4 len)
+          (do ((i 0 (+ i 1)))
+              ((>= i len))
+            (bytevector-u8-set! out (+ 5 i) (bytevector-u8-ref host-bytes i)))
+          (bytevector-u8-set! out
+                              (+ 5 len)
+                              (bitwise-and (arithmetic-shift port -8) #xff))
+          (bytevector-u8-set! out (+ 6 len) (bitwise-and port #xff))
+          out)))
+
+    (define (consume-socks5-bind-address sock atyp timeout-ms)
+      (cond ((= atyp #x01)
+             (read-socket-bytes sock 6 timeout-ms "socks5 reply"))
+            ((= atyp #x03)
+             (let* ((len-bytes (read-socket-bytes sock 1 timeout-ms "socks5 reply"))
+                    (len (bytevector-u8-ref len-bytes 0)))
+               (read-socket-bytes sock (+ len 2) timeout-ms "socks5 reply")))
+            ((= atyp #x04)
+             (read-socket-bytes sock 18 timeout-ms "socks5 reply"))
+            (else
+             (error "socks5 reply: unsupported address type"))))
+
+    (define (connect-peer-socket-via-socks5 proxy host port connect-timeout read-timeout)
+      (let ((sock (p2p-socket-connect-timeout (car proxy)
+                                             (cdr proxy)
+                                             connect-timeout)))
+        (guard (err
+                (else
+                 (socket-close sock)
+                 (error (string-append
+                          "socks5 connect failed: "
+                          (exception-message-or err "proxy failed")))))
+          (socket-write sock #u8(#x05 #x01 #x00))
+          (let ((method (read-socket-bytes sock 2 read-timeout "socks5 method")))
+            (unless (and (= #x05 (bytevector-u8-ref method 0))
+                         (= #x00 (bytevector-u8-ref method 1)))
+              (error "socks5 method: no acceptable authentication method")))
+          (socket-write sock (socks5-request host port))
+          (let ((reply (read-socket-bytes sock 4 read-timeout "socks5 reply")))
+            (unless (= #x05 (bytevector-u8-ref reply 0))
+              (error "socks5 reply: invalid version"))
+            (unless (= #x00 (bytevector-u8-ref reply 1))
+              (error (string-append "socks5 reply: "
+                                    (socks5-status-text
+                                      (bytevector-u8-ref reply 1)))))
+            (consume-socks5-bind-address sock
+                                         (bytevector-u8-ref reply 3)
+                                         read-timeout)
+            sock))))
+
+    (define (connect-peer-socket host port resolve-timeout connect-timeout read-timeout proxy)
+      (if proxy
+          (connect-peer-socket-via-socks5 proxy
+                                          host
+                                          port
+                                          connect-timeout
+                                          read-timeout)
       (let loop ((addresses (resolve-seed-host host port resolve-timeout))
                  (last-error "no resolved addresses"))
         (cond ((null? addresses)
@@ -340,13 +456,15 @@
                                 connect-timeout)))
                  (if (eq? (car result) 'socket)
                      (cadr result)
-                     (loop (cdr addresses) (cadr result))))))))
+                     (loop (cdr addresses) (cadr result)))))))))
 
     (define (with-peer-socket n peer resolve-timeout connect-timeout read-timeout proc)
       (let ((sock (connect-peer-socket (car peer)
                                        (cdr peer)
                                        resolve-timeout
-                                       connect-timeout)))
+                                       connect-timeout
+                                       read-timeout
+                                       #f)))
         (guard (err
                 (else
                  (socket-close sock)
@@ -359,12 +477,14 @@
             (socket-close sock)
             result))))
 
-    (define (connect-node-peer-with-timeouts resolve-timeout connect-timeout read-timeout)
+    (define (connect-node-peer-with-timeouts resolve-timeout connect-timeout read-timeout proxy)
       (lambda (peer)
         (let ((sock (connect-peer-socket (node-peer-address peer)
                                          (node-peer-port peer)
                                          resolve-timeout
-                                         connect-timeout)))
+                                         connect-timeout
+                                         read-timeout
+                                         proxy)))
           (list
             (lambda () (p2p-socket-read-envelope-timeout sock read-timeout))
             (lambda (envelope)
@@ -372,7 +492,7 @@
             (lambda () (socket-close sock))))))
 
     (define connect-node-peer
-      (connect-node-peer-with-timeouts 2000 5000 5000))
+      (connect-node-peer-with-timeouts 2000 5000 5000 #f))
 
     (define (peer-timeouts args)
       (list
@@ -393,19 +513,33 @@
                    (host (car peer))
                    (port (cdr peer))
                    (max-steps (status-number args "--max-steps" "64"))
-                   (timeouts (peer-timeouts args)))
+                   (timeouts (peer-timeouts args))
+                   (proxy (socks5-endpoint args)))
               (node-add-peer n host port)
-              (with-peer-socket n
-                                peer
-                                (car timeouts)
-                                (cadr timeouts)
-                                (caddr timeouts)
-                (lambda (read-envelope write-envelope)
+              (if proxy
                   (print-status
-                    (node-sync-headers n
-                                       read-envelope
-                                       write-envelope
-                                       max-steps)))))))))
+                    (node-sync-configured-peer
+                      n
+                      host
+                      port
+                      (connect-node-peer-with-timeouts
+                        (car timeouts)
+                        (cadr timeouts)
+                        (caddr timeouts)
+                        proxy)
+                      max-steps
+                      0))
+                  (with-peer-socket n
+                                    peer
+                                    (car timeouts)
+                                    (cadr timeouts)
+                                    (caddr timeouts)
+                    (lambda (read-envelope write-envelope)
+                      (print-status
+                        (node-sync-headers n
+                                           read-envelope
+                                           write-envelope
+                                           max-steps))))))))))
 
     (define (sync-configured-peer-texts n peer-texts connect-peer max-steps max-blocks command)
       (let loop ((texts peer-texts))
@@ -432,7 +566,8 @@
              (max-blocks (status-number args "--max-blocks" "16"))
              (max-peers (status-number args "--max-peers" "8"))
              (max-retries (status-number args "--max-retries" "0"))
-             (timeouts (peer-timeouts args)))
+             (timeouts (peer-timeouts args))
+             (proxy (socks5-endpoint args)))
         (if (not (null? peer-texts))
             (sync-configured-peer-texts
               n
@@ -440,7 +575,8 @@
               (connect-node-peer-with-timeouts
                 (car timeouts)
                 (cadr timeouts)
-                (caddr timeouts))
+                (caddr timeouts)
+                proxy)
               max-steps
               max-blocks
               command)
@@ -448,7 +584,8 @@
                                   (connect-node-peer-with-timeouts
                                     (car timeouts)
                                     (cadr timeouts)
-                                    (caddr timeouts))
+                                    (caddr timeouts)
+                                    proxy)
                                   max-peers
                                   max-retries
                                   max-steps
@@ -467,10 +604,12 @@
       (let* ((peer-texts (arg-values args "--peer"))
              (max-peers (status-number args "--max-peers" "8"))
              (timeouts (peer-timeouts args))
+             (proxy (socks5-endpoint args))
              (connect-peer (connect-node-peer-with-timeouts
                              (car timeouts)
                              (cadr timeouts)
-                             (caddr timeouts))))
+                             (caddr timeouts)
+                             proxy)))
         (unless (null? peer-texts)
           (add-configured-peer-texts n peer-texts))
         (let loop ((peers (take-up-to (node-peers n) max-peers))

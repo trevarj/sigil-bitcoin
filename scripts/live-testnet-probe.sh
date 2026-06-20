@@ -17,6 +17,7 @@ CONNECT_TIMEOUT=${SIGIL_BITCOIN_LIVE_CONNECT_TIMEOUT:-5000}
 READ_TIMEOUT=${SIGIL_BITCOIN_LIVE_READ_TIMEOUT:-5000}
 DEADLINE=${SIGIL_BITCOIN_LIVE_DEADLINE:-120}
 TCP_ONLY=${SIGIL_BITCOIN_LIVE_TCP_ONLY:-0}
+SOCKS5=${SIGIL_BITCOIN_LIVE_SOCKS5:-}
 
 usage() {
   cat <<'EOF'
@@ -36,6 +37,7 @@ Options:
   --connect-timeout N    TCP connect timeout in milliseconds.
   --read-timeout N       Socket read timeout in milliseconds.
   --deadline N           Whole probe deadline in seconds, 0 disables it.
+  --socks5 HOST[:PORT]   Connect peers through a SOCKS5 proxy, default port 9050.
   --tcp-only             Open TCP connections only; skip Bitcoin handshake/sync.
   -h, --help             Show this help.
 EOF
@@ -112,6 +114,11 @@ while [ "$#" -gt 0 ]; do
       DEADLINE=$2
       shift 2
       ;;
+    --socks5)
+      [ "$#" -ge 2 ] || { echo "missing value for --socks5" >&2; exit 2; }
+      SOCKS5=$2
+      shift 2
+      ;;
     --tcp-only)
       TCP_ONLY=1
       shift
@@ -145,6 +152,10 @@ set -- probe \
 
 if [ "$TCP_ONLY" -eq 1 ]; then
   set -- "$@" --tcp-only
+fi
+
+if [ -n "$SOCKS5" ]; then
+  set -- "$@" --socks5 "$SOCKS5"
 fi
 
 if [ -n "$PEERS" ]; then
