@@ -6,7 +6,8 @@
           (sigil sqlite)
           (sigil bitcoin encoding)
           (sigil bitcoin consensus)
-          (sigil bitcoin p2p))
+          (sigil bitcoin p2p)
+          (sigil bitcoin tx))
   (export
     chain-config chain-config?
     chain-config-name chain-config-network-id
@@ -23,11 +24,27 @@
     node-status-snapshot-chain node-status-snapshot-best-hash
     node-status-snapshot-best-height node-status-snapshot-best-work
     node-status-snapshot-header-count
+    node-status-snapshot-block-count
+    node-status-snapshot-validated-block-count
+    node-status-snapshot-best-block-height
+    node-peer node-peer?
+    node-peer-address node-peer-port node-peer-score
+    node-peer-failures node-peer-last-seen
+    node-block-info node-block-info?
+    node-block-info-hash node-block-info-height node-block-info-status
     node-open
     node-close
     node-best-header
+    node-header-locator
     node-ingest-headers
-    node-sync-headers)
+    node-add-peer
+    node-remove-peer
+    node-peers
+    node-store-block
+    node-download-blocks
+    node-validate-blocks
+    node-sync-headers
+    node-sync)
   (begin
 
     (define %schema-version "1")
@@ -90,7 +107,32 @@
       (best-hash string?)
       (best-height integer?)
       (best-work integer?)
-      (header-count integer?))
+      (header-count integer?)
+      (block-count integer?)
+      (validated-block-count integer?)
+      (best-block-height integer?))
+
+    ;;; Persisted peer metadata used by node sync commands.
+    ;;;
+    ;;; ```scheme
+    ;;; (node-peer-address (car (node-peers n)))
+    ;;; ```
+    (define-struct node-peer
+      (address string?)
+      (port integer?)
+      (score integer?)
+      (failures integer?)
+      (last-seen integer?))
+
+    ;;; Persisted block download/validation status.
+    ;;;
+    ;;; ```scheme
+    ;;; (node-block-info-status info)
+    ;;; ```
+    (define-struct node-block-info
+      (hash string?)
+      (height integer?)
+      (status string?))
 
     (define bitcoin-mainnet-chain
       (chain-config name: "bitcoin-mainnet"
@@ -182,6 +224,9 @@
       (sqlite-exec
         db
         "CREATE TABLE IF NOT EXISTS peers (address TEXT NOT NULL, port INTEGER NOT NULL, score INTEGER NOT NULL DEFAULT 0, failures INTEGER NOT NULL DEFAULT 0, last_seen INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(address, port))")
+      (sqlite-exec
+        db
+        "CREATE TABLE IF NOT EXISTS blocks (hash TEXT PRIMARY KEY, height INTEGER NOT NULL, status TEXT NOT NULL, block_hex TEXT, validated INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0)")
       (sqlite-run db
                   "INSERT OR REPLACE INTO metadata(key, value) VALUES (?, ?)"
                   "schema-version"
@@ -215,6 +260,20 @@
       (let ((row (sqlite-query-row db "SELECT COUNT(*) AS count FROM headers WHERE valid = 1")))
         (if row (row-ref row "count") 0)))
 
+    (define (db-block-count db)
+      (let ((row (sqlite-query-row db "SELECT COUNT(*) AS count FROM blocks WHERE block_hex IS NOT NULL")))
+        (if row (row-ref row "count") 0)))
+
+    (define (db-validated-block-count db)
+      (let ((row (sqlite-query-row db "SELECT COUNT(*) AS count FROM blocks WHERE validated = 1")))
+        (if row (row-ref row "count") 0)))
+
+    (define (db-best-block-height db)
+      (let ((row (sqlite-query-row db "SELECT MAX(height) AS height FROM blocks WHERE validated = 1")))
+        (if (and row (row-ref row "height"))
+            (row-ref row "height")
+            0)))
+
     (define (best-row rows)
       (let loop ((xs rows) (best #f))
         (cond ((null? xs) best)
@@ -229,6 +288,18 @@
 
     (define (db-best-header-row db)
       (best-row (db-all-header-rows db)))
+
+    (define (db-header-row-by-height db height)
+      (sqlite-query-row
+        db
+        "SELECT hash, prev_hash, height, work, header_hex, time, bits, valid FROM headers WHERE height = ? AND valid = 1"
+        height))
+
+    (define (db-header-rows-missing-blocks db limit)
+      (sqlite-query
+        db
+        "SELECT h.hash, h.prev_hash, h.height, h.work, h.header_hex, h.time, h.bits, h.valid FROM headers h LEFT JOIN blocks b ON h.hash = b.hash WHERE h.valid = 1 AND h.height > 0 AND (b.hash IS NULL OR b.block_hex IS NULL) ORDER BY h.height ASC LIMIT ?"
+        limit))
 
     (define (db-chain-to-row db row)
       (let loop ((current row) (headers '()))
@@ -255,6 +326,44 @@
             0
             (block-header-chain-work genesis)
             genesis))))
+
+    (define (db-peer-row->peer row)
+      (node-peer address: (row-ref row "address")
+                 port: (row-ref row "port")
+                 score: (row-ref row "score")
+                 failures: (row-ref row "failures")
+                 last-seen: (row-ref row "last_seen")))
+
+    (define (db-block-row db hash-text)
+      (sqlite-query-row
+        db
+        "SELECT hash, height, status, block_hex, validated, updated_at FROM blocks WHERE hash = ?"
+        hash-text))
+
+    (define (db-block-info row)
+      (node-block-info hash: (row-ref row "hash")
+                       height: (row-ref row "height")
+                       status: (row-ref row "status")))
+
+    (define (db-set-block-status db hash-text height status block-hex validated?)
+      (sqlite-run
+        db
+        "INSERT OR REPLACE INTO blocks(hash, height, status, block_hex, validated, updated_at) VALUES (?, ?, ?, ?, ?, ?)"
+        hash-text
+        height
+        status
+        block-hex
+        (if validated? 1 0)
+        0))
+
+    (define (db-mark-header-block db hash-text height)
+      (unless (db-block-row db hash-text)
+        (db-set-block-status db hash-text height "header" #f #f)))
+
+    (define (db-downloaded-block-rows db)
+      (sqlite-query
+        db
+        "SELECT hash, height, status, block_hex, validated, updated_at FROM blocks WHERE block_hex IS NOT NULL ORDER BY height ASC"))
 
     (define (node-db-file data-dir chain)
       (string-append data-dir "/" (chain-config-name chain) ".sqlite"))
@@ -311,7 +420,39 @@
           best-hash: (if row (row-ref row "hash") "")
           best-height: (if row (header-row-height row) 0)
           best-work: (if row (header-row-work row) 0)
-          header-count: (db-header-count db))))
+          header-count: (db-header-count db)
+          block-count: (db-block-count db)
+          validated-block-count: (db-validated-block-count db)
+          best-block-height: (db-best-block-height db))))
+
+    (define (locator-heights best-height)
+      (let loop ((height best-height) (step 1) (count 0) (heights '()))
+        (cond ((< height 0) (reverse heights))
+              ((= height 0) (reverse (cons 0 heights)))
+              (else
+               (loop (- height step)
+                     (if (>= count 10) (* step 2) step)
+                     (+ count 1)
+                     (cons height heights))))))
+
+    ;;; Return compact block locator hashes from best header back to genesis.
+    ;;;
+    ;;; ```scheme
+    ;;; (node-header-locator n)
+    ;;; ```
+    (define (node-header-locator n)
+      (: node? -> list?)
+      (let* ((db (node-db n))
+             (best (db-best-header-row db))
+             (height (if best (header-row-height best) 0)))
+        (let loop ((heights (locator-heights height)) (hashes '()))
+          (if (null? heights)
+              (reverse hashes)
+              (let ((row (db-header-row-by-height db (car heights))))
+                (loop (cdr heights)
+                      (if row
+                          (cons (hex-decode (row-ref row "hash")) hashes)
+                          hashes)))))))
 
     (define (previous-chain-for-header db header)
       (let ((prev-row (db-header-row db (header-prev-text header))))
@@ -340,6 +481,7 @@
                                 height
                                 work
                                 header)
+              (db-mark-header-block db hash-text height)
               #t))))
 
     ;;; Validate and persist linked headers, returning the insert count.
@@ -357,6 +499,61 @@
                       (+ count 1)
                       count)))))
 
+    ;;; Add or update a persisted peer.
+    ;;;
+    ;;; ```scheme
+    ;;; (node-add-peer n "127.0.0.1" 18444)
+    ;;; ```
+    (define (node-add-peer n address port)
+      (: node? string? integer? -> node-peer?)
+      (sqlite-run
+        (node-db n)
+        "INSERT OR REPLACE INTO peers(address, port, score, failures, last_seen) VALUES (?, ?, COALESCE((SELECT score FROM peers WHERE address = ? AND port = ?), 0), COALESCE((SELECT failures FROM peers WHERE address = ? AND port = ?), 0), 0)"
+        address port address port address port)
+      (db-peer-row->peer
+        (sqlite-query-row
+          (node-db n)
+          "SELECT address, port, score, failures, last_seen FROM peers WHERE address = ? AND port = ?"
+          address
+          port)))
+
+    ;;; Remove a persisted peer.
+    ;;;
+    ;;; ```scheme
+    ;;; (node-remove-peer n "127.0.0.1" 18444)
+    ;;; ```
+    (define (node-remove-peer n address port)
+      (: node? string? integer? -> boolean?)
+      (sqlite-run (node-db n)
+                  "DELETE FROM peers WHERE address = ? AND port = ?"
+                  address
+                  port)
+      #t)
+
+    ;;; Return persisted peers ordered by score.
+    ;;;
+    ;;; ```scheme
+    ;;; (node-peers n)
+    ;;; ```
+    (define (node-peers n)
+      (: node? -> list?)
+      (map db-peer-row->peer
+           (sqlite-query
+             (node-db n)
+             "SELECT address, port, score, failures, last_seen FROM peers ORDER BY score DESC, failures ASC, address ASC, port ASC")))
+
+    (define (node-peer-success n address port)
+      (sqlite-run (node-db n)
+                  "UPDATE peers SET score = score + 1, last_seen = 0 WHERE address = ? AND port = ?"
+                  address
+                  port))
+
+    (define (node-peer-failure n address port)
+      (sqlite-run (node-db n)
+                  "UPDATE peers SET failures = failures + 1, score = score - 1 WHERE address = ? AND port = ?"
+                  address
+                  port))
+
     (define (make-node-session n start-height)
       (let* ((chain (node-chain n))
              (addr (network-address services: (chain-config-services chain)
@@ -373,6 +570,130 @@
           start-height
           #t)))
 
+    (define (write-getheaders n write-envelope)
+      (let ((chain (node-chain n)))
+        (write-envelope
+          (p2p-envelope
+            magic: (chain-config-magic chain)
+            command: "getheaders"
+            payload: (getheaders-message-serialize
+                       (getheaders-message
+                         version: (chain-config-protocol-version chain)
+                         locator-hashes: (node-header-locator n)
+                         stop-hash: %zero32))))))
+
+    (define (sync-headers-loop n read-envelope write-envelope max-steps)
+      (write-getheaders n write-envelope)
+      (let loop ((remaining max-steps) (inserted 0))
+        (if (<= remaining 0)
+            (error "node-sync-headers: header sync did not complete")
+            (let ((envelope (read-envelope)))
+              (if (string=? "headers" (p2p-envelope-command envelope))
+                  (let* ((headers (headers-message-parse
+                                    (p2p-envelope-payload envelope)))
+                         (count (node-ingest-headers n headers))
+                         (total (+ inserted count)))
+                    (if (= (length headers) p2p-max-headers-per-message)
+                        (begin
+                          (write-getheaders n write-envelope)
+                          (loop (- remaining 1) total))
+                        total))
+                  (loop (- remaining 1) inserted))))))
+
+    (define (pending-block-inventory n max-blocks)
+      (map
+        (lambda (row)
+          (inventory-vector type: inv-block
+                            hash: (hex-decode (row-ref row "hash"))))
+        (db-header-rows-missing-blocks (node-db n) max-blocks)))
+
+    ;;; Persist a block and mark it downloaded.
+    ;;;
+    ;;; ```scheme
+    ;;; (node-store-block n block)
+    ;;; ```
+    (define (node-store-block n b)
+      (: node? block? -> node-block-info?)
+      (let* ((header (block-header-field b))
+             (hash-text (header-hash-text header))
+             (row (db-header-row (node-db n) hash-text)))
+        (unless row
+          (error "node-store-block: block header is unknown"))
+        (db-set-block-status (node-db n)
+                             hash-text
+                             (header-row-height row)
+                             "downloaded"
+                             (hex-encode (block-serialize b))
+                             #f)
+        (db-block-info (db-block-row (node-db n) hash-text))))
+
+    ;;; Request missing blocks and persist received block payloads.
+    ;;;
+    ;;; ```scheme
+    ;;; (node-download-blocks n read-envelope write-envelope 64 16)
+    ;;; ```
+    (define (node-download-blocks n read-envelope write-envelope max-steps max-blocks)
+      (: node? procedure? procedure? integer? integer? -> integer?)
+      (let ((items (pending-block-inventory n max-blocks)))
+        (if (null? items)
+            0
+            (begin
+              (write-envelope
+                (p2p-envelope magic: (chain-config-magic (node-chain n))
+                              command: "getdata"
+                              payload: (getdata-message items)))
+              (let loop ((remaining max-steps) (stored 0))
+                (cond ((or (<= remaining 0)
+                           (>= stored (length items)))
+                       stored)
+                      (else
+                       (let ((envelope (read-envelope)))
+                         (if (string=? "block" (p2p-envelope-command envelope))
+                             (begin
+                               (node-store-block n
+                                                 (block-message-parse
+                                                   (p2p-envelope-payload envelope)))
+                               (loop (- remaining 1) (+ stored 1)))
+                             (loop (- remaining 1) stored))))))))))
+
+    (define (downloaded-block-row->block row)
+      (block-parse (hex-decode (row-ref row "block_hex"))))
+
+    ;;; Validate downloaded blocks in height order and mark accepted blocks.
+    ;;;
+    ;;; ```scheme
+    ;;; (node-validate-blocks n)
+    ;;; ```
+    (define (node-validate-blocks n)
+      (: node? -> integer?)
+      (let ((params (chain-config-consensus-params (node-chain n))))
+        (let loop ((rows (db-downloaded-block-rows (node-db n)))
+                   (utxos '())
+                   (validated 0))
+          (if (null? rows)
+              validated
+              (let* ((row (car rows))
+                     (height (row-ref row "height"))
+                     (hash-text (row-ref row "hash"))
+                     (b (downloaded-block-row->block row))
+                     (header-row (db-header-row (node-db n) hash-text)))
+                (unless header-row
+                  (error "node-validate-blocks: block header is unknown"))
+                (unless (= height (header-row-height header-row))
+                  (error "node-validate-blocks: block height mismatch"))
+                (unless (equal? (block-header-serialize (block-header-field b))
+                                (block-header-serialize
+                                  (header-row->header header-row)))
+                  (error "node-validate-blocks: block header mismatch"))
+                (let ((next-utxos (connect-block params height utxos b)))
+                  (db-set-block-status (node-db n)
+                                       hash-text
+                                       height
+                                       "valid"
+                                       (row-ref row "block_hex")
+                                       #t)
+                  (loop (cdr rows) next-utxos (+ validated 1))))))))
+
     ;;; Run a bounded peer handshake/header sync and persist received headers.
     ;;;
     ;;; ```scheme
@@ -385,13 +706,43 @@
              (ready (p2p-session-handshake read-envelope
                                            write-envelope
                                            session
-                                           max-steps))
-             (synced (p2p-session-sync-headers read-envelope
-                                               write-envelope
-                                               ready
-                                               %zero32
-                                               max-steps))
-             (headers (peer-state-headers
-                        (p2p-session-state synced))))
-        (node-ingest-headers n headers)
-        (node-status n)))))
+                                           max-steps)))
+        (sync-headers-loop n read-envelope write-envelope max-steps)
+        (node-status n)))
+
+    ;;; Run headers, block download, and block validation over one transport.
+    ;;;
+    ;;; ```scheme
+    ;;; (node-sync n read-envelope write-envelope 64 16)
+    ;;; ```
+    (define (node-sync n read-envelope write-envelope max-steps max-blocks)
+      (: node? procedure? procedure? integer? integer? -> node-status-snapshot?)
+      (node-sync-headers n read-envelope write-envelope max-steps)
+      (node-download-blocks n read-envelope write-envelope max-steps max-blocks)
+      (node-validate-blocks n)
+      (node-status n))
+
+    ;; Keep the VM export table in sync with the generated module sidecar.
+    (%module-export! 'node-status-snapshot-block-count)
+    (%module-export! 'node-status-snapshot-validated-block-count)
+    (%module-export! 'node-status-snapshot-best-block-height)
+    (%module-export! 'node-peer)
+    (%module-export! 'node-peer?)
+    (%module-export! 'node-peer-address)
+    (%module-export! 'node-peer-port)
+    (%module-export! 'node-peer-score)
+    (%module-export! 'node-peer-failures)
+    (%module-export! 'node-peer-last-seen)
+    (%module-export! 'node-block-info)
+    (%module-export! 'node-block-info?)
+    (%module-export! 'node-block-info-hash)
+    (%module-export! 'node-block-info-height)
+    (%module-export! 'node-block-info-status)
+    (%module-export! 'node-header-locator)
+    (%module-export! 'node-add-peer)
+    (%module-export! 'node-remove-peer)
+    (%module-export! 'node-peers)
+    (%module-export! 'node-store-block)
+    (%module-export! 'node-download-blocks)
+    (%module-export! 'node-validate-blocks)
+    (%module-export! 'node-sync)))

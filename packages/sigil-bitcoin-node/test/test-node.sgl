@@ -1,9 +1,48 @@
 (import (sigil test)
         (sigil fs)
+        (sigil bitcoin encoding)
+        (sigil bitcoin consensus)
         (sigil bitcoin node)
-        (sigil bitcoin consensus))
+        (sigil bitcoin p2p)
+        (sigil bitcoin tx))
 
 (define %zero32 (make-bytevector 32 0))
+(define %node-module (find-module '(sigil bitcoin node)))
+(define chain-config-name* (module-ref %node-module 'chain-config-name))
+(define chain-config-by-name* (module-ref %node-module 'chain-config-by-name))
+(define chain-config-default-port*
+  (module-ref %node-module 'chain-config-default-port))
+(define chain-config-genesis-header*
+  (module-ref %node-module 'chain-config-genesis-header))
+(define chain-config-magic* (module-ref %node-module 'chain-config-magic))
+(define bitcoin-regtest-chain* (module-ref %node-module 'bitcoin-regtest-chain))
+(define node-open* (module-ref %node-module 'node-open))
+(define node-close* (module-ref %node-module 'node-close))
+(define node-status* (module-ref %node-module 'node-status))
+(define node-best-header* (module-ref %node-module 'node-best-header))
+(define node-ingest-headers* (module-ref %node-module 'node-ingest-headers))
+(define node-header-locator* (module-ref %node-module 'node-header-locator))
+(define node-add-peer* (module-ref %node-module 'node-add-peer))
+(define node-remove-peer* (module-ref %node-module 'node-remove-peer))
+(define node-peers* (module-ref %node-module 'node-peers))
+(define node-store-block* (module-ref %node-module 'node-store-block))
+(define node-download-blocks* (module-ref %node-module 'node-download-blocks))
+(define node-validate-blocks* (module-ref %node-module 'node-validate-blocks))
+(define node-peer-address* (module-ref %node-module 'node-peer-address))
+(define node-peer-port* (module-ref %node-module 'node-peer-port))
+(define node-block-info-status* (module-ref %node-module 'node-block-info-status))
+(define node-status-snapshot-chain*
+  (module-ref %node-module 'node-status-snapshot-chain))
+(define node-status-snapshot-best-height*
+  (module-ref %node-module 'node-status-snapshot-best-height))
+(define node-status-snapshot-header-count*
+  (module-ref %node-module 'node-status-snapshot-header-count))
+(define node-status-snapshot-block-count*
+  (module-ref %node-module 'node-status-snapshot-block-count))
+(define node-status-snapshot-validated-block-count*
+  (module-ref %node-module 'node-status-snapshot-validated-block-count))
+(define node-status-snapshot-best-block-height*
+  (module-ref %node-module 'node-status-snapshot-best-block-height))
 
 (define (test-data-dir)
   (let ((dir (make-temp-directory)))
@@ -34,40 +73,84 @@
 (define (mine-next previous-headers time)
   (mine-header previous-headers time #x207fffff))
 
+(define (make-coinbase-tx value)
+  (transaction
+    version: 1
+    inputs: (list
+      (txin previous-output: (outpoint txid: %zero32 index: #xffffffff)
+            script-sig: #u8(#x03 #x04)
+            sequence: #xffffffff
+            witness: '()))
+    outputs: (list
+      (txout value: value script-pubkey: #u8(#x51)))
+    lock-time: 0))
+
+(define (mine-block previous-headers txs time)
+  (let* ((previous (car (reverse previous-headers)))
+         (previous-hash (block-header-hash previous))
+         (root (merkle-root (map transaction-txid txs))))
+    (let loop ((nonce 0))
+      (let ((header (block-header version: 1
+                                  previous-block: previous-hash
+                                  merkle-root: root
+                                  time: time
+                                  bits: #x207fffff
+                                  nonce: nonce)))
+        (if (block-header-proof-of-work-valid? header)
+            (block header-field: header transactions: txs)
+            (loop (+ nonce 1)))))))
+
+(define (make-coinbase-block previous-headers height time)
+  (mine-block previous-headers
+              (list (make-coinbase-tx (block-subsidy height)))
+              time))
+
+(define (one-envelope-reader envelopes)
+  (let ((remaining envelopes))
+    (lambda ()
+      (when (null? remaining)
+        (error "one-envelope-reader: no envelopes left"))
+      (let ((envelope (car remaining)))
+        (set! remaining (cdr remaining))
+        envelope))))
+
 (test-group "chain configs"
   (test "looks up builtin chains"
+    (assert-true (procedure? node-header-locator*))
+    (assert-true (procedure? node-ingest-headers*))
+    (assert-true (procedure? node-add-peer*))
     (assert-equal "bitcoin-mainnet"
-                  (chain-config-name
-                    (chain-config-by-name "mainnet")))
+                  (chain-config-name*
+                    (chain-config-by-name* "mainnet")))
     (assert-equal "bitcoin-testnet"
-                  (chain-config-name
-                    (chain-config-by-name "testnet")))
+                  (chain-config-name*
+                    (chain-config-by-name* "testnet")))
     (assert-equal "bitcoin-regtest"
-                  (chain-config-name
-                    (chain-config-by-name "regtest")))
+                  (chain-config-name*
+                    (chain-config-by-name* "regtest")))
     (assert-equal 18444
-                  (chain-config-default-port bitcoin-regtest-chain))))
+                  (chain-config-default-port* bitcoin-regtest-chain*))))
 
 (test-group "node state"
   (test "initializes genesis header"
     (let* ((dir (test-data-dir))
-           (n (node-open bitcoin-regtest-chain dir))
-           (status (node-status n)))
+           (n (node-open* bitcoin-regtest-chain* dir))
+           (status (node-status* n)))
       (assert-equal "bitcoin-regtest"
-                    (node-status-snapshot-chain status))
+                    (node-status-snapshot-chain* status))
       (assert-equal 0
-                    (node-status-snapshot-best-height status))
+                    (node-status-snapshot-best-height* status))
       (assert-equal 1
-                    (node-status-snapshot-header-count status))
+                    (node-status-snapshot-header-count* status))
       (assert-true
-        (same-header? (chain-config-genesis-header bitcoin-regtest-chain)
-                      (node-best-header n)))
-      (node-close n)))
+        (same-header? (chain-config-genesis-header* bitcoin-regtest-chain*)
+                      (node-best-header* n)))
+      (node-close* n)))
 
   (test "ingests linked valid headers"
     (let* ((dir (test-data-dir))
-           (n (node-open bitcoin-regtest-chain dir))
-           (h0 (chain-config-genesis-header bitcoin-regtest-chain))
+           (n (node-open* bitcoin-regtest-chain* dir))
+           (h0 (chain-config-genesis-header* bitcoin-regtest-chain*))
            (h1 (mine-next (list h0) 1296688602))
            (h2 (mine-next (list h0 h1) 1296689202)))
       (assert-true
@@ -75,35 +158,112 @@
           bitcoin-regtest-consensus-params
           (list h0)
           h1))
-      (let* ((inserted (node-ingest-headers n (list h1 h2)))
-             (status (node-status n)))
+      (let* ((inserted (node-ingest-headers* n (list h1 h2)))
+             (status (node-status* n)))
         (assert-equal 2 inserted)
         (assert-equal 2
-                      (node-status-snapshot-best-height status))
+                      (node-status-snapshot-best-height* status))
         (assert-equal 3
-                      (node-status-snapshot-header-count status))
-        (assert-true (same-header? h2 (node-best-header n)))
-        (node-close n))))
+                      (node-status-snapshot-header-count* status))
+        (assert-true (same-header? h2 (node-best-header* n)))
+        (node-close* n))))
 
   (test "persists headers across opens"
     (let* ((dir (test-data-dir))
-           (first (node-open bitcoin-regtest-chain dir))
-           (h0 (chain-config-genesis-header bitcoin-regtest-chain))
+           (first (node-open* bitcoin-regtest-chain* dir))
+           (h0 (chain-config-genesis-header* bitcoin-regtest-chain*))
            (h1 (mine-next (list h0) 1296688602)))
-      (node-ingest-headers first (list h1))
-      (node-close first)
-      (let* ((second (node-open bitcoin-regtest-chain dir))
-             (status (node-status second)))
+      (node-ingest-headers* first (list h1))
+      (node-close* first)
+      (let* ((second (node-open* bitcoin-regtest-chain* dir))
+             (status (node-status* second)))
         (assert-equal 1
-                      (node-status-snapshot-best-height status))
+                      (node-status-snapshot-best-height* status))
         (assert-equal 2
-                      (node-status-snapshot-header-count status))
-        (assert-true (same-header? h1 (node-best-header second)))
-        (node-close second))))
+                      (node-status-snapshot-header-count* status))
+        (assert-true (same-header? h1 (node-best-header* second)))
+        (node-close* second))))
 
   (test "rejects unconnected headers"
     (let* ((dir (test-data-dir))
-           (n (node-open bitcoin-regtest-chain dir))
+           (n (node-open* bitcoin-regtest-chain* dir))
            (orphan (mine-next '() 1296688602)))
-      (assert-error (node-ingest-headers n (list orphan)))
-      (node-close n))))
+      (assert-error (node-ingest-headers* n (list orphan)))
+      (node-close* n)))
+
+  (test "persists peers across opens"
+    (let* ((dir (test-data-dir))
+           (first (node-open* bitcoin-regtest-chain* dir))
+           (peer (node-add-peer* first "127.0.0.1" 18444)))
+      (assert-equal "127.0.0.1" (node-peer-address* peer))
+      (assert-equal 18444 (node-peer-port* peer))
+      (node-close* first)
+      (let* ((second (node-open* bitcoin-regtest-chain* dir))
+             (peers (node-peers* second)))
+        (assert-equal 1 (length peers))
+        (assert-equal "127.0.0.1" (node-peer-address* (car peers)))
+        (assert-true (node-remove-peer* second "127.0.0.1" 18444))
+        (assert-equal 0 (length (node-peers* second)))
+        (node-close* second))))
+
+  (test "builds a database backed header locator"
+    (let* ((dir (test-data-dir))
+           (n (node-open* bitcoin-regtest-chain* dir))
+           (h0 (chain-config-genesis-header* bitcoin-regtest-chain*))
+           (h1 (mine-next (list h0) 1296688602))
+           (h2 (mine-next (list h0 h1) 1296689202))
+           (h3 (mine-next (list h0 h1 h2) 1296689802)))
+      (node-ingest-headers* n (list h1 h2 h3))
+      (let ((locator (node-header-locator* n)))
+        (assert-equal 4 (length locator))
+        (assert-equal (block-header-hash h3) (car locator))
+        (assert-equal (block-header-hash h0) (car (reverse locator))))
+      (node-close* n)))
+
+  (test "stores and validates downloaded blocks"
+    (let* ((dir (test-data-dir))
+           (n (node-open* bitcoin-regtest-chain* dir))
+           (h0 (chain-config-genesis-header* bitcoin-regtest-chain*))
+           (b1 (make-coinbase-block (list h0) 1 1296688602))
+           (h1 (block-header-field b1)))
+      (node-ingest-headers* n (list h1))
+      (let ((info (node-store-block* n b1)))
+        (assert-equal "downloaded" (node-block-info-status* info)))
+      (assert-equal 1 (node-validate-blocks* n))
+      (let ((status (node-status* n)))
+        (assert-equal 1 (node-status-snapshot-block-count* status))
+        (assert-equal 1 (node-status-snapshot-validated-block-count* status))
+        (assert-equal 1 (node-status-snapshot-best-block-height* status)))
+      (node-close* n)))
+
+  (test "downloads missing blocks with getdata"
+    (let* ((dir (test-data-dir))
+           (n (node-open* bitcoin-regtest-chain* dir))
+           (h0 (chain-config-genesis-header* bitcoin-regtest-chain*))
+           (b1 (make-coinbase-block (list h0) 1 1296688602))
+           (h1 (block-header-field b1))
+           (writes '()))
+      (node-ingest-headers* n (list h1))
+      (assert-equal
+        1
+        (node-download-blocks*
+          n
+          (one-envelope-reader
+            (list (p2p-envelope magic: (chain-config-magic* bitcoin-regtest-chain*)
+                                command: "block"
+                                payload: (block-message b1))))
+          (lambda (envelope)
+            (set! writes (cons envelope writes)))
+          4
+          8))
+      (assert-equal 1 (length writes))
+      (let* ((request (car writes))
+             (items (inventory-message-parse (p2p-envelope-payload request))))
+        (assert-equal "getdata" (p2p-envelope-command request))
+        (assert-equal 1 (length items))
+        (assert-equal inv-block (inventory-vector-type (car items)))
+        (assert-equal (block-header-hash h1)
+                      (inventory-vector-hash (car items))))
+      (assert-equal 1
+                    (node-status-snapshot-block-count* (node-status* n)))
+      (node-close* n))))
