@@ -71,9 +71,11 @@ fi
 
 printf 'wasm-test: wasm exports and WASI imports validated\n'
 
-if command -v wasmtime >/dev/null 2>&1; then
+if guix shell -m "$ROOT/manifest.scm" -- wasmtime --version >/dev/null 2>&1; then
   printf '\n==> sigil-bitcoin-demo wasm smoke test\n'
-  wasmtime --mapdir /lib::"$WWW/lib" "$WASM" | grep -q "sigil-bitcoin demo runtime ready"
+  guix shell -m "$ROOT/manifest.scm" -- \
+    wasmtime --dir "$WWW/lib::/lib" "$WASM" \
+    | grep -q "sigil-bitcoin demo runtime ready"
   printf 'wasm-test: wasmtime smoke test passed\n'
 else
   printf 'wasm-test: wasmtime not found; runtime smoke test skipped\n'
