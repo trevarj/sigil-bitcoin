@@ -7,6 +7,9 @@
         (sigil bitcoin tx))
 
 (define %zero32 (make-bytevector 32 0))
+(define %ipv6-loopback
+  #u8(#x00 #x00 #x00 #x00 #x00 #x00 #x00 #x00
+      #x00 #x00 #x00 #x00 #x00 #x00 #x00 #x01))
 (define %node-module (find-module '(sigil bitcoin node)))
 (define chain-config-name* (module-ref %node-module 'chain-config-name))
 (define chain-config-by-name* (module-ref %node-module 'chain-config-by-name))
@@ -29,10 +32,12 @@
 (define node-download-blocks* (module-ref %node-module 'node-download-blocks))
 (define node-validate-blocks* (module-ref %node-module 'node-validate-blocks))
 (define node-sync-with-peer* (module-ref %node-module 'node-sync-with-peer))
+(define node-sync-with-peers* (module-ref %node-module 'node-sync-with-peers))
 (define node-peer-address* (module-ref %node-module 'node-peer-address))
 (define node-peer-port* (module-ref %node-module 'node-peer-port))
 (define node-peer-score* (module-ref %node-module 'node-peer-score))
 (define node-peer-failures* (module-ref %node-module 'node-peer-failures))
+(define node-peer-last-result* (module-ref %node-module 'node-peer-last-result))
 (define node-block-info-status* (module-ref %node-module 'node-block-info-status))
 (define node-status-snapshot-chain*
   (module-ref %node-module 'node-status-snapshot-chain))
@@ -50,6 +55,10 @@
   (module-ref %node-module 'node-status-snapshot-peer-count))
 (define node-status-snapshot-pending-block-count*
   (module-ref %node-module 'node-status-snapshot-pending-block-count))
+(define node-status-snapshot-requested-block-count*
+  (module-ref %node-module 'node-status-snapshot-requested-block-count))
+(define node-status-snapshot-failed-block-count*
+  (module-ref %node-module 'node-status-snapshot-failed-block-count))
 
 (define (test-data-dir)
   (let ((dir (make-temp-directory)))
@@ -133,6 +142,42 @@
       (let ((envelope (car remaining)))
         (set! remaining (cdr remaining))
         envelope))))
+
+(define (remote-version-envelope chain)
+  (let ((addr (network-address services: 1 ip: %ipv6-loopback port: 18444)))
+    (p2p-envelope
+      magic: (chain-config-magic* chain)
+      command: "version"
+      payload: (version-message-serialize
+                 (version-message
+                   version: 70015
+                   services: 1
+                   timestamp: 123456789
+                   addr-recv: addr
+                   addr-from: addr
+                   nonce: 1
+                   user-agent: "/peer:0.1.0/"
+                   start-height: 0
+                   relay?: #t)))))
+
+(define (empty-sync-envelopes chain)
+  (list (remote-version-envelope chain)
+        (p2p-envelope magic: (chain-config-magic* chain)
+                      command: "verack"
+                      payload: (verack-message))
+        (p2p-envelope magic: (chain-config-magic* chain)
+                      command: "headers"
+                      payload: (headers-message-serialize '()))))
+
+(define (empty-sync-transport chain close-proc)
+  (list (one-envelope-reader (empty-sync-envelopes chain))
+        (lambda (envelope) #t)
+        close-proc))
+
+(define (find-peer-by-address peers address)
+  (cond ((null? peers) #f)
+        ((string=? (node-peer-address* (car peers)) address) (car peers))
+        (else (find-peer-by-address (cdr peers) address))))
 
 (test-group "chain configs"
   (test "looks up builtin chains"
@@ -318,6 +363,52 @@
         (assert-equal 1 (node-peer-failures* peer)))
       (node-close* n)))
 
+  (test "falls back to the next persisted peer"
+    (let* ((dir (test-data-dir))
+           (n (node-open* bitcoin-regtest-chain* dir))
+           (closed 0)
+           (close-good (lambda ()
+                         (set! closed (+ closed 1))))
+           (connect-peer
+             (lambda (peer)
+               (cond ((string=? "bad.example" (node-peer-address* peer))
+                      (error "simulated connect failure"))
+                     (else
+                      (empty-sync-transport bitcoin-regtest-chain*
+                                            close-good))))))
+      (node-add-peer* n "bad.example" 18444)
+      (node-add-peer* n "good.example" 18444)
+      (let ((status (node-sync-with-peers* n connect-peer 2 0 8 4)))
+        (assert-equal 0 (node-status-snapshot-pending-block-count* status))
+        (assert-equal 1 closed)
+        (let* ((peers (node-peers* n))
+               (bad (find-peer-by-address peers "bad.example"))
+               (good (find-peer-by-address peers "good.example")))
+          (assert-equal 1 (node-peer-failures* bad))
+          (assert-equal "failure" (node-peer-last-result* bad))
+          (assert-equal 1 (node-peer-score* good))
+          (assert-equal "success" (node-peer-last-result* good))))
+      (node-close* n)))
+
+  (test "honors the configured peer retry limit"
+    (let* ((dir (test-data-dir))
+           (n (node-open* bitcoin-regtest-chain* dir))
+           (attempts 0)
+           (connect-peer
+             (lambda (peer)
+               (set! attempts (+ attempts 1))
+               (if (<= attempts 2)
+                   (error "simulated connect failure")
+                   (empty-sync-transport bitcoin-regtest-chain*
+                                         (lambda () #t))))))
+      (node-add-peer* n "retry.example" 18444)
+      (node-sync-with-peers* n connect-peer 1 2 8 4)
+      (assert-equal 3 attempts)
+      (let ((peer (car (node-peers* n))))
+        (assert-equal 2 (node-peer-failures* peer))
+        (assert-equal "success" (node-peer-last-result* peer)))
+      (node-close* n)))
+
   (test "rolls validation forward onto a stronger fork"
     (let* ((dir (test-data-dir))
            (n (node-open* bitcoin-regtest-chain* dir))
@@ -369,4 +460,98 @@
                       (inventory-vector-hash (car items))))
       (assert-equal 1
                     (node-status-snapshot-block-count* (node-status* n)))
+      (node-close* n)))
+
+  (test "marks notfound block downloads failed"
+    (let* ((dir (test-data-dir))
+           (n (node-open* bitcoin-regtest-chain* dir))
+           (h0 (chain-config-genesis-header* bitcoin-regtest-chain*))
+           (h1 (mine-next (list h0) 1296688602))
+           (item (inventory-vector type: inv-block
+                                   hash: (block-header-hash h1)))
+           (writes '()))
+      (node-ingest-headers* n (list h1))
+      (assert-equal
+        0
+        (node-download-blocks*
+          n
+          (one-envelope-reader
+            (list (p2p-envelope magic: (chain-config-magic* bitcoin-regtest-chain*)
+                                command: "notfound"
+                                payload: (notfound-message (list item)))))
+          (lambda (envelope)
+            (set! writes (cons envelope writes)))
+          4
+          8))
+      (let ((status (node-status* n)))
+        (assert-equal 0 (node-status-snapshot-pending-block-count* status))
+        (assert-equal 0 (node-status-snapshot-requested-block-count* status))
+        (assert-equal 1 (node-status-snapshot-failed-block-count* status))
+        (assert-equal 0 (node-status-snapshot-block-count* status)))
+      (assert-equal 1 (length writes))
+      (node-close* n)))
+
+  (test "resumes requested downloads after reopening"
+    (let* ((dir (test-data-dir))
+           (first (node-open* bitcoin-regtest-chain* dir))
+           (h0 (chain-config-genesis-header* bitcoin-regtest-chain*))
+           (b1 (make-coinbase-block (list h0) 1 1296688602))
+           (h1 (block-header-field b1))
+           (writes '()))
+      (node-ingest-headers* first (list h1))
+      (assert-equal
+        0
+        (node-download-blocks*
+          first
+          (lambda () (error "unexpected read"))
+          (lambda (envelope)
+            (set! writes (cons envelope writes)))
+          0
+          8))
+      (let ((status (node-status* first)))
+        (assert-equal 0 (node-status-snapshot-pending-block-count* status))
+        (assert-equal 1 (node-status-snapshot-requested-block-count* status))
+        (assert-equal 0 (node-status-snapshot-failed-block-count* status)))
+      (node-close* first)
+      (let ((second (node-open* bitcoin-regtest-chain* dir)))
+        (let ((status (node-status* second)))
+          (assert-equal 1 (node-status-snapshot-requested-block-count* status)))
+        (assert-equal
+          1
+          (node-download-blocks*
+            second
+            (one-envelope-reader
+              (list (p2p-envelope magic: (chain-config-magic* bitcoin-regtest-chain*)
+                                  command: "block"
+                                  payload: (block-message b1))))
+            (lambda (envelope) #t)
+            4
+            8))
+        (let ((status (node-status* second)))
+          (assert-equal 0 (node-status-snapshot-requested-block-count* status))
+          (assert-equal 0 (node-status-snapshot-failed-block-count* status))
+          (assert-equal 1 (node-status-snapshot-block-count* status)))
+        (node-close* second))))
+
+  (test "reports pending requested and failed block stages separately"
+    (let* ((dir (test-data-dir))
+           (n (node-open* bitcoin-regtest-chain* dir))
+           (h0 (chain-config-genesis-header* bitcoin-regtest-chain*))
+           (h1 (mine-next (list h0) 1296688602))
+           (h2 (mine-next (list h0 h1) 1296689202)))
+      (node-ingest-headers* n (list h1 h2))
+      (let ((status (node-status* n)))
+        (assert-equal 2 (node-status-snapshot-pending-block-count* status))
+        (assert-equal 0 (node-status-snapshot-requested-block-count* status))
+        (assert-equal 0 (node-status-snapshot-failed-block-count* status)))
+      (node-download-blocks*
+        n
+        (lambda () (error "unexpected read"))
+        (lambda (envelope) #t)
+        0
+        1)
+      (let ((status (node-status* n)))
+        (assert-equal 1 (node-status-snapshot-pending-block-count* status))
+        (assert-equal 1 (node-status-snapshot-requested-block-count* status))
+        (assert-equal 0 (node-status-snapshot-failed-block-count* status)))
       (node-close* n))))

@@ -29,9 +29,12 @@
     node-status-snapshot-best-block-height
     node-status-snapshot-peer-count
     node-status-snapshot-pending-block-count
+    node-status-snapshot-requested-block-count
+    node-status-snapshot-failed-block-count
     node-peer node-peer?
     node-peer-address node-peer-port node-peer-score
     node-peer-failures node-peer-last-seen
+    node-peer-last-attempt node-peer-last-result
     node-block-info node-block-info?
     node-block-info-hash node-block-info-height node-block-info-status
     node-open
@@ -47,6 +50,7 @@
     node-validate-blocks
     node-sync-headers
     node-sync-with-peer
+    node-sync-with-peers
     node-sync)
   (begin
 
@@ -115,7 +119,9 @@
       (validated-block-count integer?)
       (best-block-height integer?)
       (peer-count integer?)
-      (pending-block-count integer?))
+      (pending-block-count integer?)
+      (requested-block-count integer?)
+      (failed-block-count integer?))
 
     ;;; Persisted peer metadata used by node sync commands.
     ;;;
@@ -127,7 +133,9 @@
       (port integer?)
       (score integer?)
       (failures integer?)
-      (last-seen integer?))
+      (last-seen integer?)
+      (last-attempt integer?)
+      (last-result string?))
 
     ;;; Persisted block download/validation status.
     ;;;
@@ -219,6 +227,22 @@
     (define (header-row-height row)
       (row-ref row "height"))
 
+    (define (db-column-exists? db table column)
+      (let loop ((rows (sqlite-query
+                         db
+                         (string-append "PRAGMA table_info(" table ")"))))
+        (cond ((null? rows) #f)
+              ((string=? (row-ref (car rows) "name") column) #t)
+              (else (loop (cdr rows))))))
+
+    (define (db-ensure-column db table column definition)
+      (unless (db-column-exists? db table column)
+        (sqlite-exec
+          db
+          (string-append "ALTER TABLE " table
+                         " ADD COLUMN " column
+                         " " definition))))
+
     (define (db-create-schema db)
       (sqlite-exec
         db
@@ -228,13 +252,19 @@
         "CREATE TABLE IF NOT EXISTS headers (hash TEXT PRIMARY KEY, prev_hash TEXT NOT NULL, height INTEGER NOT NULL, work TEXT NOT NULL, header_hex TEXT NOT NULL, time INTEGER NOT NULL, bits INTEGER NOT NULL, valid INTEGER NOT NULL)")
       (sqlite-exec
         db
-        "CREATE TABLE IF NOT EXISTS peers (address TEXT NOT NULL, port INTEGER NOT NULL, score INTEGER NOT NULL DEFAULT 0, failures INTEGER NOT NULL DEFAULT 0, last_seen INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(address, port))")
+        "CREATE TABLE IF NOT EXISTS peers (address TEXT NOT NULL, port INTEGER NOT NULL, score INTEGER NOT NULL DEFAULT 0, failures INTEGER NOT NULL DEFAULT 0, last_seen INTEGER NOT NULL DEFAULT 0, last_attempt INTEGER NOT NULL DEFAULT 0, last_result TEXT NOT NULL DEFAULT '', PRIMARY KEY(address, port))")
       (sqlite-exec
         db
-        "CREATE TABLE IF NOT EXISTS blocks (hash TEXT PRIMARY KEY, height INTEGER NOT NULL, status TEXT NOT NULL, block_hex TEXT, validated INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0)")
+        "CREATE TABLE IF NOT EXISTS blocks (hash TEXT PRIMARY KEY, height INTEGER NOT NULL, status TEXT NOT NULL, block_hex TEXT, validated INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0, requested_by TEXT, requested_at INTEGER NOT NULL DEFAULT 0, request_count INTEGER NOT NULL DEFAULT 0, last_error TEXT NOT NULL DEFAULT '')")
       (sqlite-exec
         db
         "CREATE TABLE IF NOT EXISTS utxos (txid TEXT NOT NULL, output_index INTEGER NOT NULL, value INTEGER NOT NULL, script_pubkey TEXT NOT NULL, coinbase INTEGER NOT NULL, height INTEGER NOT NULL, time INTEGER NOT NULL, created_by TEXT NOT NULL, spent_by TEXT, spent_height INTEGER, active INTEGER NOT NULL DEFAULT 1, PRIMARY KEY(txid, output_index))")
+      (db-ensure-column db "peers" "last_attempt" "INTEGER NOT NULL DEFAULT 0")
+      (db-ensure-column db "peers" "last_result" "TEXT NOT NULL DEFAULT ''")
+      (db-ensure-column db "blocks" "requested_by" "TEXT")
+      (db-ensure-column db "blocks" "requested_at" "INTEGER NOT NULL DEFAULT 0")
+      (db-ensure-column db "blocks" "request_count" "INTEGER NOT NULL DEFAULT 0")
+      (db-ensure-column db "blocks" "last_error" "TEXT NOT NULL DEFAULT ''")
       (sqlite-run db
                   "INSERT OR REPLACE INTO metadata(key, value) VALUES (?, ?)"
                   "schema-version"
@@ -286,7 +316,7 @@
       (let ((row (sqlite-query-row db "SELECT COUNT(*) AS count FROM peers")))
         (if row (row-ref row "count") 0)))
 
-    (define (pending-chain-block-count db rows)
+    (define (chain-block-stage-count db rows stage)
       (let loop ((xs rows) (count 0))
         (if (null? xs)
             count
@@ -296,13 +326,28 @@
                                 db
                                 height
                                 (row-ref row "hash"))))
-              (loop (cdr xs)
-                    (if (or (= 0 height)
-                            (and block-row
-                                 (row-ref block-row "block_hex")
-                                 (= 1 (row-ref block-row "validated"))))
-                        count
-                        (+ count 1)))))))
+              (loop
+                (cdr xs)
+                (cond ((= 0 height)
+                       count)
+                      ((and (string=? stage "pending")
+                            (or (not block-row)
+                                (string=? "header" (row-ref block-row "status"))))
+                       (+ count 1))
+                      ((and block-row
+                            (string=? stage (row-ref block-row "status")))
+                       (+ count 1))
+                      (else
+                       count)))))))
+
+    (define (pending-chain-block-count db rows)
+      (chain-block-stage-count db rows "pending"))
+
+    (define (requested-chain-block-count db rows)
+      (chain-block-stage-count db rows "requested"))
+
+    (define (failed-chain-block-count db rows)
+      (chain-block-stage-count db rows "failed"))
 
     (define (best-row rows)
       (let loop ((xs rows) (best #f))
@@ -337,6 +382,45 @@
         db
         "SELECT h.hash, h.prev_hash, h.height, h.work, h.header_hex, h.time, h.bits, h.valid FROM headers h LEFT JOIN blocks b ON h.hash = b.hash WHERE h.valid = 1 AND h.height > 0 AND (b.hash IS NULL OR b.block_hex IS NULL) ORDER BY h.height ASC LIMIT ?"
         limit))
+
+    (define (db-header-rows-requestable-blocks db peer-key limit)
+      (sqlite-query
+        db
+        "SELECT h.hash, h.prev_hash, h.height, h.work, h.header_hex, h.time, h.bits, h.valid FROM headers h LEFT JOIN blocks b ON h.hash = b.hash WHERE h.valid = 1 AND h.height > 0 AND (b.hash IS NULL OR (b.block_hex IS NULL AND (b.status IS NULL OR b.status = 'header' OR b.status = 'requested' OR (b.status = 'failed' AND COALESCE(b.requested_by, '') <> ?)))) ORDER BY h.height ASC LIMIT ?"
+        peer-key
+        limit))
+
+    (define (db-mark-block-requested db hash-text height peer-key)
+      (if (db-block-row db hash-text)
+          (sqlite-run
+            db
+            "UPDATE blocks SET height = ?, status = 'requested', requested_by = ?, requested_at = 0, request_count = request_count + 1, last_error = '' WHERE hash = ?"
+            height
+            peer-key
+            hash-text)
+          (sqlite-run
+            db
+            "INSERT INTO blocks(hash, height, status, block_hex, validated, updated_at, requested_by, requested_at, request_count, last_error) VALUES (?, ?, 'requested', NULL, 0, 0, ?, 0, 1, '')"
+            hash-text
+            height
+            peer-key)))
+
+    (define (db-mark-block-failed db hash-text height peer-key reason)
+      (if (db-block-row db hash-text)
+          (sqlite-run
+            db
+            "UPDATE blocks SET height = ?, status = 'failed', requested_by = ?, requested_at = 0, last_error = ? WHERE hash = ? AND block_hex IS NULL"
+            height
+            peer-key
+            reason
+            hash-text)
+          (sqlite-run
+            db
+            "INSERT INTO blocks(hash, height, status, block_hex, validated, updated_at, requested_by, requested_at, request_count, last_error) VALUES (?, ?, 'failed', NULL, 0, 0, ?, 0, 0, ?)"
+            hash-text
+            height
+            peer-key
+            reason)))
 
     (define (db-chain-to-row db row)
       (let loop ((current row) (headers '()))
@@ -379,12 +463,14 @@
                  port: (row-ref row "port")
                  score: (row-ref row "score")
                  failures: (row-ref row "failures")
-                 last-seen: (row-ref row "last_seen")))
+                 last-seen: (row-ref row "last_seen")
+                 last-attempt: (row-ref row "last_attempt")
+                 last-result: (row-ref row "last_result")))
 
     (define (db-block-row db hash-text)
       (sqlite-query-row
         db
-        "SELECT hash, height, status, block_hex, validated, updated_at FROM blocks WHERE hash = ?"
+        "SELECT hash, height, status, block_hex, validated, updated_at, requested_by, requested_at, request_count, last_error FROM blocks WHERE hash = ?"
         hash-text))
 
     (define (db-block-info row)
@@ -393,15 +479,32 @@
                        status: (row-ref row "status")))
 
     (define (db-set-block-status db hash-text height status block-hex validated?)
-      (sqlite-run
-        db
-        "INSERT OR REPLACE INTO blocks(hash, height, status, block_hex, validated, updated_at) VALUES (?, ?, ?, ?, ?, ?)"
-        hash-text
-        height
-        status
-        block-hex
-        (if validated? 1 0)
-        0))
+      (if (db-block-row db hash-text)
+          (if (or (string=? status "downloaded") (string=? status "valid"))
+              (sqlite-run
+                db
+                "UPDATE blocks SET height = ?, status = ?, block_hex = ?, validated = ?, updated_at = 0, requested_by = NULL, requested_at = 0, last_error = '' WHERE hash = ?"
+                height
+                status
+                block-hex
+                (if validated? 1 0)
+                hash-text)
+              (sqlite-run
+                db
+                "UPDATE blocks SET height = ?, status = ?, block_hex = ?, validated = ?, updated_at = 0 WHERE hash = ?"
+                height
+                status
+                block-hex
+                (if validated? 1 0)
+                hash-text))
+          (sqlite-run
+            db
+            "INSERT INTO blocks(hash, height, status, block_hex, validated, updated_at, requested_by, requested_at, request_count, last_error) VALUES (?, ?, ?, ?, ?, 0, NULL, 0, 0, '')"
+            hash-text
+            height
+            status
+            block-hex
+            (if validated? 1 0))))
 
     (define (db-mark-header-block db hash-text height)
       (unless (db-block-row db hash-text)
@@ -410,12 +513,12 @@
     (define (db-downloaded-block-rows db)
       (sqlite-query
         db
-        "SELECT hash, height, status, block_hex, validated, updated_at FROM blocks WHERE block_hex IS NOT NULL ORDER BY height ASC"))
+        "SELECT hash, height, status, block_hex, validated, updated_at, requested_by, requested_at, request_count, last_error FROM blocks WHERE block_hex IS NOT NULL ORDER BY height ASC"))
 
     (define (db-block-row-by-height-and-hash db height hash-text)
       (sqlite-query-row
         db
-        "SELECT hash, height, status, block_hex, validated, updated_at FROM blocks WHERE height = ? AND hash = ?"
+        "SELECT hash, height, status, block_hex, validated, updated_at, requested_by, requested_at, request_count, last_error FROM blocks WHERE height = ? AND hash = ?"
         height
         hash-text))
 
@@ -532,7 +635,9 @@
           validated-block-count: (db-validated-block-count db)
           best-block-height: (db-best-block-height db)
           peer-count: (db-peer-count db)
-          pending-block-count: (pending-chain-block-count db rows))))
+          pending-block-count: (pending-chain-block-count db rows)
+          requested-block-count: (requested-chain-block-count db rows)
+          failed-block-count: (failed-chain-block-count db rows))))
 
     (define (locator-heights best-height)
       (let loop ((height best-height) (step 1) (count 0) (heights '()))
@@ -617,12 +722,12 @@
       (: node? string? integer? -> node-peer?)
       (sqlite-run
         (node-db n)
-        "INSERT OR REPLACE INTO peers(address, port, score, failures, last_seen) VALUES (?, ?, COALESCE((SELECT score FROM peers WHERE address = ? AND port = ?), 0), COALESCE((SELECT failures FROM peers WHERE address = ? AND port = ?), 0), 0)"
-        address port address port address port)
+        "INSERT OR REPLACE INTO peers(address, port, score, failures, last_seen, last_attempt, last_result) VALUES (?, ?, COALESCE((SELECT score FROM peers WHERE address = ? AND port = ?), 0), COALESCE((SELECT failures FROM peers WHERE address = ? AND port = ?), 0), COALESCE((SELECT last_seen FROM peers WHERE address = ? AND port = ?), 0), COALESCE((SELECT last_attempt FROM peers WHERE address = ? AND port = ?), 0), COALESCE((SELECT last_result FROM peers WHERE address = ? AND port = ?), ''))"
+        address port address port address port address port address port address port)
       (db-peer-row->peer
         (sqlite-query-row
           (node-db n)
-          "SELECT address, port, score, failures, last_seen FROM peers WHERE address = ? AND port = ?"
+          "SELECT address, port, score, failures, last_seen, last_attempt, last_result FROM peers WHERE address = ? AND port = ?"
           address
           port)))
 
@@ -649,17 +754,17 @@
       (map db-peer-row->peer
            (sqlite-query
              (node-db n)
-             "SELECT address, port, score, failures, last_seen FROM peers ORDER BY score DESC, failures ASC, address ASC, port ASC")))
+             "SELECT address, port, score, failures, last_seen, last_attempt, last_result FROM peers ORDER BY score DESC, failures ASC, address ASC, port ASC")))
 
     (define (node-peer-success n address port)
       (sqlite-run (node-db n)
-                  "UPDATE peers SET score = score + 1, last_seen = 0 WHERE address = ? AND port = ?"
+                  "UPDATE peers SET score = score + 1, last_seen = 0, last_attempt = 0, last_result = 'success' WHERE address = ? AND port = ?"
                   address
                   port))
 
     (define (node-peer-failure n address port)
       (sqlite-run (node-db n)
-                  "UPDATE peers SET failures = failures + 1, score = score - 1 WHERE address = ? AND port = ?"
+                  "UPDATE peers SET failures = failures + 1, score = score - 1, last_attempt = 0, last_result = 'failure' WHERE address = ? AND port = ?"
                   address
                   port))
 
@@ -709,12 +814,43 @@
                         total))
                   (loop (- remaining 1) inserted))))))
 
-    (define (pending-block-inventory n max-blocks)
-      (map
+    (define (peer-key address port)
+      (string-append address ":" (number->string port)))
+
+    (define (pending-block-rows n peer-name max-blocks)
+      (db-header-rows-requestable-blocks (node-db n) peer-name max-blocks))
+
+    (define (block-row->inventory row)
+      (inventory-vector type: inv-block
+                        hash: (hex-decode (row-ref row "hash"))))
+
+    (define (mark-requested-rows db rows peer-name)
+      (for-each
         (lambda (row)
-          (inventory-vector type: inv-block
-                            hash: (hex-decode (row-ref row "hash"))))
-        (db-header-rows-missing-blocks (node-db n) max-blocks)))
+          (db-mark-block-requested db
+                                   (row-ref row "hash")
+                                   (header-row-height row)
+                                   peer-name))
+        rows))
+
+    (define (mark-notfound-inventory db items peer-name)
+      (let loop ((xs items) (count 0))
+        (if (null? xs)
+            count
+            (let ((item (car xs)))
+              (if (= inv-block (inventory-vector-type item))
+                  (let* ((hash-text (hex-encode (inventory-vector-hash item)))
+                         (row (db-header-row db hash-text)))
+                    (if row
+                        (begin
+                          (db-mark-block-failed db
+                                                hash-text
+                                                (header-row-height row)
+                                                peer-name
+                                                "notfound")
+                          (loop (cdr xs) (+ count 1)))
+                        (loop (cdr xs) count)))
+                  (loop (cdr xs) count))))))
 
     ;;; Persist a block and mark it downloaded.
     ;;;
@@ -741,29 +877,41 @@
     ;;; ```scheme
     ;;; (node-download-blocks n read-envelope write-envelope 64 16)
     ;;; ```
-    (define (node-download-blocks n read-envelope write-envelope max-steps max-blocks)
-      (: node? procedure? procedure? integer? integer? -> integer?)
-      (let ((items (pending-block-inventory n max-blocks)))
+    (define (node-download-blocks-for-peer n peer-name read-envelope write-envelope max-steps max-blocks)
+      (let* ((rows (pending-block-rows n peer-name max-blocks))
+             (items (map block-row->inventory rows)))
         (if (null? items)
             0
             (begin
+              (mark-requested-rows (node-db n) rows peer-name)
               (write-envelope
                 (p2p-envelope magic: (chain-config-magic (node-chain n))
                               command: "getdata"
                               payload: (getdata-message items)))
-              (let loop ((remaining max-steps) (stored 0))
+              (let loop ((remaining max-steps) (stored 0) (failed 0))
                 (cond ((or (<= remaining 0)
-                           (>= stored (length items)))
+                           (>= (+ stored failed) (length items)))
                        stored)
                       (else
                        (let ((envelope (read-envelope)))
-                         (if (string=? "block" (p2p-envelope-command envelope))
-                             (begin
-                               (node-store-block n
-                                                 (block-message-parse
-                                                   (p2p-envelope-payload envelope)))
-                               (loop (- remaining 1) (+ stored 1)))
-                             (loop (- remaining 1) stored))))))))))
+                         (cond ((string=? "block" (p2p-envelope-command envelope))
+                                (node-store-block n
+                                                  (block-message-parse
+                                                    (p2p-envelope-payload envelope)))
+                                (loop (- remaining 1) (+ stored 1) failed))
+                               ((string=? "notfound" (p2p-envelope-command envelope))
+                                (let ((count (mark-notfound-inventory
+                                               (node-db n)
+                                               (inventory-message-parse
+                                                 (p2p-envelope-payload envelope))
+                                               peer-name)))
+                                  (loop (- remaining 1) stored (+ failed count))))
+                               (else
+                                (loop (- remaining 1) stored failed)))))))))))
+
+    (define (node-download-blocks n read-envelope write-envelope max-steps max-blocks)
+      (: node? procedure? procedure? integer? integer? -> integer?)
+      (node-download-blocks-for-peer n "" read-envelope write-envelope max-steps max-blocks))
 
     (define (downloaded-block-row->block row)
       (block-parse (hex-decode (row-ref row "block_hex"))))
@@ -906,10 +1054,103 @@
       (guard (err
               (else
                (node-peer-failure n address port)
-               (error "node-sync-with-peer: peer sync failed")))
-        (let ((status (node-sync n read-envelope write-envelope max-steps max-blocks)))
+               (raise err)))
+        (node-sync-headers n read-envelope write-envelope max-steps)
+        (node-download-blocks-for-peer n
+                                       (peer-key address port)
+                                       read-envelope
+                                       write-envelope
+                                       max-steps
+                                       max-blocks)
+        (node-validate-blocks n)
+        (let ((status (node-status n)))
           (node-peer-success n address port)
           status)))
+
+    (define (take-up-to items count)
+      (let loop ((xs items) (remaining count) (out '()))
+        (if (or (null? xs) (<= remaining 0))
+            (reverse out)
+            (loop (cdr xs) (- remaining 1) (cons (car xs) out)))))
+
+    (define (transport-read transport)
+      (car transport))
+
+    (define (transport-write transport)
+      (cadr transport))
+
+    (define (transport-close transport)
+      (if (and (not (null? (cddr transport)))
+               (procedure? (caddr transport)))
+          (guard (err (else #f))
+            ((caddr transport)))
+          #f))
+
+    (define (sync-peer-via-connector n peer connect-peer max-steps max-blocks)
+      (let ((address (node-peer-address peer))
+            (port (node-peer-port peer))
+            (transport #f))
+        (node-add-peer n address port)
+        (guard (err
+                (else
+                 (node-peer-failure n address port)
+                 #f))
+          (set! transport (connect-peer peer)))
+        (if transport
+            (guard (err
+                    (else
+                     (transport-close transport)
+                     #f))
+              (let ((status (node-sync-with-peer n
+                                                 address
+                                                 port
+                                                 (transport-read transport)
+                                                 (transport-write transport)
+                                                 max-steps
+                                                 max-blocks)))
+                (transport-close transport)
+                status))
+            #f)))
+
+    (define (try-peer-list n peers connect-peer max-steps max-blocks)
+      (let loop ((xs peers))
+        (cond ((null? xs) #f)
+              (else
+               (let ((status (sync-peer-via-connector n
+                                                      (car xs)
+                                                      connect-peer
+                                                      max-steps
+                                                      max-blocks)))
+                 (if status
+                     status
+                     (loop (cdr xs))))))))
+
+    ;;; Sync against persisted peers, falling back by score when attempts fail.
+    ;;;
+    ;;; `connect-peer` receives a `node-peer` and returns
+    ;;; `(read-envelope write-envelope close)`.
+    ;;;
+    ;;; ```scheme
+    ;;; (node-sync-with-peers n connect-peer 4 1 64 16)
+    ;;; ```
+    (define (node-sync-with-peers n connect-peer max-peers max-retries max-steps max-blocks)
+      (: node? procedure? integer? integer? integer? integer? -> node-status-snapshot?)
+      (when (<= max-peers 0)
+        (error "node-sync-with-peers: max-peers must be positive"))
+      (let loop ((attempt 0))
+        (let ((peers (take-up-to (node-peers n) max-peers)))
+          (when (null? peers)
+            (error "node-sync-with-peers: no peers configured"))
+          (let ((status (try-peer-list n
+                                       peers
+                                       connect-peer
+                                       max-steps
+                                       max-blocks)))
+            (cond (status status)
+                  ((>= attempt max-retries)
+                   (error "node-sync-with-peers: max retries exceeded"))
+                  (else
+                   (loop (+ attempt 1)))))))))
 
     ;; Keep the VM export table in sync with the generated module sidecar.
     (%module-export! 'node-status-snapshot-block-count)
@@ -917,6 +1158,8 @@
     (%module-export! 'node-status-snapshot-best-block-height)
     (%module-export! 'node-status-snapshot-peer-count)
     (%module-export! 'node-status-snapshot-pending-block-count)
+    (%module-export! 'node-status-snapshot-requested-block-count)
+    (%module-export! 'node-status-snapshot-failed-block-count)
     (%module-export! 'node-peer)
     (%module-export! 'node-peer?)
     (%module-export! 'node-peer-address)
@@ -924,6 +1167,8 @@
     (%module-export! 'node-peer-score)
     (%module-export! 'node-peer-failures)
     (%module-export! 'node-peer-last-seen)
+    (%module-export! 'node-peer-last-attempt)
+    (%module-export! 'node-peer-last-result)
     (%module-export! 'node-block-info)
     (%module-export! 'node-block-info?)
     (%module-export! 'node-block-info-hash)
@@ -937,4 +1182,5 @@
     (%module-export! 'node-download-blocks)
     (%module-export! 'node-validate-blocks)
     (%module-export! 'node-sync-with-peer)
-    (%module-export! 'node-sync)))
+    (%module-export! 'node-sync-with-peers)
+    (%module-export! 'node-sync))
