@@ -27,11 +27,14 @@
 (define chain-config-magic* (module-ref %node-module 'chain-config-magic))
 (define chain-config-consensus-params*
   (module-ref %node-module 'chain-config-consensus-params))
+(define chain-config-extension*
+  (module-ref %node-module 'chain-config-extension))
 (define chain-config-mining-metadata*
   (module-ref %node-module 'chain-config-mining-metadata))
 (define bitcoin-mainnet-chain* (module-ref %node-module 'bitcoin-mainnet-chain))
 (define bitcoin-testnet-chain* (module-ref %node-module 'bitcoin-testnet-chain))
 (define bitcoin-testnet4-chain* (module-ref %node-module 'bitcoin-testnet4-chain))
+(define bitcoin-signet-chain* (module-ref %node-module 'bitcoin-signet-chain))
 (define bitcoin-regtest-chain* (module-ref %node-module 'bitcoin-regtest-chain))
 (define node-open* (module-ref %node-module 'node-open))
 (define node-close* (module-ref %node-module 'node-close))
@@ -262,6 +265,9 @@
     (assert-equal "bitcoin-testnet4"
                   (chain-config-name*
                     (chain-config-by-name* "testnet4")))
+    (assert-equal "bitcoin-signet"
+                  (chain-config-name*
+                    (chain-config-by-name* "signet")))
     (assert-equal "bitcoin-regtest"
                   (chain-config-name*
                     (chain-config-by-name* "regtest")))
@@ -278,20 +284,29 @@
                   (chain-config-mining-metadata*
                     bitcoin-mainnet-chain*)))
 
-  (test "keeps testnet3 and testnet4 chain configs isolated"
+  (test "keeps testnet3 testnet4 and signet chain configs isolated"
     (assert-equal 18333
                   (chain-config-default-port* bitcoin-testnet-chain*))
     (assert-equal 48333
                   (chain-config-default-port* bitcoin-testnet4-chain*))
+    (assert-equal 38333
+                  (chain-config-default-port* bitcoin-signet-chain*))
     (assert-equal bitcoin-testnet-magic
                   (chain-config-magic* bitcoin-testnet-chain*))
     (assert-equal bitcoin-testnet4-magic
                   (chain-config-magic* bitcoin-testnet4-chain*))
+    (assert-equal bitcoin-signet-magic
+                  (chain-config-magic* bitcoin-signet-chain*))
     (assert-false
       (equal? (block-header-hash
                 (chain-config-genesis-header* bitcoin-testnet-chain*))
               (block-header-hash
                 (chain-config-genesis-header* bitcoin-testnet4-chain*))))
+    (assert-false
+      (equal? (block-header-hash
+                (chain-config-genesis-header* bitcoin-testnet-chain*))
+              (block-header-hash
+                (chain-config-genesis-header* bitcoin-signet-chain*))))
     (assert-equal 1
                   (consensus-params-bip34-height
                     (chain-config-consensus-params* bitcoin-testnet4-chain*)))
@@ -300,6 +315,20 @@
                     (chain-config-consensus-params* bitcoin-testnet4-chain*)))
     (assert-true (> (length (chain-config-seed-peers*
                               bitcoin-testnet4-chain*))
+                    0))
+    (assert-equal #x1e0377ae
+                  (consensus-params-pow-limit-bits
+                    (chain-config-consensus-params* bitcoin-signet-chain*)))
+    (assert-equal 1
+                  (consensus-params-taproot-height
+                    (chain-config-consensus-params* bitcoin-signet-chain*)))
+    (assert-true (> (length (chain-config-seed-peers*
+                              bitcoin-signet-chain*))
+                    0))
+    (assert-true (> (length (chain-config-extension*
+                              bitcoin-signet-chain*
+                              'signet
+                              '()))
                     0)))
 
   (test "looks up sigilcoin placeholder chain"
@@ -412,6 +441,30 @@
         (assert-true (node-remove-peer* second "127.0.0.1" 18444))
         (assert-equal 0 (length (node-peers* second)))
         (node-close* second))))
+
+  (test "parses bracketed IPv6 peers through CLI"
+    (let ((dir (test-data-dir)))
+      (run-peers* (list "add"
+                        "[2001:db8::1]:38333"
+                        "--chain"
+                        "bitcoin-signet"
+                        "--data-dir"
+                        dir))
+      (run-peers* (list "add"
+                        "[2001:db8::2]"
+                        "--chain"
+                        "bitcoin-signet"
+                        "--data-dir"
+                        dir))
+      (let* ((n (node-open* bitcoin-signet-chain* dir))
+             (peers (node-peers* n))
+             (first (find-peer-by-address peers "2001:db8::1"))
+             (second (find-peer-by-address peers "2001:db8::2")))
+        (assert-true first)
+        (assert-true second)
+        (assert-equal 38333 (node-peer-port* first))
+        (assert-equal 38333 (node-peer-port* second))
+        (node-close* n))))
 
   (test "resolves configured seed peers"
     (let* ((dir (test-data-dir))

@@ -18,17 +18,17 @@
       (println "usage:")
       (println "  sigil-bitcoin-node status [--chain CHAIN] [--data-dir DIR]")
       (println "  sigil-bitcoin-node peers bootstrap [--chain CHAIN] [--data-dir DIR] [--resolve-timeout N] [--max-seeds N] [--max-addresses N]")
-      (println "  sigil-bitcoin-node peers add HOST:PORT [--chain CHAIN] [--data-dir DIR]")
+      (println "  sigil-bitcoin-node peers add HOST[:PORT]|[IPv6]:PORT [--chain CHAIN] [--data-dir DIR]")
       (println "  sigil-bitcoin-node peers list [--chain CHAIN] [--data-dir DIR]")
       (println "  sigil-bitcoin-node peers summary [--chain CHAIN] [--data-dir DIR]")
-      (println "  sigil-bitcoin-node peers remove HOST:PORT [--chain CHAIN] [--data-dir DIR]")
-      (println "  sigil-bitcoin-node peers test HOST:PORT [--chain CHAIN] [--data-dir DIR] [--resolve-timeout N] [--connect-timeout N] [--read-timeout N]")
-      (println "  sigil-bitcoin-node header-sync --peer HOST:PORT [--chain CHAIN] [--data-dir DIR] [--max-steps N] [--resolve-timeout N] [--connect-timeout N] [--read-timeout N]")
-      (println "  sigil-bitcoin-node sync [--peer HOST:PORT] [--chain CHAIN] [--data-dir DIR] [--max-steps N] [--max-blocks N] [--max-peers N] [--max-retries N] [--resolve-timeout N] [--connect-timeout N] [--read-timeout N]")
-      (println "  sigil-bitcoin-node run [--peer HOST:PORT] [--chain CHAIN] [--data-dir DIR] [--max-steps N] [--max-blocks N] [--iterations N|0] [--max-peers N] [--max-retries N] [--retry-delay N] [--resolve-timeout N] [--connect-timeout N] [--read-timeout N]")
-      (println "  sigil-bitcoin-node probe [--peer HOST:PORT] [--chain CHAIN] [--data-dir DIR] [--max-steps N] [--max-blocks N] [--max-peers N] [--resolve-timeout N] [--connect-timeout N] [--read-timeout N] [--max-seeds N] [--max-addresses N]")
+      (println "  sigil-bitcoin-node peers remove HOST[:PORT]|[IPv6]:PORT [--chain CHAIN] [--data-dir DIR]")
+      (println "  sigil-bitcoin-node peers test HOST[:PORT]|[IPv6]:PORT [--chain CHAIN] [--data-dir DIR] [--resolve-timeout N] [--connect-timeout N] [--read-timeout N]")
+      (println "  sigil-bitcoin-node header-sync --peer HOST[:PORT]|[IPv6]:PORT [--chain CHAIN] [--data-dir DIR] [--max-steps N] [--resolve-timeout N] [--connect-timeout N] [--read-timeout N]")
+      (println "  sigil-bitcoin-node sync [--peer HOST[:PORT]|[IPv6]:PORT] [--chain CHAIN] [--data-dir DIR] [--max-steps N] [--max-blocks N] [--max-peers N] [--max-retries N] [--resolve-timeout N] [--connect-timeout N] [--read-timeout N]")
+      (println "  sigil-bitcoin-node run [--peer HOST[:PORT]|[IPv6]:PORT] [--chain CHAIN] [--data-dir DIR] [--max-steps N] [--max-blocks N] [--iterations N|0] [--max-peers N] [--max-retries N] [--retry-delay N] [--resolve-timeout N] [--connect-timeout N] [--read-timeout N]")
+      (println "  sigil-bitcoin-node probe [--peer HOST[:PORT]|[IPv6]:PORT] [--chain CHAIN] [--data-dir DIR] [--max-steps N] [--max-blocks N] [--max-peers N] [--resolve-timeout N] [--connect-timeout N] [--read-timeout N] [--max-seeds N] [--max-addresses N]")
       (println "")
-      (println "chains: bitcoin-mainnet, bitcoin-testnet, bitcoin-testnet4, bitcoin-regtest, sigilcoin"))
+      (println "chains: bitcoin-mainnet, bitcoin-testnet, bitcoin-testnet4, bitcoin-signet, bitcoin-regtest, sigilcoin"))
 
     (define (arg-value args name default)
       (let loop ((xs args))
@@ -38,17 +38,60 @@
               (else
                (loop (cdr xs))))))
 
-    (define (parse-peer text default-port)
-      (let ((parts (string-split text ":")))
-        (cond ((= 1 (length parts))
-               (cons (car parts) default-port))
-              ((= 2 (length parts))
-               (let ((port (string->number (cadr parts))))
-                 (unless port
-                   (error "header-sync: peer port must be a number"))
-                 (cons (car parts) port)))
+    (define (arg-values args name)
+      (let loop ((xs args) (out '()))
+        (cond ((null? xs) (reverse out))
+              ((and (string=? (car xs) name) (not (null? (cdr xs))))
+               (loop (cddr xs) (cons (cadr xs) out)))
               (else
-               (error "header-sync: expected HOST or HOST:PORT")))))
+               (loop (cdr xs) out)))))
+
+    (define (string-prefix? prefix text)
+      (let ((len (string-length prefix)))
+        (and (<= len (string-length text))
+             (string=? prefix (substring text 0 len)))))
+
+    (define (find-char text ch start)
+      (let loop ((i start))
+        (cond ((>= i (string-length text)) #f)
+              ((char=? ch (string-ref text i)) i)
+              (else (loop (+ i 1))))))
+
+    (define (parse-port text context)
+      (let ((port (string->number text)))
+        (unless port
+          (error (string-append context ": peer port must be a number")))
+        port))
+
+    (define (parse-bracketed-peer text default-port context)
+      (let ((close (find-char text #\] 1)))
+        (unless close
+          (error (string-append context ": expected closing ] in IPv6 peer")))
+        (let ((host (substring text 1 close))
+              (rest (substring text (+ close 1) (string-length text))))
+          (cond ((string=? rest "")
+                 (cons host default-port))
+                ((string-prefix? ":" rest)
+                 (cons host
+                       (parse-port (substring rest 1 (string-length rest))
+                                   context)))
+                (else
+                 (error (string-append context
+                                       ": expected [IPv6] or [IPv6]:PORT")))))))
+
+    (define (parse-peer text default-port)
+      (let ((context "peer"))
+        (if (string-prefix? "[" text)
+            (parse-bracketed-peer text default-port context)
+            (let ((parts (string-split text ":")))
+              (cond ((= 1 (length parts))
+                     (cons (car parts) default-port))
+                    ((= 2 (length parts))
+                     (cons (car parts) (parse-port (cadr parts) context)))
+                    (else
+                     (error (string-append
+                              context
+                              ": IPv6 peers must use [IPv6] or [IPv6]:PORT"))))))))
 
     (define (status-number args name default)
       (let ((value (string->number (arg-value args name default))))
@@ -240,17 +283,6 @@
                        (error (string-append "peers: unknown subcommand "
                                              subcommand)))))))))
 
-    (define (selected-peer n args command)
-      (let ((peer-text (arg-value args "--peer" #f)))
-        (if peer-text
-            (parse-peer peer-text (chain-config-default-port (node-chain n)))
-            (let ((peers (node-peers n)))
-              (if (null? peers)
-                  (error (string-append command ": no peers configured; use peers add HOST:PORT"))
-                  (let ((peer (car peers)))
-                    (cons (node-peer-address peer)
-                          (node-peer-port peer))))))))
-
     (define (exception-message-or err fallback)
       (let ((message (exception-message err)))
         (if (string? message) message fallback)))
@@ -343,29 +375,43 @@
                                        write-envelope
                                        max-steps)))))))))
 
+    (define (sync-configured-peer-texts n peer-texts connect-peer max-steps max-blocks command)
+      (let loop ((texts peer-texts))
+        (if (null? texts)
+            (error (string-append command ": peer sync failed"))
+            (let* ((peer (parse-peer
+                           (car texts)
+                           (chain-config-default-port (node-chain n))))
+                   (status (node-sync-configured-peer
+                             n
+                             (car peer)
+                             (cdr peer)
+                             connect-peer
+                             max-steps
+                             max-blocks)))
+              (if (string=? "failed"
+                            (node-status-snapshot-sync-stage status))
+                  (loop (cdr texts))
+                  status)))))
+
     (define (sync-node-once n args command)
-      (let* ((peer-text (arg-value args "--peer" #f))
+      (let* ((peer-texts (arg-values args "--peer"))
              (max-steps (status-number args "--max-steps" "64"))
              (max-blocks (status-number args "--max-blocks" "16"))
              (max-peers (status-number args "--max-peers" "8"))
              (max-retries (status-number args "--max-retries" "0"))
              (timeouts (peer-timeouts args)))
-        (if peer-text
-            (let ((peer (selected-peer n args command)))
-              (let ((status (node-sync-configured-peer
-                              n
-                              (car peer)
-                              (cdr peer)
-                              (connect-node-peer-with-timeouts
-                                (car timeouts)
-                                (cadr timeouts)
-                                (caddr timeouts))
-                              max-steps
-                              max-blocks)))
-                (if (string=? "failed"
-                              (node-status-snapshot-sync-stage status))
-                    (error (string-append command ": peer sync failed"))
-                    status)))
+        (if (not (null? peer-texts))
+            (sync-configured-peer-texts
+              n
+              peer-texts
+              (connect-node-peer-with-timeouts
+                (car timeouts)
+                (cadr timeouts)
+                (caddr timeouts))
+              max-steps
+              max-blocks
+              command)
             (node-sync-with-peers n
                                   (connect-node-peer-with-timeouts
                                     (car timeouts)

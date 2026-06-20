@@ -24,7 +24,7 @@
     chain-config-extensions
     chain-config-extension chain-config-mining-metadata
     bitcoin-mainnet-chain bitcoin-testnet-chain bitcoin-testnet4-chain
-    bitcoin-regtest-chain
+    bitcoin-signet-chain bitcoin-regtest-chain
     chain-config-by-name
     node node?
     node-chain node-data-dir node-db-path node-db
@@ -96,6 +96,10 @@
       (block-header-parse
         (hex-decode
           "0100000000000000000000000000000000000000000000000000000000000000000000004e7b2b9128fe0291db0693af2ae418b767e657cd407e80cb1434221eaea7a07a046f3566ffff001dbb0c7817")))
+    (define %bitcoin-signet-genesis-header
+      (block-header-parse
+        (hex-decode
+          "0100000000000000000000000000000000000000000000000000000000000000000000003ba3edfd7a7b12b27ac72c3e67768f617fc81bc3888a51323a9fb8aa4b1e5e4a008f4d5fae77031e8ad22203")))
     (define %bitcoin-regtest-genesis-header
       (block-header-parse
         (hex-decode
@@ -241,6 +245,23 @@
                                             (network . testnet4)
                                             (retarget-base-rule . planned))))))
 
+    (define bitcoin-signet-chain
+      (chain-config name: "bitcoin-signet"
+                    network-id: "signet"
+                    magic: bitcoin-signet-magic
+                    default-port: 38333
+                    seed-peers: '(("seed.signet.bitcoin.sprovoost.nl" . 38333)
+                                  ("seed.signet.achownodes.xyz" . 38333))
+                    protocol-version: 70015
+                    services: 1
+                    user-agent: "/sigil-bitcoin-node:0.1.0/"
+                    genesis-header: %bitcoin-signet-genesis-header
+                    genesis-hash: (block-header-hash %bitcoin-signet-genesis-header)
+                    consensus-params: bitcoin-signet-consensus-params
+                    extensions: '((signet . ((status . partial)
+                                             (challenge . "512103ad5e0edad18cb1f0fc0d28a3d4f1f3e445640337489abb10404f2d1e086be430210359ef5021964fe22d6f8e05b2463c9540ce96883fe3b278760f048f5189f2e6c452ae")
+                                             (block-signature-validation . planned))))))
+
     (define bitcoin-regtest-chain
       (chain-config name: "bitcoin-regtest"
                     network-id: "regtest"
@@ -311,6 +332,8 @@
             ((string=? name "testnet3") bitcoin-testnet-chain)
             ((string=? name "bitcoin-testnet4") bitcoin-testnet4-chain)
             ((string=? name "testnet4") bitcoin-testnet4-chain)
+            ((string=? name "bitcoin-signet") bitcoin-signet-chain)
+            ((string=? name "signet") bitcoin-signet-chain)
             ((string=? name "bitcoin-regtest") bitcoin-regtest-chain)
             ((string=? name "regtest") bitcoin-regtest-chain)
             ((string=? name "sigilcoin") sigilcoin-chain)
@@ -1698,6 +1721,7 @@
     (%module-export! 'bitcoin-mainnet-chain)
     (%module-export! 'bitcoin-testnet-chain)
     (%module-export! 'bitcoin-testnet4-chain)
+    (%module-export! 'bitcoin-signet-chain)
     (%module-export! 'bitcoin-regtest-chain)
     (%module-export! 'chain-config-by-name)
     (%module-export! 'node-status)

@@ -149,6 +149,7 @@
     (assert-equal #u8(#xf9 #xbe #xb4 #xd9) bitcoin-mainnet-magic)
     (assert-equal #u8(#x0b #x11 #x09 #x07) bitcoin-testnet-magic)
     (assert-equal #u8(#x1c #x16 #x3f #x28) bitcoin-testnet4-magic)
+    (assert-equal #u8(#x0a #x03 #xcf #x40) bitcoin-signet-magic)
     (assert-equal #u8(#xfa #xbf #xb5 #xda) bitcoin-regtest-magic))
 
   (test "serializes and parses ping envelope"

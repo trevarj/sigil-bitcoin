@@ -4,7 +4,7 @@ set -eu
 ROOT=$(CDPATH= cd "$(dirname "$0")/.." && pwd)
 SIGIL=${SIGIL:-"$ROOT/../sigil/build/dev/bin/sigil"}
 DATA_DIR=${SIGIL_BITCOIN_LIVE_DATA_DIR:-/tmp/sigil-bitcoin-live-probe}
-CHAIN=${SIGIL_BITCOIN_LIVE_CHAIN:-bitcoin-testnet}
+CHAIN=${SIGIL_BITCOIN_LIVE_CHAIN:-bitcoin-signet}
 PEERS=${SIGIL_BITCOIN_LIVE_PEERS:-}
 MAX_PEERS=${SIGIL_BITCOIN_LIVE_MAX_PEERS:-35}
 MAX_RETRIES=${SIGIL_BITCOIN_LIVE_MAX_RETRIES:-0}
@@ -22,8 +22,8 @@ usage() {
 usage: scripts/live-testnet-probe.sh [options]
 
 Options:
-  --peer HOST:PORT       Add a manual testnet peer. May be repeated.
-  --chain CHAIN          Chain to probe, default bitcoin-testnet.
+  --peer HOST[:PORT]     Add a manual peer. Use [IPv6]:PORT for IPv6. May be repeated.
+  --chain CHAIN          Chain to probe, default bitcoin-signet.
   --data-dir DIR         Probe database directory.
   --max-peers N          Maximum persisted peers to try.
   --max-retries N        Per-peer retry limit.

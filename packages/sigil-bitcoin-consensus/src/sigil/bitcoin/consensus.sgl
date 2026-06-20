@@ -30,6 +30,7 @@
     bitcoin-mainnet-consensus-params
     bitcoin-testnet-consensus-params
     bitcoin-testnet4-consensus-params
+    bitcoin-signet-consensus-params
     bitcoin-regtest-consensus-params
     validate-block-header
     validate-block
@@ -144,6 +145,22 @@
     ;;; rule, but these activation heights keep block validation chain-driven.
     (define bitcoin-testnet4-consensus-params
       (consensus-params pow-limit-bits: #x1d00ffff
+                        target-spacing: 600
+                        target-timespan: 1209600
+                        retarget-interval: 2016
+                        bip34-height: 1
+                        bip66-height: 1
+                        bip65-height: 1
+                        csv-height: 1
+                        segwit-height: 1
+                        taproot-height: 1))
+
+    ;;; Default signet parameters from Bitcoin Core chainparams.
+    ;;;
+    ;;; Signet's block-signature challenge is chain metadata; this consensus
+    ;;; record only carries generic header/block activation and PoW settings.
+    (define bitcoin-signet-consensus-params
+      (consensus-params pow-limit-bits: #x1e0377ae
                         target-spacing: 600
                         target-timespan: 1209600
                         retarget-interval: 2016
