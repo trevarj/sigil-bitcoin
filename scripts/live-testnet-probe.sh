@@ -15,6 +15,7 @@ MAX_ADDRESSES=${SIGIL_BITCOIN_LIVE_MAX_ADDRESSES:-16}
 RESOLVE_TIMEOUT=${SIGIL_BITCOIN_LIVE_RESOLVE_TIMEOUT:-2000}
 CONNECT_TIMEOUT=${SIGIL_BITCOIN_LIVE_CONNECT_TIMEOUT:-5000}
 READ_TIMEOUT=${SIGIL_BITCOIN_LIVE_READ_TIMEOUT:-5000}
+DEADLINE=${SIGIL_BITCOIN_LIVE_DEADLINE:-120}
 
 usage() {
   cat <<'EOF'
@@ -33,6 +34,7 @@ Options:
   --resolve-timeout N    DNS resolve timeout in milliseconds.
   --connect-timeout N    TCP connect timeout in milliseconds.
   --read-timeout N       Socket read timeout in milliseconds.
+  --deadline N           Whole probe deadline in seconds, 0 disables it.
   -h, --help             Show this help.
 EOF
 }
@@ -103,6 +105,11 @@ while [ "$#" -gt 0 ]; do
       READ_TIMEOUT=$2
       shift 2
       ;;
+    --deadline)
+      [ "$#" -ge 2 ] || { echo "missing value for --deadline" >&2; exit 2; }
+      DEADLINE=$2
+      shift 2
+      ;;
     -h|--help)
       usage
       exit 0
@@ -136,9 +143,30 @@ if [ -n "$PEERS" ]; then
   done
 fi
 
-if guix shell -m ../../manifest.scm -- \
-  "$SIGIL" run --redirects ../../dev-redirects.sgl -- "$@"; then
+run_probe_command() {
+  if [ "$DEADLINE" -gt 0 ]; then
+    if ! command -v timeout >/dev/null 2>&1; then
+      echo "timeout command is required for --deadline; rerun with --deadline 0 to disable" >&2
+      exit 2
+    fi
+    timeout --kill-after=5s "${DEADLINE}s" \
+      guix shell -m ../../manifest.scm -- \
+        "$SIGIL" run --redirects ../../dev-redirects.sgl -- "$@"
+  else
+    guix shell -m ../../manifest.scm -- \
+      "$SIGIL" run --redirects ../../dev-redirects.sgl -- "$@"
+  fi
+}
+
+set +e
+run_probe_command "$@"
+probe_status=$?
+set -e
+if [ "$probe_status" -eq 0 ]; then
   exit 0
+fi
+if [ "$probe_status" -eq 124 ] || [ "$probe_status" -eq 137 ]; then
+  echo "probe-deadline: exceeded ${DEADLINE}s" >&2
 fi
 
 guix shell -m ../../manifest.scm -- \
