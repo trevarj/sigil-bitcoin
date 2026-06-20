@@ -128,6 +128,13 @@
       (println "run-attempts: ~a" (node-status-snapshot-run-attempts status))
       (println "run-last-result: ~a" (node-status-snapshot-run-last-result status))
       (println "run-last-error: ~a" (node-status-snapshot-run-last-error status))
+      (println "run-mode: ~a" (node-status-snapshot-run-mode status))
+      (println "run-target-iterations: ~a"
+               (node-status-snapshot-run-target-iterations status))
+      (println "run-completed-iterations: ~a"
+               (node-status-snapshot-run-completed-iterations status))
+      (println "run-retry-count: ~a"
+               (node-status-snapshot-run-retry-count status))
       (println "last-peer-success: ~a" (node-status-snapshot-last-peer-success status))
       (println "last-peer-error: ~a" (node-status-snapshot-last-peer-error status))
       (println "sync-progress: ~a/~a"
@@ -517,14 +524,33 @@
           (let ((iterations (status-number args "--iterations" "1"))
                 (max-retries (status-number args "--max-retries" "3"))
                 (retry-delay (status-number args "--retry-delay" "0")))
+            (node-record-run-loop-state
+              n
+              (if (= iterations 0) "unbounded" "bounded")
+              iterations
+              0
+              0)
             (let loop ((completed 0) (retries 0) (last #f))
+              (node-record-run-loop-state
+                n
+                (if (= iterations 0) "unbounded" "bounded")
+                iterations
+                completed
+                retries)
               (if (iteration-limit-reached? iterations completed)
                   last
                   (if (run-loop-sync-attempt n args)
                       (loop (+ completed 1) 0 #t)
                       (begin
                         (if (>= retries max-retries)
-                            (error "run: max retries exceeded")
+                            (begin
+                              (node-record-run-loop-state
+                                n
+                                (if (= iterations 0) "unbounded" "bounded")
+                                iterations
+                                completed
+                                retries)
+                              (error "run: max retries exceeded"))
                             (begin
                               (when (> retry-delay 0)
                                 (sleep retry-delay))

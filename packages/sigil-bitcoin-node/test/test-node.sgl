@@ -50,6 +50,8 @@
   (module-ref %node-module 'node-bootstrap-discovered-peers))
 (define node-test-peer* (module-ref %node-module 'node-test-peer))
 (define node-record-run-attempt* (module-ref %node-module 'node-record-run-attempt))
+(define node-record-run-loop-state*
+  (module-ref %node-module 'node-record-run-loop-state))
 (define node-store-block* (module-ref %node-module 'node-store-block))
 (define node-download-blocks* (module-ref %node-module 'node-download-blocks))
 (define node-validate-blocks* (module-ref %node-module 'node-validate-blocks))
@@ -108,6 +110,14 @@
   (module-ref %node-module 'node-status-snapshot-run-last-result))
 (define node-status-snapshot-run-last-error*
   (module-ref %node-module 'node-status-snapshot-run-last-error))
+(define node-status-snapshot-run-mode*
+  (module-ref %node-module 'node-status-snapshot-run-mode))
+(define node-status-snapshot-run-target-iterations*
+  (module-ref %node-module 'node-status-snapshot-run-target-iterations))
+(define node-status-snapshot-run-completed-iterations*
+  (module-ref %node-module 'node-status-snapshot-run-completed-iterations))
+(define node-status-snapshot-run-retry-count*
+  (module-ref %node-module 'node-status-snapshot-run-retry-count))
 (define node-status-snapshot-last-peer-success*
   (module-ref %node-module 'node-status-snapshot-last-peer-success))
 (define node-status-snapshot-last-peer-error*
@@ -1084,6 +1094,14 @@
         (assert-equal 2 (node-status-snapshot-run-attempts* status))
         (assert-equal "success" (node-status-snapshot-run-last-result* status))
         (assert-equal "" (node-status-snapshot-run-last-error* status)))
+      (node-record-run-loop-state* n "unbounded" 0 7 2)
+      (let ((status (node-status* n)))
+        (assert-equal "unbounded" (node-status-snapshot-run-mode* status))
+        (assert-equal 0
+                      (node-status-snapshot-run-target-iterations* status))
+        (assert-equal 7
+                      (node-status-snapshot-run-completed-iterations* status))
+        (assert-equal 2 (node-status-snapshot-run-retry-count* status)))
       (node-close* n)))
 
   (test "records direct peer connect failure metadata"
@@ -1211,6 +1229,12 @@
       (let* ((n (node-open* bitcoin-regtest-chain* dir))
              (status (node-status* n)))
         (assert-equal 1 (node-status-snapshot-run-attempts* status))
+        (assert-equal "bounded" (node-status-snapshot-run-mode* status))
+        (assert-equal 1
+                      (node-status-snapshot-run-target-iterations* status))
+        (assert-equal 0
+                      (node-status-snapshot-run-completed-iterations* status))
+        (assert-equal 0 (node-status-snapshot-run-retry-count* status))
         (node-close* n))))
 
   (test "reports block request and download stages"

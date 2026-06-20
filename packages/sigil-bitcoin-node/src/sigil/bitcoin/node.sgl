@@ -50,6 +50,10 @@
     node-status-snapshot-run-attempts
     node-status-snapshot-run-last-result
     node-status-snapshot-run-last-error
+    node-status-snapshot-run-mode
+    node-status-snapshot-run-target-iterations
+    node-status-snapshot-run-completed-iterations
+    node-status-snapshot-run-retry-count
     node-status-snapshot-last-peer-success
     node-status-snapshot-last-peer-error
     node-peer node-peer?
@@ -73,6 +77,7 @@
     node-test-peer
     node-record-run-attempt
     node-record-run-failure
+    node-record-run-loop-state
     node-store-block
     node-download-blocks
     node-validate-blocks
@@ -172,6 +177,10 @@
       (run-attempts integer?)
       (run-last-result string?)
       (run-last-error string?)
+      (run-mode string?)
+      (run-target-iterations integer?)
+      (run-completed-iterations integer?)
+      (run-retry-count integer?)
       (last-peer-success string?)
       (last-peer-error string?))
 
@@ -671,6 +680,10 @@
       (db-ensure-metadata db "run-attempts" "0")
       (db-ensure-metadata db "run-last-result" "")
       (db-ensure-metadata db "run-last-error" "")
+      (db-ensure-metadata db "run-mode" "")
+      (db-ensure-metadata db "run-target-iterations" "0")
+      (db-ensure-metadata db "run-completed-iterations" "0")
+      (db-ensure-metadata db "run-retry-count" "0")
       (let* ((genesis (chain-config-genesis-header chain))
              (hash-text (hex-encode (chain-config-genesis-hash chain))))
         (unless (db-header-row db hash-text)
@@ -923,6 +936,15 @@
           run-attempts: (metadata-number db "run-attempts" 0)
           run-last-result: (run-last-result-value db)
           run-last-error: (run-last-error-value db)
+          run-mode: (db-metadata db "run-mode" "")
+          run-target-iterations: (metadata-number db
+                                                  "run-target-iterations"
+                                                  0)
+          run-completed-iterations: (metadata-number
+                                      db
+                                      "run-completed-iterations"
+                                      0)
+          run-retry-count: (metadata-number db "run-retry-count" 0)
           last-peer-success: (db-last-peer-success db)
           last-peer-error: (db-last-peer-error db))))
 
@@ -1243,6 +1265,26 @@
     (define (node-record-run-failure n)
       (: node? -> node-status-snapshot?)
       (node-record-run-attempt n "failure" "run failed"))
+
+    ;;; Record long-running node loop state for status inspection.
+    ;;;
+    ;;; ```scheme
+    ;;; (node-record-run-loop-state n "bounded" 5 2 0)
+    ;;; ```
+    (define (node-record-run-loop-state n mode target-iterations completed-iterations retry-count)
+      (: node? string? integer? integer? integer? -> node-status-snapshot?)
+      (let ((db (node-db n)))
+        (db-set-metadata db "run-mode" mode)
+        (db-set-metadata db
+                         "run-target-iterations"
+                         (number->string target-iterations))
+        (db-set-metadata db
+                         "run-completed-iterations"
+                         (number->string completed-iterations))
+        (db-set-metadata db
+                         "run-retry-count"
+                         (number->string retry-count))
+        (node-status n)))
 
     ;;; Test whether a peer transport can be opened and update peer health.
     ;;;
@@ -1782,6 +1824,10 @@
     (%module-export! 'node-status-snapshot-run-attempts)
     (%module-export! 'node-status-snapshot-run-last-result)
     (%module-export! 'node-status-snapshot-run-last-error)
+    (%module-export! 'node-status-snapshot-run-mode)
+    (%module-export! 'node-status-snapshot-run-target-iterations)
+    (%module-export! 'node-status-snapshot-run-completed-iterations)
+    (%module-export! 'node-status-snapshot-run-retry-count)
     (%module-export! 'node-status-snapshot-last-peer-success)
     (%module-export! 'node-status-snapshot-last-peer-error)
     (%module-export! 'node-peer)
@@ -1810,6 +1856,7 @@
     (%module-export! 'node-test-peer)
     (%module-export! 'node-record-run-attempt)
     (%module-export! 'node-record-run-failure)
+    (%module-export! 'node-record-run-loop-state)
     (%module-export! 'node-store-block)
     (%module-export! 'node-download-blocks)
     (%module-export! 'node-validate-blocks)
