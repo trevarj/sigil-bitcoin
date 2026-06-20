@@ -10,6 +10,8 @@ MAX_PEERS=${SIGIL_BITCOIN_LIVE_MAX_PEERS:-35}
 MAX_RETRIES=${SIGIL_BITCOIN_LIVE_MAX_RETRIES:-0}
 MAX_STEPS=${SIGIL_BITCOIN_LIVE_MAX_STEPS:-64}
 MAX_BLOCKS=${SIGIL_BITCOIN_LIVE_MAX_BLOCKS:-1}
+MAX_SEEDS=${SIGIL_BITCOIN_LIVE_MAX_SEEDS:-8}
+MAX_ADDRESSES=${SIGIL_BITCOIN_LIVE_MAX_ADDRESSES:-16}
 RESOLVE_TIMEOUT=${SIGIL_BITCOIN_LIVE_RESOLVE_TIMEOUT:-2000}
 CONNECT_TIMEOUT=${SIGIL_BITCOIN_LIVE_CONNECT_TIMEOUT:-5000}
 READ_TIMEOUT=${SIGIL_BITCOIN_LIVE_READ_TIMEOUT:-5000}
@@ -26,6 +28,8 @@ Options:
   --max-retries N        Per-peer retry limit.
   --max-steps N          P2P handshake/header sync step limit.
   --max-blocks N         Maximum blocks to request after headers.
+  --max-seeds N          Maximum DNS seed hosts to query.
+  --max-addresses N      Maximum addresses to keep from each seed.
   --resolve-timeout N    DNS resolve timeout in milliseconds.
   --connect-timeout N    TCP connect timeout in milliseconds.
   --read-timeout N       Socket read timeout in milliseconds.
@@ -74,6 +78,16 @@ while [ "$#" -gt 0 ]; do
       MAX_BLOCKS=$2
       shift 2
       ;;
+    --max-seeds)
+      [ "$#" -ge 2 ] || { echo "missing value for --max-seeds" >&2; exit 2; }
+      MAX_SEEDS=$2
+      shift 2
+      ;;
+    --max-addresses)
+      [ "$#" -ge 2 ] || { echo "missing value for --max-addresses" >&2; exit 2; }
+      MAX_ADDRESSES=$2
+      shift 2
+      ;;
     --resolve-timeout)
       [ "$#" -ge 2 ] || { echo "missing value for --resolve-timeout" >&2; exit 2; }
       RESOLVE_TIMEOUT=$2
@@ -110,6 +124,8 @@ set -- probe \
   --max-retries "$MAX_RETRIES" \
   --max-steps "$MAX_STEPS" \
   --max-blocks "$MAX_BLOCKS" \
+  --max-seeds "$MAX_SEEDS" \
+  --max-addresses "$MAX_ADDRESSES" \
   --resolve-timeout "$RESOLVE_TIMEOUT" \
   --connect-timeout "$CONNECT_TIMEOUT" \
   --read-timeout "$READ_TIMEOUT"
