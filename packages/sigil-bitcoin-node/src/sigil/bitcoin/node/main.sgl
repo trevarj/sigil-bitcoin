@@ -116,6 +116,9 @@
       (println "validated-blocks: ~a" (node-status-snapshot-validated-block-count status))
       (println "best-block-height: ~a" (node-status-snapshot-best-block-height status))
       (println "peers: ~a" (node-status-snapshot-peer-count status))
+      (println "peer-successes: ~a" (node-status-snapshot-peer-success-count status))
+      (println "peer-failures: ~a" (node-status-snapshot-peer-failure-count status))
+      (println "peer-untried: ~a" (node-status-snapshot-peer-untried-count status))
       (println "pending-blocks: ~a" (node-status-snapshot-pending-block-count status))
       (println "requested-blocks: ~a" (node-status-snapshot-requested-block-count status))
       (println "failed-blocks: ~a" (node-status-snapshot-failed-block-count status))
@@ -125,6 +128,7 @@
       (println "run-attempts: ~a" (node-status-snapshot-run-attempts status))
       (println "run-last-result: ~a" (node-status-snapshot-run-last-result status))
       (println "run-last-error: ~a" (node-status-snapshot-run-last-error status))
+      (println "last-peer-success: ~a" (node-status-snapshot-last-peer-success status))
       (println "last-peer-error: ~a" (node-status-snapshot-last-peer-error status))
       (println "sync-progress: ~a/~a"
                (node-status-snapshot-best-block-height status)

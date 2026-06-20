@@ -38,6 +38,9 @@
     node-status-snapshot-validated-block-count
     node-status-snapshot-best-block-height
     node-status-snapshot-peer-count
+    node-status-snapshot-peer-success-count
+    node-status-snapshot-peer-failure-count
+    node-status-snapshot-peer-untried-count
     node-status-snapshot-pending-block-count
     node-status-snapshot-requested-block-count
     node-status-snapshot-failed-block-count
@@ -47,6 +50,7 @@
     node-status-snapshot-run-attempts
     node-status-snapshot-run-last-result
     node-status-snapshot-run-last-error
+    node-status-snapshot-last-peer-success
     node-status-snapshot-last-peer-error
     node-peer node-peer?
     node-peer-address node-peer-port node-peer-score
@@ -156,6 +160,9 @@
       (validated-block-count integer?)
       (best-block-height integer?)
       (peer-count integer?)
+      (peer-success-count integer?)
+      (peer-failure-count integer?)
+      (peer-untried-count integer?)
       (pending-block-count integer?)
       (requested-block-count integer?)
       (failed-block-count integer?)
@@ -165,6 +172,7 @@
       (run-attempts integer?)
       (run-last-result string?)
       (run-last-error string?)
+      (last-peer-success string?)
       (last-peer-error string?))
 
     ;;; Persisted peer metadata used by node sync commands.
@@ -519,6 +527,13 @@
       (let ((row (sqlite-query-row db "SELECT COUNT(*) AS count FROM peers")))
         (if row (row-ref row "count") 0)))
 
+    (define (db-peer-result-count db result)
+      (let ((row (sqlite-query-row
+                   db
+                   "SELECT COUNT(*) AS count FROM peers WHERE last_result = ?"
+                   result)))
+        (if row (row-ref row "count") 0)))
+
     (define (chain-block-stage-count db rows stage)
       (let loop ((xs rows) (count 0))
         (if (null? xs)
@@ -696,6 +711,15 @@
                                                (row-ref row "port"))
                            " "
                            (row-ref row "last_error"))
+            "")))
+
+    (define (db-last-peer-success db)
+      (let ((row (sqlite-query-row
+                   db
+                   "SELECT address, port FROM peers WHERE last_result = 'success' ORDER BY score DESC, last_seen DESC, address ASC, port ASC LIMIT 1")))
+        (if row
+            (peer-endpoint-text (row-ref row "address")
+                                (row-ref row "port"))
             "")))
 
     (define (run-last-error-value db)
@@ -887,6 +911,9 @@
           validated-block-count: (db-validated-block-count db)
           best-block-height: (db-best-block-height db)
           peer-count: (db-peer-count db)
+          peer-success-count: (db-peer-result-count db "success")
+          peer-failure-count: (db-peer-result-count db "failure")
+          peer-untried-count: (db-peer-result-count db "")
           pending-block-count: (pending-chain-block-count db rows)
           requested-block-count: (requested-chain-block-count db rows)
           failed-block-count: (failed-chain-block-count db rows)
@@ -896,6 +923,7 @@
           run-attempts: (metadata-number db "run-attempts" 0)
           run-last-result: (run-last-result-value db)
           run-last-error: (run-last-error-value db)
+          last-peer-success: (db-last-peer-success db)
           last-peer-error: (db-last-peer-error db))))
 
     (define (locator-heights best-height)
@@ -1742,6 +1770,9 @@
     (%module-export! 'node-status-snapshot-validated-block-count)
     (%module-export! 'node-status-snapshot-best-block-height)
     (%module-export! 'node-status-snapshot-peer-count)
+    (%module-export! 'node-status-snapshot-peer-success-count)
+    (%module-export! 'node-status-snapshot-peer-failure-count)
+    (%module-export! 'node-status-snapshot-peer-untried-count)
     (%module-export! 'node-status-snapshot-pending-block-count)
     (%module-export! 'node-status-snapshot-requested-block-count)
     (%module-export! 'node-status-snapshot-failed-block-count)
@@ -1751,6 +1782,7 @@
     (%module-export! 'node-status-snapshot-run-attempts)
     (%module-export! 'node-status-snapshot-run-last-result)
     (%module-export! 'node-status-snapshot-run-last-error)
+    (%module-export! 'node-status-snapshot-last-peer-success)
     (%module-export! 'node-status-snapshot-last-peer-error)
     (%module-export! 'node-peer)
     (%module-export! 'node-peer?)

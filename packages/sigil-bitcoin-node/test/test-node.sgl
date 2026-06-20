@@ -84,6 +84,12 @@
   (module-ref %node-module 'node-status-snapshot-best-block-height))
 (define node-status-snapshot-peer-count*
   (module-ref %node-module 'node-status-snapshot-peer-count))
+(define node-status-snapshot-peer-success-count*
+  (module-ref %node-module 'node-status-snapshot-peer-success-count))
+(define node-status-snapshot-peer-failure-count*
+  (module-ref %node-module 'node-status-snapshot-peer-failure-count))
+(define node-status-snapshot-peer-untried-count*
+  (module-ref %node-module 'node-status-snapshot-peer-untried-count))
 (define node-status-snapshot-pending-block-count*
   (module-ref %node-module 'node-status-snapshot-pending-block-count))
 (define node-status-snapshot-requested-block-count*
@@ -102,6 +108,8 @@
   (module-ref %node-module 'node-status-snapshot-run-last-result))
 (define node-status-snapshot-run-last-error*
   (module-ref %node-module 'node-status-snapshot-run-last-error))
+(define node-status-snapshot-last-peer-success*
+  (module-ref %node-module 'node-status-snapshot-last-peer-success))
 (define node-status-snapshot-last-peer-error*
   (module-ref %node-module 'node-status-snapshot-last-peer-error))
 (define run-peers* (module-ref %node-main-module 'run-peers))
@@ -719,6 +727,36 @@
         (assert-equal "success" (node-peer-last-result* passed))
         (assert-equal "" (node-peer-last-error* passed))
         (assert-equal 1 closed))
+      (node-close* n)))
+
+  (test "reports peer connectivity counters in status"
+    (let* ((dir (test-data-dir))
+           (n (node-open* bitcoin-regtest-chain* dir)))
+      (node-add-peer* n "untried.example" 18444)
+      (node-test-peer*
+        n
+        "failed.example"
+        18444
+        (lambda (peer)
+          (error "p2p-socket-connect-timeout: connection refused")))
+      (node-test-peer*
+        n
+        "2001:db8::1"
+        18444
+        (lambda (peer)
+          (list (lambda () (error "unexpected read"))
+                (lambda (envelope) #t)
+                (lambda () #t))))
+      (let ((status (node-status* n)))
+        (assert-equal 3 (node-status-snapshot-peer-count* status))
+        (assert-equal 1 (node-status-snapshot-peer-success-count* status))
+        (assert-equal 1 (node-status-snapshot-peer-failure-count* status))
+        (assert-equal 1 (node-status-snapshot-peer-untried-count* status))
+        (assert-equal "[2001:db8::1]:18444"
+                      (node-status-snapshot-last-peer-success* status))
+        (assert-equal
+          "failed.example:18444 connect failed: p2p-socket-connect-timeout: connection refused"
+          (node-status-snapshot-last-peer-error* status)))
       (node-close* n)))
 
   (test "falls back to the next persisted peer"
