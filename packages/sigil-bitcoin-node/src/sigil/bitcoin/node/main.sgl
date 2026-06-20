@@ -8,7 +8,8 @@
           (sigil bitcoin node)
           (sigil bitcoin p2p))
   (export main
-          run-loop)
+          run-loop
+          run-probe)
   (begin
 
     (define (usage)
@@ -22,6 +23,7 @@
       (println "  sigil-bitcoin-node header-sync --peer HOST:PORT [--chain CHAIN] [--data-dir DIR] [--max-steps N] [--resolve-timeout N] [--connect-timeout N] [--read-timeout N]")
       (println "  sigil-bitcoin-node sync [--peer HOST:PORT] [--chain CHAIN] [--data-dir DIR] [--max-steps N] [--max-blocks N] [--max-peers N] [--max-retries N] [--resolve-timeout N] [--connect-timeout N] [--read-timeout N]")
       (println "  sigil-bitcoin-node run [--peer HOST:PORT] [--chain CHAIN] [--data-dir DIR] [--max-steps N] [--max-blocks N] [--iterations N|0] [--max-peers N] [--max-retries N] [--retry-delay N] [--resolve-timeout N] [--connect-timeout N] [--read-timeout N]")
+      (println "  sigil-bitcoin-node probe [--peer HOST:PORT] [--chain CHAIN] [--data-dir DIR] [--max-steps N] [--max-blocks N] [--max-peers N] [--resolve-timeout N] [--connect-timeout N] [--read-timeout N] [--max-seeds N] [--max-addresses N]")
       (println "")
       (println "chains: bitcoin-mainnet, bitcoin-testnet, bitcoin-regtest, sigilcoin"))
 
@@ -56,6 +58,8 @@
       (println "best-height: ~a" (node-status-snapshot-best-height status))
       (println "best-hash: ~a" (node-status-snapshot-best-hash status))
       (println "best-work: ~a" (node-status-snapshot-best-work status))
+      (println "best-header-time: ~a" (node-status-snapshot-best-header-time status))
+      (println "header-sync-lag: ~a" (node-status-snapshot-header-sync-lag status))
       (println "headers: ~a" (node-status-snapshot-header-count status))
       (println "blocks: ~a" (node-status-snapshot-block-count status))
       (println "validated-blocks: ~a" (node-status-snapshot-validated-block-count status))
@@ -354,6 +358,33 @@
                                 (sleep retry-delay))
                               (loop completed (+ retries 1) last)))))))))))
 
+    (define (maybe-bootstrap-probe-peers n args)
+      (if (or (arg-value args "--peer" #f)
+              (> (node-status-snapshot-peer-count (node-status n)) 0))
+          0
+          (let ((resolve-timeout
+                  (status-number args "--resolve-timeout" "2000"))
+                (max-seeds
+                  (status-number args "--max-seeds" "8"))
+                (max-addresses
+                  (status-number args "--max-addresses" "16")))
+            (node-bootstrap-discovered-peers n
+                                            resolve-seed-host
+                                            resolve-timeout
+                                            max-seeds
+                                            max-addresses))))
+
+    (define (run-probe args)
+      (with-node args
+        (lambda (n)
+          (let ((bootstrapped (maybe-bootstrap-probe-peers n args)))
+            (println "bootstrapped-peers: ~a" bootstrapped)
+            (guard (err
+                    (else
+                     (print-status (node-status n))
+                     (error "probe: sync failed")))
+              (print-status (sync-node-once n args "probe")))))))
+
     (define (main)
       (: -> void?)
       (let ((args (cdr (command-line))))
@@ -369,6 +400,8 @@
                (run-sync-once (cdr args) "sync"))
               ((string=? (car args) "run")
                (run-loop (cdr args)))
+              ((string=? (car args) "probe")
+               (run-probe (cdr args)))
               (else
                (usage)
                (error (string-append "unknown command: " (car args)))))))))

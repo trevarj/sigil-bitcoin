@@ -59,6 +59,10 @@
   (module-ref %node-module 'node-status-snapshot-chain))
 (define node-status-snapshot-best-height*
   (module-ref %node-module 'node-status-snapshot-best-height))
+(define node-status-snapshot-best-header-time*
+  (module-ref %node-module 'node-status-snapshot-best-header-time))
+(define node-status-snapshot-header-sync-lag*
+  (module-ref %node-module 'node-status-snapshot-header-sync-lag))
 (define node-status-snapshot-header-count*
   (module-ref %node-module 'node-status-snapshot-header-count))
 (define node-status-snapshot-block-count*
@@ -90,6 +94,7 @@
 (define node-status-snapshot-last-peer-error*
   (module-ref %node-module 'node-status-snapshot-last-peer-error))
 (define run-loop* (module-ref %node-main-module 'run-loop))
+(define run-probe* (module-ref %node-main-module 'run-probe))
 
 (define (test-chain seed-peers extensions)
   (let ((genesis (chain-config-genesis-header* bitcoin-regtest-chain*)))
@@ -235,6 +240,9 @@
   (test "exports peer add"
     (assert-true (procedure? node-add-peer*)))
 
+  (test "exports live probe entry point"
+    (assert-true (procedure? run-probe*)))
+
   (test "looks up builtin chains"
     (assert-equal "bitcoin-mainnet"
                   (chain-config-name*
@@ -267,6 +275,19 @@
       (assert-true (> (length (chain-config-mining-metadata* chain))
                       0))))
 
+  (test "keeps sigilcoin node runtime config chain-local"
+    (let ((chain (chain-config-by-name* "sigilcoin")))
+      (assert-equal 19444 (chain-config-default-port* chain))
+      (assert-equal 70015 (chain-config-protocol-version chain))
+      (assert-equal 1 (chain-config-services chain))
+      (assert-equal "/sigilcoin-node:0.1.0/"
+                    (chain-config-user-agent chain))
+      (assert-true (> (length (chain-config-seed-peers* chain)) 0))
+      (assert-equal 8333
+                    (chain-config-default-port* bitcoin-mainnet-chain*))
+      (assert-equal "/sigil-bitcoin-node:0.1.0/"
+                    (chain-config-user-agent bitcoin-mainnet-chain*))))
+
   (test "attaches chain mining metadata without changing bitcoin"
     (let* ((metadata '((irc-channel . "#sigilcoin")
                        (claim-format . "sigilcoin-v1")))
@@ -286,6 +307,10 @@
                     (node-status-snapshot-chain* status))
       (assert-equal 0
                     (node-status-snapshot-best-height* status))
+      (assert-equal 1296688602
+                    (node-status-snapshot-best-header-time* status))
+      (assert-true (>= (node-status-snapshot-header-sync-lag* status)
+                       0))
       (assert-equal 1
                     (node-status-snapshot-header-count* status))
       (assert-true
@@ -560,7 +585,8 @@
                (good (find-peer-by-address peers "good.example")))
           (assert-equal 1 (node-peer-failures* bad))
           (assert-equal "failure" (node-peer-last-result* bad))
-          (assert-equal "connect failed" (node-peer-last-error* bad))
+          (assert-equal "connect failed: simulated connect failure"
+                        (node-peer-last-error* bad))
           (assert-equal 1 (node-peer-score* good))
           (assert-equal "success" (node-peer-last-result* good))))
       (node-close* n)))

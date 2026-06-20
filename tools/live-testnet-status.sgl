@@ -1,0 +1,32 @@
+(import (sigil core)
+        (sigil bitcoin node))
+
+(define n (node-open bitcoin-testnet-chain "/tmp/sigil-bitcoin-live-probe"))
+(define status (node-status n))
+
+(println "status chain=~a peers=~a headers=~a best-height=~a best-header-time=~a header-sync-lag=~a blocks=~a validated=~a stage=~a failed-stage=~a sync-error=~a last-peer-error=~a"
+         (node-status-snapshot-chain status)
+         (node-status-snapshot-peer-count status)
+         (node-status-snapshot-header-count status)
+         (node-status-snapshot-best-height status)
+         (node-status-snapshot-best-header-time status)
+         (node-status-snapshot-header-sync-lag status)
+         (node-status-snapshot-block-count status)
+         (node-status-snapshot-validated-block-count status)
+         (node-status-snapshot-sync-stage status)
+         (node-status-snapshot-sync-failed-stage status)
+         (node-status-snapshot-sync-last-error status)
+         (node-status-snapshot-last-peer-error status))
+
+(for-each
+  (lambda (peer)
+    (when (string=? "failure" (node-peer-last-result peer))
+      (println "peer-error ~a:~a failures=~a score=~a error=~a"
+               (node-peer-address peer)
+               (node-peer-port peer)
+               (node-peer-failures peer)
+               (node-peer-score peer)
+               (node-peer-last-error peer))))
+  (node-peers n))
+
+(node-close n)

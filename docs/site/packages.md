@@ -40,4 +40,4 @@ Use this page as a quick map from package to responsibility.
 
 ## Node
 
-`(sigil bitcoin node)` owns chain configs, SQLite-backed header persistence, best-header/status queries, validated header ingestion, and a `status`/`header-sync` CLI entrypoint.
+`(sigil bitcoin node)` owns chain configs, SQLite-backed header/block persistence, best-header/status queries, validated header ingestion, peer-driven sync, bounded live probes, and `status`/`header-sync`/`sync`/`run` node CLI entrypoints.

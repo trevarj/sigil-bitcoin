@@ -3,6 +3,10 @@
 (define-library (sigil bitcoin node)
   (import (sigil struct)
           (sigil fs)
+          (sigil error)
+          (sigil math)
+          (sigil string)
+          (sigil time)
           (sigil sqlite)
           (sigil socket)
           (sigil bitcoin encoding)
@@ -26,6 +30,8 @@
     node-status node-status-snapshot?
     node-status-snapshot-chain node-status-snapshot-best-hash
     node-status-snapshot-best-height node-status-snapshot-best-work
+    node-status-snapshot-best-header-time
+    node-status-snapshot-header-sync-lag
     node-status-snapshot-header-count
     node-status-snapshot-block-count
     node-status-snapshot-validated-block-count
@@ -133,6 +139,8 @@
       (best-hash string?)
       (best-height integer?)
       (best-work integer?)
+      (best-header-time integer?)
+      (header-sync-lag integer?)
       (header-count integer?)
       (block-count integer?)
       (validated-block-count integer?)
@@ -389,6 +397,31 @@
     (define (metadata-number db key default)
       (let ((value (string->number (db-metadata db key (number->string default)))))
         (if value value default)))
+
+    (define (current-unix-second)
+      (exact (floor (current-second))))
+
+    (define (best-header-time-value row)
+      (if row
+          (row-ref row "time")
+          0))
+
+    (define (best-header-sync-lag row)
+      (let ((lag (- (current-unix-second) (best-header-time-value row))))
+        (if (< lag 0) 0 lag)))
+
+    (define (exception-message-or err fallback)
+      (let ((message (exception-message err)))
+        (if (string? message) message fallback)))
+
+    (define (connect-failure-reason err)
+      (let ((message (exception-message-or err "transport unavailable")))
+        (cond ((string-contains? message "resolve")
+               (string-append "resolve failed: " message))
+              ((string-contains? message "timed out")
+               (string-append "connect timed out: " message))
+              (else
+               (string-append "connect failed: " message)))))
 
     (define (db-header-row db hash-text)
       (sqlite-query-row
@@ -790,6 +823,8 @@
           best-hash: (if row (row-ref row "hash") "")
           best-height: (if row (header-row-height row) 0)
           best-work: (if row (header-row-work row) 0)
+          best-header-time: (best-header-time-value row)
+          header-sync-lag: (best-header-sync-lag row)
           header-count: (db-header-count db)
           block-count: (db-block-count db)
           validated-block-count: (db-validated-block-count db)
@@ -1451,8 +1486,9 @@
         (node-add-peer n address port)
         (guard (err
                 (else
-                 (db-set-sync-failure (node-db n) "connect" "connect failed")
-                 (node-peer-failure-with-error n address port "connect failed")
+                 (let ((reason (connect-failure-reason err)))
+                   (db-set-sync-failure (node-db n) "connect" reason)
+                   (node-peer-failure-with-error n address port reason))
                  #f))
           (set! transport (connect-peer peer)))
         (if transport
@@ -1519,6 +1555,8 @@
     (%module-export! 'bitcoin-regtest-chain)
     (%module-export! 'chain-config-by-name)
     (%module-export! 'node-status)
+    (%module-export! 'node-status-snapshot-best-header-time)
+    (%module-export! 'node-status-snapshot-header-sync-lag)
     (%module-export! 'node-status-snapshot-block-count)
     (%module-export! 'node-status-snapshot-validated-block-count)
     (%module-export! 'node-status-snapshot-best-block-height)
