@@ -451,10 +451,43 @@
       (assert-equal 0
                     (node-bootstrap-discovered-peers*
                       n
-                      resolver
-                      2500
-                      2
-                      4))
+                    resolver
+                    2500
+                    2
+                    4))
+      (node-close* n)))
+
+  (test "skips unroutable discovered peers"
+    (let* ((dir (test-data-dir))
+           (chain (test-chain '(("seed.example" . 18444)) '()))
+           (n (node-open* chain dir)))
+      (assert-equal
+        2
+        (node-bootstrap-discovered-peers*
+          n
+          (lambda (host port timeout-ms)
+            '("10.0.0.1"
+              "100.64.254.152"
+              "127.0.0.1"
+              "169.254.10.20"
+              "172.16.0.1"
+              "192.168.1.1"
+              "224.0.0.1"
+              "fc00::1"
+              "fe80::1"
+              "::1"
+              "93.184.216.34"
+              "2606:2800:220:1:248:1893:25c8:1946"))
+          100
+          1
+          2))
+      (let ((peers (node-peers* n)))
+        (assert-equal 2 (length peers))
+        (assert-true (find-peer-by-address peers "93.184.216.34"))
+        (assert-true
+          (find-peer-by-address peers
+                                "2606:2800:220:1:248:1893:25c8:1946"))
+        (assert-false (find-peer-by-address peers "100.64.254.152")))
       (node-close* n)))
 
   (test "keeps manual and discovered peer sources separate"
@@ -940,7 +973,7 @@
         (node-bootstrap-discovered-peers*
           n
           (lambda (host port timeout-ms)
-            '("10.0.0.7"))
+            '("93.184.216.7"))
           100
           1
           1))
@@ -948,7 +981,7 @@
       (let ((status (node-sync-with-peers*
                       n
                       (lambda (peer)
-                        (if (string=? "10.0.0.7"
+                        (if (string=? "93.184.216.7"
                                       (node-peer-address* peer))
                             (error "p2p-socket-connect-timeout: connection refused")
                             (empty-sync-transport chain (lambda () #t))))
@@ -957,7 +990,7 @@
                       8
                       0)))
         (assert-equal "idle" (node-status-snapshot-sync-stage* status)))
-      (let ((peer (find-peer-by-address (node-peers* n) "10.0.0.7")))
+      (let ((peer (find-peer-by-address (node-peers* n) "93.184.216.7")))
         (assert-equal "discovered" (node-peer-source* peer))
         (assert-equal "seed.example" (node-peer-seed-host* peer))
         (assert-equal "failure" (node-peer-last-result* peer))
