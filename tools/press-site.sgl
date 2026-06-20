@@ -169,9 +169,10 @@
     (string-append "api/" slug "/")))
 
 (define (first-line str)
-  (: string? -> string?)
-  (let ((pos (string-find str "\n")))
-    (if pos (substring str 0 pos) str)))
+  (: any? -> string?)
+  (let* ((s (if (string? str) str ""))
+         (pos (string-find s "\n")))
+    (if pos (substring s 0 pos) s)))
 
 (define (public-export? export)
   (: any? -> boolean?)

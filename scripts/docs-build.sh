@@ -74,18 +74,41 @@ for package in $PACKAGES; do
 done
 
 lib_args=()
-for src_dir in "$DEP_ROOT"/*/src; do
+press_lib_packages=(
+  press
+  sigil-css
+  sigil-docs
+  sigil-fp
+  sigil-markdown
+  sigil-peg
+  sigil-sxml
+)
+
+for package in $press_lib_packages; do
+  src_dir="$DEP_ROOT/$package/src"
   if [ -d "$src_dir" ]; then
     lib_args+=(-L "$src_dir")
   fi
 done
 
 cd "$ROOT"
+wasm_backup=""
+if [ -d public/assets/wasm ]; then
+  wasm_backup=$(mktemp -d "${TMPDIR:-/tmp}/sigil-bitcoin-docs-wasm.XXXXXX")
+  cp -R public/assets/wasm "$wasm_backup/wasm"
+fi
+
 rm -rf public
 
 "$SIGIL" "${lib_args[@]}" \
   -L packages/sigil-bitcoin-miniscript/build/dev/lib \
   eval -f tools/press-site.sgl
+
+if [ -n "$wasm_backup" ] && [ -d "$wasm_backup/wasm" ]; then
+  mkdir -p public/assets
+  cp -R "$wasm_backup/wasm" public/assets/wasm
+  rm -rf "$wasm_backup"
+fi
 
 cp tools/press-search-index.json public/search-index.json
 rebase_pages_urls
