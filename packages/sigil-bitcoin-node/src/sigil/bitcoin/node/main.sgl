@@ -17,10 +17,10 @@
       (println "  sigil-bitcoin-node peers add HOST:PORT [--chain CHAIN] [--data-dir DIR]")
       (println "  sigil-bitcoin-node peers list [--chain CHAIN] [--data-dir DIR]")
       (println "  sigil-bitcoin-node peers remove HOST:PORT [--chain CHAIN] [--data-dir DIR]")
-      (println "  sigil-bitcoin-node peers test HOST:PORT [--chain CHAIN] [--data-dir DIR]")
-      (println "  sigil-bitcoin-node header-sync --peer HOST:PORT [--chain CHAIN] [--data-dir DIR] [--max-steps N]")
-      (println "  sigil-bitcoin-node sync [--peer HOST:PORT] [--chain CHAIN] [--data-dir DIR] [--max-steps N] [--max-blocks N] [--max-peers N] [--max-retries N]")
-      (println "  sigil-bitcoin-node run [--peer HOST:PORT] [--chain CHAIN] [--data-dir DIR] [--max-steps N] [--max-blocks N] [--iterations N] [--max-peers N] [--max-retries N] [--retry-delay N]")
+      (println "  sigil-bitcoin-node peers test HOST:PORT [--chain CHAIN] [--data-dir DIR] [--resolve-timeout N] [--connect-timeout N] [--read-timeout N]")
+      (println "  sigil-bitcoin-node header-sync --peer HOST:PORT [--chain CHAIN] [--data-dir DIR] [--max-steps N] [--resolve-timeout N] [--connect-timeout N] [--read-timeout N]")
+      (println "  sigil-bitcoin-node sync [--peer HOST:PORT] [--chain CHAIN] [--data-dir DIR] [--max-steps N] [--max-blocks N] [--max-peers N] [--max-retries N] [--resolve-timeout N] [--connect-timeout N] [--read-timeout N]")
+      (println "  sigil-bitcoin-node run [--peer HOST:PORT] [--chain CHAIN] [--data-dir DIR] [--max-steps N] [--max-blocks N] [--iterations N] [--max-peers N] [--max-retries N] [--retry-delay N] [--resolve-timeout N] [--connect-timeout N] [--read-timeout N]")
       (println "")
       (println "chains: bitcoin-mainnet, bitcoin-testnet, bitcoin-regtest, sigilcoin"))
 
@@ -163,10 +163,14 @@
                        (let* ((peer (parse-peer (car rest)
                                                 (chain-config-default-port
                                                   (node-chain n))))
+                              (timeouts (peer-timeouts rest))
                               (tested (node-test-peer n
                                                       (car peer)
                                                       (cdr peer)
-                                                      connect-node-peer)))
+                                                      (connect-node-peer-with-timeouts
+                                                        (car timeouts)
+                                                        (cadr timeouts)
+                                                        (caddr timeouts)))))
                          (print-peer tested)))
                       (else
                        (usage)
@@ -184,28 +188,60 @@
                     (cons (node-peer-address peer)
                           (node-peer-port peer))))))))
 
-    (define (with-peer-socket n peer proc)
-      (let ((sock (p2p-socket-connect (car peer) (cdr peer))))
+    (define (try-connect-peer-address address port timeout-ms)
+      (guard (err (else #f))
+        (p2p-socket-connect-timeout address port timeout-ms)))
+
+    (define (connect-peer-socket host port resolve-timeout connect-timeout)
+      (let loop ((addresses (resolve-seed-host host port resolve-timeout)))
+        (cond ((null? addresses)
+               (error "connect-peer-socket: connection failed"))
+              (else
+               (let ((sock (try-connect-peer-address
+                             (car addresses)
+                             port
+                             connect-timeout)))
+                 (if sock
+                     sock
+                     (loop (cdr addresses))))))))
+
+    (define (with-peer-socket n peer resolve-timeout connect-timeout read-timeout proc)
+      (let ((sock (connect-peer-socket (car peer)
+                                       (cdr peer)
+                                       resolve-timeout
+                                       connect-timeout)))
         (guard (err
                 (else
                  (socket-close sock)
                  (error "with-peer-socket: peer transport failed")))
           (let ((result
                   (proc
-                    (lambda () (p2p-socket-read-envelope sock))
+                    (lambda () (p2p-socket-read-envelope-timeout sock read-timeout))
                     (lambda (envelope)
                       (p2p-socket-write-envelope sock envelope)))))
             (socket-close sock)
             result))))
 
-    (define (connect-node-peer peer)
-      (let ((sock (p2p-socket-connect (node-peer-address peer)
-                                      (node-peer-port peer))))
-        (list
-          (lambda () (p2p-socket-read-envelope sock))
-          (lambda (envelope)
-            (p2p-socket-write-envelope sock envelope))
-          (lambda () (socket-close sock)))))
+    (define (connect-node-peer-with-timeouts resolve-timeout connect-timeout read-timeout)
+      (lambda (peer)
+        (let ((sock (connect-peer-socket (node-peer-address peer)
+                                         (node-peer-port peer)
+                                         resolve-timeout
+                                         connect-timeout)))
+          (list
+            (lambda () (p2p-socket-read-envelope-timeout sock read-timeout))
+            (lambda (envelope)
+              (p2p-socket-write-envelope sock envelope))
+            (lambda () (socket-close sock))))))
+
+    (define connect-node-peer
+      (connect-node-peer-with-timeouts 2000 5000 5000))
+
+    (define (peer-timeouts args)
+      (list
+        (status-number args "--resolve-timeout" "2000")
+        (status-number args "--connect-timeout" "5000")
+        (status-number args "--read-timeout" "5000")))
 
     (define (run-header-sync args)
       (let ((peer-text (arg-value args "--peer" #f)))
@@ -219,9 +255,14 @@
                                      (chain-config-default-port chain)))
                    (host (car peer))
                    (port (cdr peer))
-                   (max-steps (status-number args "--max-steps" "64")))
+                   (max-steps (status-number args "--max-steps" "64"))
+                   (timeouts (peer-timeouts args)))
               (node-add-peer n host port)
-              (with-peer-socket n peer
+              (with-peer-socket n
+                                peer
+                                (car timeouts)
+                                (cadr timeouts)
+                                (caddr timeouts)
                 (lambda (read-envelope write-envelope)
                   (print-status
                     (node-sync-headers n
@@ -236,11 +277,16 @@
                  (max-steps (status-number args "--max-steps" "64"))
                  (max-blocks (status-number args "--max-blocks" "16"))
                  (max-peers (status-number args "--max-peers" "8"))
-                 (max-retries (status-number args "--max-retries" "0")))
+                 (max-retries (status-number args "--max-retries" "0"))
+                 (timeouts (peer-timeouts args)))
             (if peer-text
                 (let ((peer (selected-peer n args command)))
                   (node-add-peer n (car peer) (cdr peer))
-                  (with-peer-socket n peer
+                  (with-peer-socket n
+                                    peer
+                                    (car timeouts)
+                                    (cadr timeouts)
+                                    (caddr timeouts)
                     (lambda (read-envelope write-envelope)
                       (print-status
                         (node-sync-with-peer n
@@ -252,7 +298,10 @@
                                              max-blocks)))))
                 (print-status
                   (node-sync-with-peers n
-                                        connect-node-peer
+                                        (connect-node-peer-with-timeouts
+                                          (car timeouts)
+                                          (cadr timeouts)
+                                          (caddr timeouts))
                                         max-peers
                                         max-retries
                                         max-steps

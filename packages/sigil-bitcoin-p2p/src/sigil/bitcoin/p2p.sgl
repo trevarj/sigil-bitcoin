@@ -76,7 +76,9 @@
     p2p-read-envelope
     p2p-write-envelope
     p2p-socket-connect
+    p2p-socket-connect-timeout
     p2p-socket-read-envelope
+    p2p-socket-read-envelope-timeout
     p2p-socket-write-envelope
     p2p-session-create
     p2p-session-start
@@ -346,10 +348,41 @@
           (error "p2p-socket-connect: connection failed"))
         sock))
 
+    ;;; Connect to a numeric peer address with a bounded timeout.
+    ;;;
+    ;;; DNS resolution is intentionally left to callers so they can apply their
+    ;;; own seed/manual-peer policy before the TCP dial.
+    ;;;
+    ;;; ```scheme
+    ;;; (p2p-socket-connect-timeout "127.0.0.1" 18444 1000)
+    ;;; ```
+    (define (p2p-socket-connect-timeout host port timeout-ms)
+      (: string? integer? integer? -> any?)
+      (let ((sock (%tcp-connect-ip-timeout host port timeout-ms)))
+        (unless sock
+          (error "p2p-socket-connect-timeout: connection failed"))
+        sock))
+
     (define (p2p-socket-read-envelope sock)
       (: any? -> p2p-envelope?)
       (p2p-read-envelope
         (lambda (count)
+          (socket-read-bytevector sock count))))
+
+    ;;; Read one P2P envelope from a socket with a per-chunk timeout.
+    ;;;
+    ;;; The timeout applies before each socket read so a peer cannot stall in
+    ;;; the middle of an envelope indefinitely.
+    ;;;
+    ;;; ```scheme
+    ;;; (p2p-socket-read-envelope-timeout sock 1000)
+    ;;; ```
+    (define (p2p-socket-read-envelope-timeout sock timeout-ms)
+      (: any? integer? -> p2p-envelope?)
+      (p2p-read-envelope
+        (lambda (count)
+          (unless (socket-ready? sock timeout-ms)
+            (error "p2p-socket-read-envelope-timeout: read timed out"))
           (socket-read-bytevector sock count))))
 
     (define (p2p-socket-write-envelope sock envelope)
