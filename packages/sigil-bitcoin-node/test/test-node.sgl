@@ -49,6 +49,8 @@
 (define node-download-blocks* (module-ref %node-module 'node-download-blocks))
 (define node-validate-blocks* (module-ref %node-module 'node-validate-blocks))
 (define node-sync-with-peer* (module-ref %node-module 'node-sync-with-peer))
+(define node-sync-configured-peer*
+  (module-ref %node-module 'node-sync-configured-peer))
 (define node-sync-with-peers* (module-ref %node-module 'node-sync-with-peers))
 (define node-peer-address* (module-ref %node-module 'node-peer-address))
 (define node-peer-port* (module-ref %node-module 'node-peer-port))
@@ -896,6 +898,69 @@
         (assert-equal 2 (node-status-snapshot-run-attempts* status))
         (assert-equal "success" (node-status-snapshot-run-last-result* status))
         (assert-equal "" (node-status-snapshot-run-last-error* status)))
+      (node-close* n)))
+
+  (test "records direct peer connect failure metadata"
+    (let* ((dir (test-data-dir))
+           (n (node-open* bitcoin-regtest-chain* dir))
+           (status (node-sync-configured-peer*
+                     n
+                     "direct.example"
+                     18444
+                     (lambda (peer)
+                       (error "p2p-socket-connect-timeout: connection refused"))
+                     1
+                     0))
+           (peer (car (node-peers* n))))
+        (assert-equal "failed" (node-status-snapshot-sync-stage* status))
+        (assert-equal "connect"
+                      (node-status-snapshot-sync-failed-stage* status))
+        (assert-equal
+          "connect failed: p2p-socket-connect-timeout: connection refused"
+          (node-status-snapshot-sync-last-error* status))
+        (assert-equal
+          "direct.example:18444 connect failed: p2p-socket-connect-timeout: connection refused"
+          (node-status-snapshot-last-peer-error* status))
+        (assert-equal "manual" (node-peer-source* peer))
+        (assert-equal "failure" (node-peer-last-result* peer))
+        (assert-equal
+          "connect failed: p2p-socket-connect-timeout: connection refused"
+          (node-peer-last-error* peer))
+      (node-close* n)))
+
+  (test "preserves discovered peer metadata across failed sync attempts"
+    (let* ((dir (test-data-dir))
+           (chain (test-chain '(("seed.example" . 18444)) '()))
+           (n (node-open* chain dir)))
+      (assert-equal
+        1
+        (node-bootstrap-discovered-peers*
+          n
+          (lambda (host port timeout-ms)
+            '("10.0.0.7"))
+          100
+          1
+          1))
+      (node-add-peer* n "success.example" 18444)
+      (let ((status (node-sync-with-peers*
+                      n
+                      (lambda (peer)
+                        (if (string=? "10.0.0.7"
+                                      (node-peer-address* peer))
+                            (error "p2p-socket-connect-timeout: connection refused")
+                            (empty-sync-transport chain (lambda () #t))))
+                      2
+                      0
+                      8
+                      0)))
+        (assert-equal "idle" (node-status-snapshot-sync-stage* status)))
+      (let ((peer (find-peer-by-address (node-peers* n) "10.0.0.7")))
+        (assert-equal "discovered" (node-peer-source* peer))
+        (assert-equal "seed.example" (node-peer-seed-host* peer))
+        (assert-equal "failure" (node-peer-last-result* peer))
+        (assert-equal
+          "connect failed: p2p-socket-connect-timeout: connection refused"
+          (node-peer-last-error* peer)))
       (node-close* n)))
 
   (test "run loop persists failed attempts"

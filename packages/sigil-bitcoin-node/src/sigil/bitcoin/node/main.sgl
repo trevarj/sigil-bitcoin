@@ -301,20 +301,20 @@
              (timeouts (peer-timeouts args)))
         (if peer-text
             (let ((peer (selected-peer n args command)))
-              (node-add-peer n (car peer) (cdr peer))
-              (with-peer-socket n
-                                peer
+              (let ((status (node-sync-configured-peer
+                              n
+                              (car peer)
+                              (cdr peer)
+                              (connect-node-peer-with-timeouts
                                 (car timeouts)
                                 (cadr timeouts)
-                                (caddr timeouts)
-                (lambda (read-envelope write-envelope)
-                  (node-sync-with-peer n
-                                       (car peer)
-                                       (cdr peer)
-                                       read-envelope
-                                       write-envelope
-                                       max-steps
-                                       max-blocks))))
+                                (caddr timeouts))
+                              max-steps
+                              max-blocks)))
+                (if (string=? "failed"
+                              (node-status-snapshot-sync-stage status))
+                    (error (string-append command ": peer sync failed"))
+                    status)))
             (node-sync-with-peers n
                                   (connect-node-peer-with-timeouts
                                     (car timeouts)

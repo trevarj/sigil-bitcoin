@@ -74,6 +74,7 @@
     node-validate-blocks
     node-sync-headers
     node-sync-with-peer
+    node-sync-configured-peer
     node-sync-with-peers
     node-sync)
   (begin
@@ -1115,6 +1116,12 @@
     (define (node-peer-failure n address port)
       (node-peer-failure-with-error n address port "failure"))
 
+    (define (node-ensure-peer n address port)
+      (let ((existing (node-peer-row n address port)))
+        (if existing
+            (db-peer-row->peer existing)
+            (node-add-peer n address port))))
+
     ;;; Record one long-running node loop attempt.
     ;;;
     ;;; ```scheme
@@ -1458,7 +1465,7 @@
     ;;; ```
     (define (node-sync-with-peer n address port read-envelope write-envelope max-steps max-blocks)
       (: node? string? integer? procedure? procedure? integer? integer? -> node-status-snapshot?)
-      (node-add-peer n address port)
+      (node-ensure-peer n address port)
       (guard (err
               (else
                (node-peer-failure-with-error
@@ -1509,7 +1516,7 @@
       (let ((address (node-peer-address peer))
             (port (node-peer-port peer))
             (transport #f))
-        (node-add-peer n address port)
+        (node-ensure-peer n address port)
         (guard (err
                 (else
                  (let ((reason (connect-failure-reason err)))
@@ -1532,6 +1539,27 @@
                 (transport-close transport)
                 status))
             #f)))
+
+    ;;; Sync one explicitly configured peer through the persisted-peer path.
+    ;;;
+    ;;; This is the command-facing variant for `--peer HOST:PORT`: it records
+    ;;; connect failures with the same metadata as peer-list sync and returns
+    ;;; the resulting status snapshot.
+    ;;;
+    ;;; ```scheme
+    ;;; (node-sync-configured-peer n "127.0.0.1" 18444 connect-peer 64 16)
+    ;;; ```
+    (define (node-sync-configured-peer n address port connect-peer max-steps max-blocks)
+      (: node? string? integer? procedure? integer? integer? -> node-status-snapshot?)
+      (let ((status (sync-peer-via-connector
+                      n
+                      (node-add-peer n address port)
+                      connect-peer
+                      max-steps
+                      max-blocks)))
+        (if status
+            status
+            (node-status n))))
 
     (define (try-peer-list n peers connect-peer max-steps max-blocks)
       (let loop ((xs peers))
@@ -1628,5 +1656,6 @@
     (%module-export! 'node-download-blocks)
     (%module-export! 'node-validate-blocks)
     (%module-export! 'node-sync-with-peer)
+    (%module-export! 'node-sync-configured-peer)
     (%module-export! 'node-sync-with-peers)
     (%module-export! 'node-sync))
