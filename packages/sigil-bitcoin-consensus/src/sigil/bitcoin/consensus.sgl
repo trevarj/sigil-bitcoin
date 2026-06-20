@@ -550,14 +550,24 @@
                    (< version 4))
           (error "connect-block: BIP65 requires block version 4 or newer"))))
 
+    (define (bip34-height-chunk? chunk height)
+      (let ((opcode (script-chunk-opcode chunk))
+            (data (script-chunk-data chunk)))
+        (cond (data
+               (equal? (script-number-encode height) data))
+              ((= opcode op-0)
+               (= height 0))
+              ((and (>= opcode op-1) (<= opcode op-16))
+               (= height (- opcode #x50)))
+              (else
+               #f))))
+
     (define (validate-bip34-coinbase-height params height coinbase)
       (when (height-active? height (consensus-params-bip34-height params))
         (let* ((script (txin-script-sig (car (transaction-inputs coinbase))))
                (chunks (script-parse script)))
           (unless (and (not (null? chunks))
-                       (script-push-chunk? (car chunks))
-                       (equal? (script-number-encode height)
-                               (script-chunk-data (car chunks))))
+                       (bip34-height-chunk? (car chunks) height))
             (error "coinbase: BIP34 height commitment mismatch")))))
 
     (define (all-inputs-final? tx)

@@ -505,7 +505,23 @@
 
   (test "enforces BIP34 coinbase heights and deployment versions"
     (let* ((coinbase (make-bip34-coinbase-tx (block-subsidy 2) 2))
+           (small-int-coinbase
+             (transaction
+               version: 1
+               inputs: (list
+                 (txin previous-output: (outpoint txid: %zero32 index: #xffffffff)
+                       script-sig: (script-append (script-op op-1)
+                                                  (script-op op-1))
+                       sequence: #xffffffff
+                       witness: '()))
+               outputs: (list
+                 (txout value: (block-subsidy 1) script-pubkey: #u8(#x51)))
+               lock-time: 0))
            (good (make-versioned-test-block 4 (list coinbase) 2))
+           (good-small-int (make-versioned-test-block
+                             4
+                             (list small-int-coinbase)
+                             1))
            (bad-version (make-versioned-test-block 3 (list coinbase) 2))
            (bad-coinbase (make-versioned-test-block
                            4
@@ -516,6 +532,11 @@
           (utxo-set-lookup
             (connect-block %active-deployment-params 2 '() good)
             (outpoint txid: (transaction-txid coinbase) index: 0))))
+      (assert-true
+        (utxo-entry?
+          (utxo-set-lookup
+            (connect-block %active-deployment-params 1 '() good-small-int)
+            (outpoint txid: (transaction-txid small-int-coinbase) index: 0))))
       (assert-error
         (connect-block %active-deployment-params 2 '() bad-version))
       (assert-error
