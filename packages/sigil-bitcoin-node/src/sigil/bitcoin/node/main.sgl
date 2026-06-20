@@ -13,9 +13,11 @@
     (define (usage)
       (println "usage:")
       (println "  sigil-bitcoin-node status [--chain CHAIN] [--data-dir DIR]")
+      (println "  sigil-bitcoin-node peers bootstrap [--chain CHAIN] [--data-dir DIR]")
       (println "  sigil-bitcoin-node peers add HOST:PORT [--chain CHAIN] [--data-dir DIR]")
       (println "  sigil-bitcoin-node peers list [--chain CHAIN] [--data-dir DIR]")
       (println "  sigil-bitcoin-node peers remove HOST:PORT [--chain CHAIN] [--data-dir DIR]")
+      (println "  sigil-bitcoin-node peers test HOST:PORT [--chain CHAIN] [--data-dir DIR]")
       (println "  sigil-bitcoin-node header-sync --peer HOST:PORT [--chain CHAIN] [--data-dir DIR] [--max-steps N]")
       (println "  sigil-bitcoin-node sync [--peer HOST:PORT] [--chain CHAIN] [--data-dir DIR] [--max-steps N] [--max-blocks N] [--max-peers N] [--max-retries N]")
       (println "  sigil-bitcoin-node run [--peer HOST:PORT] [--chain CHAIN] [--data-dir DIR] [--max-steps N] [--max-blocks N] [--iterations N] [--max-peers N] [--max-retries N] [--retry-delay N]")
@@ -61,19 +63,21 @@
       (println "pending-blocks: ~a" (node-status-snapshot-pending-block-count status))
       (println "requested-blocks: ~a" (node-status-snapshot-requested-block-count status))
       (println "failed-blocks: ~a" (node-status-snapshot-failed-block-count status))
+      (println "sync-stage: ~a" (node-status-snapshot-sync-stage status))
       (println "sync-progress: ~a/~a"
                (node-status-snapshot-best-block-height status)
                (node-status-snapshot-best-height status)))
 
     (define (print-peer peer)
-      (println "~a:~a score=~a failures=~a last-seen=~a last-attempt=~a last-result=~a"
+      (println "~a:~a score=~a failures=~a last-seen=~a last-attempt=~a last-result=~a last-error=~a"
                (node-peer-address peer)
                (node-peer-port peer)
                (node-peer-score peer)
                (node-peer-failures peer)
                (node-peer-last-seen peer)
                (node-peer-last-attempt peer)
-               (node-peer-last-result peer)))
+               (node-peer-last-result peer)
+               (node-peer-last-error peer)))
 
     (define (with-node args proc)
       (let* ((chain-name (arg-value args "--chain" "bitcoin-mainnet"))
@@ -110,6 +114,9 @@
                                                   (node-chain n))))
                               (saved (node-add-peer n (car peer) (cdr peer))))
                          (print-peer saved)))
+                      ((string=? subcommand "bootstrap")
+                       (println "bootstrapped-peers: ~a"
+                                (node-bootstrap-peers n)))
                       ((string=? subcommand "list")
                        (for-each print-peer (node-peers n)))
                       ((string=? subcommand "remove")
@@ -120,6 +127,17 @@
                                                  (node-chain n)))))
                          (node-remove-peer n (car peer) (cdr peer))
                          (println "removed ~a:~a" (car peer) (cdr peer))))
+                      ((string=? subcommand "test")
+                       (when (null? rest)
+                         (error "peers test: missing HOST:PORT"))
+                       (let* ((peer (parse-peer (car rest)
+                                                (chain-config-default-port
+                                                  (node-chain n))))
+                              (tested (node-test-peer n
+                                                      (car peer)
+                                                      (cdr peer)
+                                                      connect-node-peer)))
+                         (print-peer tested)))
                       (else
                        (usage)
                        (error (string-append "peers: unknown subcommand "

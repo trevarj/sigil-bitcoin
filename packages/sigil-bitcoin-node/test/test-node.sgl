@@ -11,13 +11,19 @@
   #u8(#x00 #x00 #x00 #x00 #x00 #x00 #x00 #x00
       #x00 #x00 #x00 #x00 #x00 #x00 #x00 #x01))
 (define %node-module (find-module '(sigil bitcoin node)))
+(define chain-config* (module-ref %node-module 'chain-config))
 (define chain-config-name* (module-ref %node-module 'chain-config-name))
 (define chain-config-by-name* (module-ref %node-module 'chain-config-by-name))
 (define chain-config-default-port*
   (module-ref %node-module 'chain-config-default-port))
+(define chain-config-seed-peers*
+  (module-ref %node-module 'chain-config-seed-peers))
 (define chain-config-genesis-header*
   (module-ref %node-module 'chain-config-genesis-header))
 (define chain-config-magic* (module-ref %node-module 'chain-config-magic))
+(define chain-config-mining-metadata*
+  (module-ref %node-module 'chain-config-mining-metadata))
+(define bitcoin-mainnet-chain* (module-ref %node-module 'bitcoin-mainnet-chain))
 (define bitcoin-regtest-chain* (module-ref %node-module 'bitcoin-regtest-chain))
 (define node-open* (module-ref %node-module 'node-open))
 (define node-close* (module-ref %node-module 'node-close))
@@ -28,6 +34,8 @@
 (define node-add-peer* (module-ref %node-module 'node-add-peer))
 (define node-remove-peer* (module-ref %node-module 'node-remove-peer))
 (define node-peers* (module-ref %node-module 'node-peers))
+(define node-bootstrap-peers* (module-ref %node-module 'node-bootstrap-peers))
+(define node-test-peer* (module-ref %node-module 'node-test-peer))
 (define node-store-block* (module-ref %node-module 'node-store-block))
 (define node-download-blocks* (module-ref %node-module 'node-download-blocks))
 (define node-validate-blocks* (module-ref %node-module 'node-validate-blocks))
@@ -38,6 +46,7 @@
 (define node-peer-score* (module-ref %node-module 'node-peer-score))
 (define node-peer-failures* (module-ref %node-module 'node-peer-failures))
 (define node-peer-last-result* (module-ref %node-module 'node-peer-last-result))
+(define node-peer-last-error* (module-ref %node-module 'node-peer-last-error))
 (define node-block-info-status* (module-ref %node-module 'node-block-info-status))
 (define node-status-snapshot-chain*
   (module-ref %node-module 'node-status-snapshot-chain))
@@ -59,6 +68,23 @@
   (module-ref %node-module 'node-status-snapshot-requested-block-count))
 (define node-status-snapshot-failed-block-count*
   (module-ref %node-module 'node-status-snapshot-failed-block-count))
+(define node-status-snapshot-sync-stage*
+  (module-ref %node-module 'node-status-snapshot-sync-stage))
+
+(define (test-chain seed-peers extensions)
+  (let ((genesis (chain-config-genesis-header* bitcoin-regtest-chain*)))
+    (chain-config* name: "test-chain"
+                   network-id: "test"
+                   magic: (chain-config-magic* bitcoin-regtest-chain*)
+                   default-port: 18444
+                   seed-peers: seed-peers
+                   protocol-version: 70015
+                   services: 1
+                   user-agent: "/test-chain:0.1.0/"
+                   genesis-header: genesis
+                   genesis-hash: (block-header-hash genesis)
+                   consensus-params: bitcoin-regtest-consensus-params
+                   extensions: extensions)))
 
 (define (test-data-dir)
   (let ((dir (make-temp-directory)))
@@ -194,7 +220,25 @@
                   (chain-config-name*
                     (chain-config-by-name* "regtest")))
     (assert-equal 18444
-                  (chain-config-default-port* bitcoin-regtest-chain*))))
+                  (chain-config-default-port* bitcoin-regtest-chain*))
+    (assert-true (> (length (chain-config-seed-peers*
+                              bitcoin-mainnet-chain*))
+                    0))
+    (assert-equal '()
+                  (chain-config-seed-peers* bitcoin-regtest-chain*))
+    (assert-equal '()
+                  (chain-config-mining-metadata*
+                    bitcoin-mainnet-chain*)))
+
+  (test "attaches chain mining metadata without changing bitcoin"
+    (let* ((metadata '((irc-channel . "#sigilcoin")
+                       (claim-format . "sigilcoin-v1")))
+           (chain (test-chain '() (list (cons 'mining metadata)))))
+      (assert-equal '()
+                    (chain-config-mining-metadata*
+                      bitcoin-mainnet-chain*))
+      (assert-equal metadata
+                    (chain-config-mining-metadata* chain)))))
 
 (test-group "node state"
   (test "initializes genesis header"
@@ -270,6 +314,23 @@
         (assert-true (node-remove-peer* second "127.0.0.1" 18444))
         (assert-equal 0 (length (node-peers* second)))
         (node-close* second))))
+
+  (test "bootstraps configured seed peers"
+    (let* ((dir (test-data-dir))
+           (chain (test-chain '(("seed-one.example" . 18444)
+                                ("seed-two.example" . 18445))
+                              '()))
+           (n (node-open* chain dir)))
+      (assert-equal 0
+                    (node-status-snapshot-peer-count*
+                      (node-status* n)))
+      (assert-equal 2 (node-bootstrap-peers* n))
+      (assert-equal 0 (node-bootstrap-peers* n))
+      (let ((peers (node-peers* n)))
+        (assert-equal 2 (length peers))
+        (assert-true (find-peer-by-address peers "seed-one.example"))
+        (assert-true (find-peer-by-address peers "seed-two.example")))
+      (node-close* n)))
 
   (test "builds a database backed header locator"
     (let* ((dir (test-data-dir))
@@ -360,7 +421,33 @@
           1))
       (let ((peer (car (node-peers* n))))
         (assert-equal -1 (node-peer-score* peer))
-        (assert-equal 1 (node-peer-failures* peer)))
+        (assert-equal 1 (node-peer-failures* peer))
+        (assert-equal "failure" (node-peer-last-result* peer))
+        (assert-equal "sync failed" (node-peer-last-error* peer)))
+      (node-close* n)))
+
+  (test "records peer health results and clears stale errors"
+    (let* ((dir (test-data-dir))
+           (n (node-open* bitcoin-regtest-chain* dir))
+           (closed 0)
+           (good-transport
+             (lambda (peer)
+               (list (lambda () (error "unexpected read"))
+                     (lambda (envelope) #t)
+                     (lambda ()
+                       (set! closed (+ closed 1)))))))
+      (let ((failed (node-test-peer*
+                      n
+                      "health.example"
+                      18444
+                      (lambda (peer)
+                        (error "simulated test failure")))))
+        (assert-equal "failure" (node-peer-last-result* failed))
+        (assert-equal "test failed" (node-peer-last-error* failed)))
+      (let ((passed (node-test-peer* n "health.example" 18444 good-transport)))
+        (assert-equal "success" (node-peer-last-result* passed))
+        (assert-equal "" (node-peer-last-error* passed))
+        (assert-equal 1 closed))
       (node-close* n)))
 
   (test "falls back to the next persisted peer"
@@ -386,6 +473,7 @@
                (good (find-peer-by-address peers "good.example")))
           (assert-equal 1 (node-peer-failures* bad))
           (assert-equal "failure" (node-peer-last-result* bad))
+          (assert-equal "connect failed" (node-peer-last-error* bad))
           (assert-equal 1 (node-peer-score* good))
           (assert-equal "success" (node-peer-last-result* good))))
       (node-close* n)))
@@ -460,6 +548,74 @@
                       (inventory-vector-hash (car items))))
       (assert-equal 1
                     (node-status-snapshot-block-count* (node-status* n)))
+      (node-close* n)))
+
+  (test "persists and reports sync stages"
+    (let* ((dir (test-data-dir))
+           (n (node-open* bitcoin-regtest-chain* dir))
+           (header-stage-seen #f)
+           (envelopes (empty-sync-envelopes bitcoin-regtest-chain*))
+           (reader
+             (lambda ()
+               (unless header-stage-seen
+                 (assert-equal "header-sync"
+                               (node-status-snapshot-sync-stage*
+                                 (node-status* n)))
+                 (set! header-stage-seen #t))
+               (when (null? envelopes)
+                 (error "stage reader exhausted"))
+               (let ((envelope (car envelopes)))
+                 (set! envelopes (cdr envelopes))
+                 envelope))))
+      (assert-equal "idle"
+                    (node-status-snapshot-sync-stage*
+                      (node-status* n)))
+      (node-sync-with-peer* n
+                            "stage.example"
+                            18444
+                            reader
+                            (lambda (envelope) #t)
+                            8
+                            4)
+      (assert-true header-stage-seen)
+      (assert-equal "idle"
+                    (node-status-snapshot-sync-stage*
+                      (node-status* n)))
+      (node-close* n)))
+
+  (test "reports block request and download stages"
+    (let* ((dir (test-data-dir))
+           (n (node-open* bitcoin-regtest-chain* dir))
+           (h0 (chain-config-genesis-header* bitcoin-regtest-chain*))
+           (b1 (make-coinbase-block (list h0) 1 1296688602))
+           (h1 (block-header-field b1))
+           (request-stage-seen #f)
+           (download-stage-seen #f))
+      (node-ingest-headers* n (list h1))
+      (assert-equal
+        1
+        (node-download-blocks*
+          n
+          (lambda ()
+            (assert-equal "block-download"
+                          (node-status-snapshot-sync-stage*
+                            (node-status* n)))
+            (set! download-stage-seen #t)
+            (p2p-envelope magic: (chain-config-magic* bitcoin-regtest-chain*)
+                          command: "block"
+                          payload: (block-message b1)))
+          (lambda (envelope)
+            (assert-equal "block-request"
+                          (node-status-snapshot-sync-stage*
+                            (node-status* n)))
+            (set! request-stage-seen #t))
+          4
+          8))
+      (assert-true request-stage-seen)
+      (assert-true download-stage-seen)
+      (assert-equal "idle"
+                    (node-status-snapshot-sync-stage*
+                      (node-status* n)))
       (node-close* n)))
 
   (test "marks notfound block downloads failed"

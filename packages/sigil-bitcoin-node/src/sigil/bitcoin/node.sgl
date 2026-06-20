@@ -12,10 +12,12 @@
     chain-config chain-config?
     chain-config-name chain-config-network-id
     chain-config-magic chain-config-default-port
+    chain-config-seed-peers
     chain-config-protocol-version chain-config-services
     chain-config-user-agent chain-config-genesis-header
     chain-config-genesis-hash chain-config-consensus-params
     chain-config-extensions
+    chain-config-extension chain-config-mining-metadata
     bitcoin-mainnet-chain bitcoin-testnet-chain bitcoin-regtest-chain
     chain-config-by-name
     node node?
@@ -31,10 +33,12 @@
     node-status-snapshot-pending-block-count
     node-status-snapshot-requested-block-count
     node-status-snapshot-failed-block-count
+    node-status-snapshot-sync-stage
     node-peer node-peer?
     node-peer-address node-peer-port node-peer-score
     node-peer-failures node-peer-last-seen
     node-peer-last-attempt node-peer-last-result
+    node-peer-last-error
     node-block-info node-block-info?
     node-block-info-hash node-block-info-height node-block-info-status
     node-open
@@ -45,6 +49,8 @@
     node-add-peer
     node-remove-peer
     node-peers
+    node-bootstrap-peers
+    node-test-peer
     node-store-block
     node-download-blocks
     node-validate-blocks
@@ -85,6 +91,7 @@
       (network-id string?)
       (magic bytevector?)
       (default-port integer?)
+      (seed-peers list?)
       (protocol-version integer?)
       (services integer?)
       (user-agent string?)
@@ -121,7 +128,8 @@
       (peer-count integer?)
       (pending-block-count integer?)
       (requested-block-count integer?)
-      (failed-block-count integer?))
+      (failed-block-count integer?)
+      (sync-stage string?))
 
     ;;; Persisted peer metadata used by node sync commands.
     ;;;
@@ -135,7 +143,8 @@
       (failures integer?)
       (last-seen integer?)
       (last-attempt integer?)
-      (last-result string?))
+      (last-result string?)
+      (last-error string?))
 
     ;;; Persisted block download/validation status.
     ;;;
@@ -152,6 +161,11 @@
                     network-id: "mainnet"
                     magic: bitcoin-mainnet-magic
                     default-port: 8333
+                    seed-peers: '(("seed.bitcoin.sipa.be" . 8333)
+                                  ("dnsseed.bluematt.me" . 8333)
+                                  ("dnsseed.bitcoin.dashjr.org" . 8333)
+                                  ("seed.bitcoin.jonasschnelli.ch" . 8333)
+                                  ("dnsseed.emzy.de" . 8333))
                     protocol-version: 70015
                     services: 1
                     user-agent: "/sigil-bitcoin-node:0.1.0/"
@@ -165,6 +179,9 @@
                     network-id: "testnet"
                     magic: bitcoin-testnet-magic
                     default-port: 18333
+                    seed-peers: '(("testnet-seed.bitcoin.jonasschnelli.ch" . 18333)
+                                  ("seed.tbtc.petertodd.org" . 18333)
+                                  ("testnet-seed.bluematt.me" . 18333))
                     protocol-version: 70015
                     services: 1
                     user-agent: "/sigil-bitcoin-node:0.1.0/"
@@ -178,14 +195,38 @@
                     network-id: "regtest"
                     magic: bitcoin-regtest-magic
                     default-port: 18444
+                    seed-peers: '()
                     protocol-version: 70015
                     services: 1
                     user-agent: "/sigil-bitcoin-node:0.1.0/"
                     genesis-header: %bitcoin-regtest-genesis-header
                     genesis-hash: (block-header-hash %bitcoin-regtest-genesis-header)
                     consensus-params: bitcoin-regtest-consensus-params
-                    extensions: '((sigilcoin-mining . hooks-only)
-                                  (irc-mining . off-chain))))
+                    extensions: '()))
+
+    ;;; Return a chain-specific extension value or `default`.
+    ;;;
+    ;;; ```scheme
+    ;;; (chain-config-extension bitcoin-mainnet-chain 'mining '())
+    ;;; ```
+    (define (chain-config-extension chain key default)
+      (: chain-config? any? any? -> any?)
+      (let ((entry (assoc key (chain-config-extensions chain))))
+        (if entry
+            (cdr entry)
+            default)))
+
+    ;;; Return optional chain-specific mining metadata.
+    ;;;
+    ;;; Future SigilCoin configs can attach mining hooks here without changing
+    ;;; Bitcoin chain behavior.
+    ;;;
+    ;;; ```scheme
+    ;;; (chain-config-mining-metadata bitcoin-mainnet-chain)
+    ;;; ```
+    (define (chain-config-mining-metadata chain)
+      (: chain-config? -> list?)
+      (chain-config-extension chain 'mining '()))
 
     ;;; Return a built-in chain config by canonical or short name.
     ;;;
@@ -252,7 +293,7 @@
         "CREATE TABLE IF NOT EXISTS headers (hash TEXT PRIMARY KEY, prev_hash TEXT NOT NULL, height INTEGER NOT NULL, work TEXT NOT NULL, header_hex TEXT NOT NULL, time INTEGER NOT NULL, bits INTEGER NOT NULL, valid INTEGER NOT NULL)")
       (sqlite-exec
         db
-        "CREATE TABLE IF NOT EXISTS peers (address TEXT NOT NULL, port INTEGER NOT NULL, score INTEGER NOT NULL DEFAULT 0, failures INTEGER NOT NULL DEFAULT 0, last_seen INTEGER NOT NULL DEFAULT 0, last_attempt INTEGER NOT NULL DEFAULT 0, last_result TEXT NOT NULL DEFAULT '', PRIMARY KEY(address, port))")
+        "CREATE TABLE IF NOT EXISTS peers (address TEXT NOT NULL, port INTEGER NOT NULL, score INTEGER NOT NULL DEFAULT 0, failures INTEGER NOT NULL DEFAULT 0, last_seen INTEGER NOT NULL DEFAULT 0, last_attempt INTEGER NOT NULL DEFAULT 0, last_result TEXT NOT NULL DEFAULT '', last_error TEXT NOT NULL DEFAULT '', PRIMARY KEY(address, port))")
       (sqlite-exec
         db
         "CREATE TABLE IF NOT EXISTS blocks (hash TEXT PRIMARY KEY, height INTEGER NOT NULL, status TEXT NOT NULL, block_hex TEXT, validated INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0, requested_by TEXT, requested_at INTEGER NOT NULL DEFAULT 0, request_count INTEGER NOT NULL DEFAULT 0, last_error TEXT NOT NULL DEFAULT '')")
@@ -261,6 +302,7 @@
         "CREATE TABLE IF NOT EXISTS utxos (txid TEXT NOT NULL, output_index INTEGER NOT NULL, value INTEGER NOT NULL, script_pubkey TEXT NOT NULL, coinbase INTEGER NOT NULL, height INTEGER NOT NULL, time INTEGER NOT NULL, created_by TEXT NOT NULL, spent_by TEXT, spent_height INTEGER, active INTEGER NOT NULL DEFAULT 1, PRIMARY KEY(txid, output_index))")
       (db-ensure-column db "peers" "last_attempt" "INTEGER NOT NULL DEFAULT 0")
       (db-ensure-column db "peers" "last_result" "TEXT NOT NULL DEFAULT ''")
+      (db-ensure-column db "peers" "last_error" "TEXT NOT NULL DEFAULT ''")
       (db-ensure-column db "blocks" "requested_by" "TEXT")
       (db-ensure-column db "blocks" "requested_at" "INTEGER NOT NULL DEFAULT 0")
       (db-ensure-column db "blocks" "request_count" "INTEGER NOT NULL DEFAULT 0")
@@ -269,6 +311,30 @@
                   "INSERT OR REPLACE INTO metadata(key, value) VALUES (?, ?)"
                   "schema-version"
                   %schema-version))
+
+    (define (db-metadata db key default)
+      (let ((row (sqlite-query-row
+                   db
+                   "SELECT value FROM metadata WHERE key = ?"
+                   key)))
+        (if row
+            (row-ref row "value")
+            default)))
+
+    (define (db-set-metadata db key value)
+      (sqlite-run db
+                  "INSERT OR REPLACE INTO metadata(key, value) VALUES (?, ?)"
+                  key
+                  value))
+
+    (define (db-ensure-metadata db key value)
+      (sqlite-run db
+                  "INSERT OR IGNORE INTO metadata(key, value) VALUES (?, ?)"
+                  key
+                  value))
+
+    (define (db-set-sync-stage db stage)
+      (db-set-metadata db "sync-stage" stage))
 
     (define (db-header-row db hash-text)
       (sqlite-query-row
@@ -447,6 +513,7 @@
                   "INSERT OR REPLACE INTO metadata(key, value) VALUES (?, ?)"
                   "chain"
                   (chain-config-name chain))
+      (db-ensure-metadata db "sync-stage" "idle")
       (let* ((genesis (chain-config-genesis-header chain))
              (hash-text (hex-encode (chain-config-genesis-hash chain))))
         (unless (db-header-row db hash-text)
@@ -465,7 +532,8 @@
                  failures: (row-ref row "failures")
                  last-seen: (row-ref row "last_seen")
                  last-attempt: (row-ref row "last_attempt")
-                 last-result: (row-ref row "last_result")))
+                 last-result: (row-ref row "last_result")
+                 last-error: (row-ref row "last_error")))
 
     (define (db-block-row db hash-text)
       (sqlite-query-row
@@ -637,7 +705,8 @@
           peer-count: (db-peer-count db)
           pending-block-count: (pending-chain-block-count db rows)
           requested-block-count: (requested-chain-block-count db rows)
-          failed-block-count: (failed-chain-block-count db rows))))
+          failed-block-count: (failed-chain-block-count db rows)
+          sync-stage: (db-metadata db "sync-stage" "idle"))))
 
     (define (locator-heights best-height)
       (let loop ((height best-height) (step 1) (count 0) (heights '()))
@@ -722,12 +791,12 @@
       (: node? string? integer? -> node-peer?)
       (sqlite-run
         (node-db n)
-        "INSERT OR REPLACE INTO peers(address, port, score, failures, last_seen, last_attempt, last_result) VALUES (?, ?, COALESCE((SELECT score FROM peers WHERE address = ? AND port = ?), 0), COALESCE((SELECT failures FROM peers WHERE address = ? AND port = ?), 0), COALESCE((SELECT last_seen FROM peers WHERE address = ? AND port = ?), 0), COALESCE((SELECT last_attempt FROM peers WHERE address = ? AND port = ?), 0), COALESCE((SELECT last_result FROM peers WHERE address = ? AND port = ?), ''))"
-        address port address port address port address port address port address port)
+        "INSERT OR REPLACE INTO peers(address, port, score, failures, last_seen, last_attempt, last_result, last_error) VALUES (?, ?, COALESCE((SELECT score FROM peers WHERE address = ? AND port = ?), 0), COALESCE((SELECT failures FROM peers WHERE address = ? AND port = ?), 0), COALESCE((SELECT last_seen FROM peers WHERE address = ? AND port = ?), 0), COALESCE((SELECT last_attempt FROM peers WHERE address = ? AND port = ?), 0), COALESCE((SELECT last_result FROM peers WHERE address = ? AND port = ?), ''), COALESCE((SELECT last_error FROM peers WHERE address = ? AND port = ?), ''))"
+        address port address port address port address port address port address port address port)
       (db-peer-row->peer
         (sqlite-query-row
           (node-db n)
-          "SELECT address, port, score, failures, last_seen, last_attempt, last_result FROM peers WHERE address = ? AND port = ?"
+          "SELECT address, port, score, failures, last_seen, last_attempt, last_result, last_error FROM peers WHERE address = ? AND port = ?"
           address
           port)))
 
@@ -752,21 +821,74 @@
     (define (node-peers n)
       (: node? -> list?)
       (map db-peer-row->peer
-           (sqlite-query
+             (sqlite-query
              (node-db n)
-             "SELECT address, port, score, failures, last_seen, last_attempt, last_result FROM peers ORDER BY score DESC, failures ASC, address ASC, port ASC")))
+             "SELECT address, port, score, failures, last_seen, last_attempt, last_result, last_error FROM peers ORDER BY score DESC, failures ASC, address ASC, port ASC")))
+
+    (define (node-peer-row n address port)
+      (sqlite-query-row
+        (node-db n)
+        "SELECT address, port, score, failures, last_seen, last_attempt, last_result, last_error FROM peers WHERE address = ? AND port = ?"
+        address
+        port))
+
+    ;;; Add chain-configured seed peers, returning the number newly inserted.
+    ;;;
+    ;;; ```scheme
+    ;;; (node-bootstrap-peers n)
+    ;;; ```
+    (define (node-bootstrap-peers n)
+      (: node? -> integer?)
+      (let loop ((seeds (chain-config-seed-peers (node-chain n)))
+                 (added 0))
+        (if (null? seeds)
+            added
+            (let* ((seed (car seeds))
+                   (address (car seed))
+                   (port (cdr seed))
+                   (existing (node-peer-row n address port)))
+              (node-add-peer n address port)
+              (loop (cdr seeds)
+                    (if existing added (+ added 1)))))))
 
     (define (node-peer-success n address port)
       (sqlite-run (node-db n)
-                  "UPDATE peers SET score = score + 1, last_seen = 0, last_attempt = 0, last_result = 'success' WHERE address = ? AND port = ?"
+                  "UPDATE peers SET score = score + 1, last_seen = 0, last_attempt = 0, last_result = 'success', last_error = '' WHERE address = ? AND port = ?"
+                  address
+                  port))
+
+    (define (node-peer-failure-with-error n address port reason)
+      (sqlite-run (node-db n)
+                  "UPDATE peers SET failures = failures + 1, score = score - 1, last_attempt = 0, last_result = 'failure', last_error = ? WHERE address = ? AND port = ?"
+                  reason
                   address
                   port))
 
     (define (node-peer-failure n address port)
-      (sqlite-run (node-db n)
-                  "UPDATE peers SET failures = failures + 1, score = score - 1, last_attempt = 0, last_result = 'failure' WHERE address = ? AND port = ?"
-                  address
-                  port))
+      (node-peer-failure-with-error n address port "failure"))
+
+    ;;; Test whether a peer transport can be opened and update peer health.
+    ;;;
+    ;;; `connect-peer` receives a `node-peer` and returns
+    ;;; `(read-envelope write-envelope close)`.
+    ;;;
+    ;;; ```scheme
+    ;;; (node-test-peer n "127.0.0.1" 18444 connect-peer)
+    ;;; ```
+    (define (node-test-peer n address port connect-peer)
+      (: node? string? integer? procedure? -> node-peer?)
+      (let ((peer (node-add-peer n address port))
+            (transport #f))
+        (guard (err
+                (else
+                 (when transport
+                   (transport-close transport))
+                 (node-peer-failure-with-error n address port "test failed")
+                 (db-peer-row->peer (node-peer-row n address port))))
+          (set! transport (connect-peer peer))
+          (transport-close transport)
+          (node-peer-success n address port)
+          (db-peer-row->peer (node-peer-row n address port)))))
 
     (define (make-node-session n start-height)
       (let* ((chain (node-chain n))
@@ -881,16 +1003,21 @@
       (let* ((rows (pending-block-rows n peer-name max-blocks))
              (items (map block-row->inventory rows)))
         (if (null? items)
-            0
             (begin
+              (db-set-sync-stage (node-db n) "idle")
+              0)
+            (begin
+              (db-set-sync-stage (node-db n) "block-request")
               (mark-requested-rows (node-db n) rows peer-name)
               (write-envelope
                 (p2p-envelope magic: (chain-config-magic (node-chain n))
                               command: "getdata"
                               payload: (getdata-message items)))
+              (db-set-sync-stage (node-db n) "block-download")
               (let loop ((remaining max-steps) (stored 0) (failed 0))
                 (cond ((or (<= remaining 0)
                            (>= (+ stored failed) (length items)))
+                       (db-set-sync-stage (node-db n) "idle")
                        stored)
                       (else
                        (let ((envelope (read-envelope)))
@@ -1001,6 +1128,7 @@
     ;;; ```
     (define (node-validate-blocks n)
       (: node? -> integer?)
+      (db-set-sync-stage (node-db n) "validation")
       (let* ((db (node-db n))
              (rows (best-chain-rows n))
              (resume-height (validated-on-best-chain-height db rows)))
@@ -1009,7 +1137,9 @@
                    (utxos (db-active-utxos db))
                    (validated 0))
           (if (null? remaining)
-              validated
+              (begin
+                (db-set-sync-stage (node-db n) "idle")
+                validated)
               (let ((next-utxos (validate-block-row n (car remaining) utxos)))
                 (if next-utxos
                     (loop (cdr remaining) next-utxos (+ validated 1))
@@ -1022,6 +1152,7 @@
     ;;; ```
     (define (node-sync-headers n read-envelope write-envelope max-steps)
       (: node? procedure? procedure? integer? -> node-status-snapshot?)
+      (db-set-sync-stage (node-db n) "header-sync")
       (let* ((start (node-status-snapshot-best-height (node-status n)))
              (session (make-node-session n start))
              (ready (p2p-session-handshake read-envelope
@@ -1029,6 +1160,7 @@
                                            session
                                            max-steps)))
         (sync-headers-loop n read-envelope write-envelope max-steps)
+        (db-set-sync-stage (node-db n) "idle")
         (node-status n)))
 
     ;;; Run headers, block download, and block validation over one transport.
@@ -1053,7 +1185,8 @@
       (node-add-peer n address port)
       (guard (err
               (else
-               (node-peer-failure n address port)
+               (db-set-sync-stage (node-db n) "failed")
+               (node-peer-failure-with-error n address port "sync failed")
                (raise err)))
         (node-sync-headers n read-envelope write-envelope max-steps)
         (node-download-blocks-for-peer n
@@ -1093,12 +1226,14 @@
         (node-add-peer n address port)
         (guard (err
                 (else
-                 (node-peer-failure n address port)
+                 (db-set-sync-stage (node-db n) "failed")
+                 (node-peer-failure-with-error n address port "connect failed")
                  #f))
           (set! transport (connect-peer peer)))
         (if transport
             (guard (err
                     (else
+                     (db-set-sync-stage (node-db n) "failed")
                      (transport-close transport)
                      #f))
               (let ((status (node-sync-with-peer n
@@ -1160,6 +1295,7 @@
     (%module-export! 'node-status-snapshot-pending-block-count)
     (%module-export! 'node-status-snapshot-requested-block-count)
     (%module-export! 'node-status-snapshot-failed-block-count)
+    (%module-export! 'node-status-snapshot-sync-stage)
     (%module-export! 'node-peer)
     (%module-export! 'node-peer?)
     (%module-export! 'node-peer-address)
@@ -1169,6 +1305,7 @@
     (%module-export! 'node-peer-last-seen)
     (%module-export! 'node-peer-last-attempt)
     (%module-export! 'node-peer-last-result)
+    (%module-export! 'node-peer-last-error)
     (%module-export! 'node-block-info)
     (%module-export! 'node-block-info?)
     (%module-export! 'node-block-info-hash)
@@ -1178,6 +1315,8 @@
     (%module-export! 'node-add-peer)
     (%module-export! 'node-remove-peer)
     (%module-export! 'node-peers)
+    (%module-export! 'node-bootstrap-peers)
+    (%module-export! 'node-test-peer)
     (%module-export! 'node-store-block)
     (%module-export! 'node-download-blocks)
     (%module-export! 'node-validate-blocks)
