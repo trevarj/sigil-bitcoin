@@ -1545,6 +1545,49 @@
             (reverse out)
             (loop (cdr xs) (- remaining 1) (cons (car xs) out)))))
 
+    (define (peer-network-bucket peer)
+      (let* ((address (node-peer-address peer))
+             (octets (ipv4-octets address)))
+        (if octets
+            (string-append (number->string (car octets))
+                           "."
+                           (number->string (cadr octets)))
+            (if (string-contains? address ":")
+                (let ((parts (string-split address ":")))
+                  (if (>= (length parts) 2)
+                      (string-append (car parts) ":" (cadr parts))
+                      address))
+                address))))
+
+    (define (string-member? value items)
+      (cond ((null? items) #f)
+            ((string=? value (car items)) #t)
+            (else (string-member? value (cdr items)))))
+
+    (define (diverse-take-peers peers count)
+      (let round ((remaining peers)
+                  (selected '()))
+        (if (or (null? remaining) (>= (length selected) count))
+            (take-up-to (reverse selected) count)
+            (let pass ((xs remaining)
+                       (seen '())
+                       (next '())
+                       (out selected))
+              (cond ((or (null? xs) (>= (length out) count))
+                     (round (reverse next) out))
+                    (else
+                     (let* ((peer (car xs))
+                            (bucket (peer-network-bucket peer)))
+                       (if (string-member? bucket seen)
+                           (pass (cdr xs)
+                                 seen
+                                 (cons peer next)
+                                 out)
+                           (pass (cdr xs)
+                                 (cons bucket seen)
+                                 next
+                                 (cons peer out))))))))))
+
     (define (transport-read transport)
       (car transport))
 
@@ -1633,7 +1676,9 @@
       (when (<= max-peers 0)
         (error "node-sync-with-peers: max-peers must be positive"))
       (let loop ((attempt 0))
-        (let ((peers (take-up-to (node-peers n) max-peers)))
+        (let ((peers (if (= max-peers 1)
+                         (take-up-to (node-peers n) max-peers)
+                         (diverse-take-peers (node-peers n) max-peers))))
           (when (null? peers)
             (error "node-sync-with-peers: no peers configured"))
           (let ((status (try-peer-list n

@@ -708,6 +708,28 @@
         (assert-equal "success" (node-peer-last-result* peer)))
       (node-close* n)))
 
+  (test "diversifies bounded peer attempts across network buckets"
+    (let* ((dir (test-data-dir))
+           (n (node-open* bitcoin-regtest-chain* dir))
+           (attempted '())
+           (connect-peer
+             (lambda (peer)
+               (set! attempted
+                     (append attempted (list (node-peer-address* peer))))
+               (if (string=? "103.0.0.1" (node-peer-address* peer))
+                   (empty-sync-transport bitcoin-regtest-chain*
+                                         (lambda () #t))
+                   (error "simulated connect failure")))))
+      (node-add-peer* n "101.0.0.1" 18444)
+      (node-add-peer* n "101.0.1.1" 18444)
+      (node-add-peer* n "101.0.2.1" 18444)
+      (node-add-peer* n "102.0.0.1" 18444)
+      (node-add-peer* n "103.0.0.1" 18444)
+      (node-sync-with-peers* n connect-peer 3 0 8 4)
+      (assert-equal '("101.0.0.1" "102.0.0.1" "103.0.0.1")
+                    attempted)
+      (node-close* n)))
+
   (test "resumes header sync from persisted locator"
     (let* ((dir (test-data-dir))
            (first (node-open* bitcoin-regtest-chain* dir))
