@@ -47,8 +47,9 @@ Layer 6 — Networking (sigil-bitcoin-p2p)
 
 Layer 7 — Node Runtime (sigil-bitcoin-node)
 ├── Chain configs
-├── SQLite-backed header storage
-└── Peer-driven header sync
+├── SQLite-backed peers, headers, blocks, mempool, and run metadata
+├── Peer-driven header/block sync
+└── Bounded inbound serving for headers and transaction relay
 ```
 
 ## Priority Order (user-ranked)
@@ -99,8 +100,9 @@ Layer 7 — Node Runtime (sigil-bitcoin-node)
 - `sigil-bitcoin-tx` provides transaction structs, compactSize encoding/decoding, legacy/SegWit parsing and serialization, Bitcoin Core raw transaction round-trip coverage, txid/wtxid helpers, `SIGHASH_ALL` legacy/BIP143 hashes, BIP341 key-path and script-path sighashes, P2PKH/P2WPKH/P2WSH single-key/P2TR key-path signing, and PSBT v0 support for witness UTXOs, non-witness UTXOs, redeem/witness scripts, partial signatures, input/output BIP32/Taproot derivation records, unknown/proprietary key preservation, Taproot key and script signatures, Taproot leaf scripts, finalization, and extraction.
 - `sigil-bitcoin-miniscript` provides fragment ASTs, parsing, canonical strings, type/signing metadata, hash-lock and boolean combinator script compilation, descriptor parsing/checksums, descriptor key derivation, descriptor scriptPubKey compilation including Taproot script-tree output keys, `multi_a`/`CHECKSIGADD` Tapscript compilation, descriptor and wallet-policy PSBT planning records with WSH and single-leaf Taproot script material, descriptor-plan PSBT annotation and standard P2PKH/P2WPKH/P2TR key-path/script-path signing/finalization wrappers, concrete BIP327 `musig(...)` Taproot key aggregation, and BIP388 wallet policy descriptor expansion with BIP390 `musig(...)` placeholders.
 - `sigil-bitcoin-consensus` provides block/header records, wire parsing and serialization, Merkle root construction, compact target decoding, proof-of-work checks, header-chain linkage, chain work, retarget validation, subsidy checks, coinbase maturity, activation-height gates, UTXO-backed block connection, and standard P2PKH/P2SH/P2WPKH/P2WSH/P2TR signature checks.
-- `sigil-bitcoin-p2p` provides network envelopes, payload checksums, `version`/`verack`, `ping`/`pong`, `getheaders`, `headers`, header-sync loops, inventory/getdata/notfound relay payloads, tx/block payloads, socket envelope I/O, peer-session orchestration, peer selection, and relay scheduling.
-- `sigil-bitcoin-node` provides Bitcoin mainnet/testnet/regtest chain configs, SQLite-backed header persistence, best-header/status queries, validated header ingestion, and a `status`/`header-sync` CLI entrypoint.
+- `sigil-bitcoin-p2p` provides network envelopes, payload checksums, `version`/`verack`, `ping`/`pong`, `getheaders`, `headers`, `addr`, `addrv2`, inventory/getdata/notfound relay payloads, tx/block payloads, socket envelope I/O, peer-session orchestration, peer selection, header-sync loops, and relay scheduling.
+- `sigil-bitcoin-node` provides Bitcoin mainnet/testnet/testnet4/signet/regtest and SigilCoin placeholder chain configs, SQLite-backed peer/header/block/mempool/run persistence, best-header/status queries, peer bootstrapping, outbound handshake/header/block sync, bounded long-running `run`, block validation with active-chain/reorg metadata, mempool relay staging, inbound `listen`, SOCKS5-capable live probes, and status/peer/header/block/sync CLI entrypoints.
+- Live signet probes over a local SOCKS5 proxy have fetched real headers and validated real blocks. The current persisted probe data has reached signet header height 3605 with stored and validated blocks through 3605, zero pending/requested/failed blocks, and normal `run` block-catchup clearing fresh requested leftovers via peer rotation. Sustained catch-up to the public signet tip remains the next node hardening target.
 - `sigil-bitcoin` has a standalone documentation site generator that reads compiler JSON docs, emits a docs.rs-inspired static site to `public/`, and includes concise guide pages under `docs/site/`.
 - `hash160` uses upstream `sigil-crypto`'s native `ripemd160` binding when it
   is linked in the current runtime, with a private compatibility fallback for
@@ -186,7 +188,7 @@ or pure Sigil code. No changes to the Sigil VM or compiler are required.
 - 3f. sigil-bitcoin-miniscript (Miniscript AST, parser, type checker, script compiler, descriptors)
 - 3g. sigil-bitcoin-consensus (blocks, merkle, PoW)
 - 3h. sigil-bitcoin-p2p (messages, handshake)
-- 3i. sigil-bitcoin-node (chain configs, header persistence, header sync)
+- 3i. sigil-bitcoin-node (chain configs, peer/header/block/mempool persistence, header/block sync, inbound serving)
 
 ## Verification
 
@@ -278,3 +280,18 @@ or pure Sigil code. No changes to the Sigil VM or compiler are required.
 - [x] Extend `sigil-bitcoin-consensus` with P2SH redeem-script checks and P2WSH single-key signature checks.
 - [x] Extend `sigil-bitcoin-consensus` with Taproot key-path and single-key script-path signature checks.
 - [x] Extend `sigil-bitcoin-consensus` with deployment-era rule checks.
+- [x] Extend `sigil-bitcoin-node` with outbound peer retry metadata, header-sync resume, bounded live transport timeouts, and long-running run-loop status.
+- [x] Add SigilCoin placeholder chain config isolation so node runtime behavior remains chain-config driven.
+- [x] Extend `sigil-bitcoin-node` with block download, persisted block validation, active-chain tip metadata, reorg handling, and interrupted-validation resume.
+- [x] Extend `sigil-bitcoin-node` with mempool transaction storage, request/retry metadata, transaction relay handling, and block-confirmation/conflict updates.
+- [x] Extend `sigil-bitcoin-node` with bounded inbound `listen` support for handshakes, `getheaders`, transaction relay, and peer address gossip.
+- [x] Extend peer discovery with DNS bootstrap status, addr/addrv2 ingestion, peer source metadata, and live SOCKS5 probe support.
+- [x] Add run-loop scheduling for periodic header refresh and block catch-up attempts with persisted progress/status.
+- [x] Add live signet probe coverage showing real header progress and real block validation through bounded SOCKS5 runs.
+
+### Remaining Node Work
+
+- [ ] Sustain signet sync to tip in a long-lived run without manual block-sync nudges.
+- [ ] Improve block catch-up throughput and peer rotation for peers that return partial batches, short reads, or repeated timeouts.
+- [ ] Add stronger operational controls for pruning, database compaction, peer eviction, and graceful shutdown.
+- [ ] Decide how SigilCoin mining and IRC integration map onto chain config, consensus extensions, and node operator UX.

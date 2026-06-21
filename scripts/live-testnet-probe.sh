@@ -10,6 +10,10 @@ MAX_PEERS=${SIGIL_BITCOIN_LIVE_MAX_PEERS:-35}
 MAX_RETRIES=${SIGIL_BITCOIN_LIVE_MAX_RETRIES:-0}
 MAX_STEPS=${SIGIL_BITCOIN_LIVE_MAX_STEPS:-64}
 MAX_BLOCKS=${SIGIL_BITCOIN_LIVE_MAX_BLOCKS:-1}
+BLOCK_CATCHUP_BLOCKS=${SIGIL_BITCOIN_LIVE_BLOCK_CATCHUP_BLOCKS:-16}
+BLOCK_CATCHUP_INTERVAL=${SIGIL_BITCOIN_LIVE_BLOCK_CATCHUP_INTERVAL:-1}
+HEADER_REFRESH_INTERVAL=${SIGIL_BITCOIN_LIVE_HEADER_REFRESH_INTERVAL:-8}
+VALIDATION_BLOCKS=${SIGIL_BITCOIN_LIVE_VALIDATION_BLOCKS:-128}
 MAX_SEEDS=${SIGIL_BITCOIN_LIVE_MAX_SEEDS:-8}
 MAX_ADDRESSES=${SIGIL_BITCOIN_LIVE_MAX_ADDRESSES:-16}
 RESOLVE_TIMEOUT=${SIGIL_BITCOIN_LIVE_RESOLVE_TIMEOUT:-2000}
@@ -18,12 +22,17 @@ READ_TIMEOUT=${SIGIL_BITCOIN_LIVE_READ_TIMEOUT:-5000}
 DEADLINE=${SIGIL_BITCOIN_LIVE_DEADLINE:-120}
 TCP_ONLY=${SIGIL_BITCOIN_LIVE_TCP_ONLY:-0}
 SOCKS5=${SIGIL_BITCOIN_LIVE_SOCKS5:-}
+MODE=${SIGIL_BITCOIN_LIVE_MODE:-probe}
+RETRY_DELAY=${SIGIL_BITCOIN_LIVE_RETRY_DELAY:-0}
+GUARD_PADDING=${SIGIL_BITCOIN_LIVE_GUARD_PADDING:-90}
+LIST_PEERS=${SIGIL_BITCOIN_LIVE_LIST_PEERS:-0}
 
 usage() {
   cat <<'EOF'
 usage: scripts/live-testnet-probe.sh [options]
 
 Options:
+  --mode MODE           Command mode: probe, run, sync, header-sync, or block-sync.
   --peer HOST[:PORT]     Add a manual peer. Use [IPv6]:PORT for IPv6. May be repeated.
   --chain CHAIN          Chain to probe, default bitcoin-signet.
   --data-dir DIR         Probe database directory.
@@ -31,13 +40,23 @@ Options:
   --max-retries N        Per-peer retry limit.
   --max-steps N          P2P handshake/header sync step limit.
   --max-blocks N         Maximum blocks to request after headers.
+  --block-catchup-blocks N
+                         Run-mode block batch size for catch-up attempts.
+  --block-catchup-interval N
+                         Run-mode interval for block catch-up while headers lag.
+  --header-refresh-interval N
+                         Run-mode interval for header refresh while blocks catch up.
+  --validation-blocks N  Run-mode local validation batch size.
   --max-seeds N          Maximum DNS seed hosts to query.
   --max-addresses N      Maximum addresses to keep from each seed.
+  --retry-delay N        Delay in seconds between run/sync retries.
   --resolve-timeout N    DNS resolve timeout in milliseconds.
   --connect-timeout N    TCP connect timeout in milliseconds.
   --read-timeout N       Socket read timeout in milliseconds.
   --deadline N           Whole probe deadline in seconds, 0 disables it.
+  --guard-padding N      Extra seconds for Guix/build startup before timeout guard.
   --socks5 HOST[:PORT]   Connect peers through a SOCKS5 proxy, default port 9050.
+  --list-peers           Print the full peer list when the probe fails.
   --tcp-only             Open TCP connections only; skip Bitcoin handshake/sync.
   -h, --help             Show this help.
 EOF
@@ -45,6 +64,11 @@ EOF
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
+    --mode)
+      [ "$#" -ge 2 ] || { echo "missing value for --mode" >&2; exit 2; }
+      MODE=$2
+      shift 2
+      ;;
     --peer)
       [ "$#" -ge 2 ] || { echo "missing value for --peer" >&2; exit 2; }
       if [ -n "$PEERS" ]; then
@@ -84,6 +108,26 @@ while [ "$#" -gt 0 ]; do
       MAX_BLOCKS=$2
       shift 2
       ;;
+    --block-catchup-blocks)
+      [ "$#" -ge 2 ] || { echo "missing value for --block-catchup-blocks" >&2; exit 2; }
+      BLOCK_CATCHUP_BLOCKS=$2
+      shift 2
+      ;;
+    --block-catchup-interval)
+      [ "$#" -ge 2 ] || { echo "missing value for --block-catchup-interval" >&2; exit 2; }
+      BLOCK_CATCHUP_INTERVAL=$2
+      shift 2
+      ;;
+    --header-refresh-interval)
+      [ "$#" -ge 2 ] || { echo "missing value for --header-refresh-interval" >&2; exit 2; }
+      HEADER_REFRESH_INTERVAL=$2
+      shift 2
+      ;;
+    --validation-blocks)
+      [ "$#" -ge 2 ] || { echo "missing value for --validation-blocks" >&2; exit 2; }
+      VALIDATION_BLOCKS=$2
+      shift 2
+      ;;
     --max-seeds)
       [ "$#" -ge 2 ] || { echo "missing value for --max-seeds" >&2; exit 2; }
       MAX_SEEDS=$2
@@ -92,6 +136,11 @@ while [ "$#" -gt 0 ]; do
     --max-addresses)
       [ "$#" -ge 2 ] || { echo "missing value for --max-addresses" >&2; exit 2; }
       MAX_ADDRESSES=$2
+      shift 2
+      ;;
+    --retry-delay)
+      [ "$#" -ge 2 ] || { echo "missing value for --retry-delay" >&2; exit 2; }
+      RETRY_DELAY=$2
       shift 2
       ;;
     --resolve-timeout)
@@ -114,6 +163,11 @@ while [ "$#" -gt 0 ]; do
       DEADLINE=$2
       shift 2
       ;;
+    --guard-padding)
+      [ "$#" -ge 2 ] || { echo "missing value for --guard-padding" >&2; exit 2; }
+      GUARD_PADDING=$2
+      shift 2
+      ;;
     --socks5)
       [ "$#" -ge 2 ] || { echo "missing value for --socks5" >&2; exit 2; }
       SOCKS5=$2
@@ -121,6 +175,10 @@ while [ "$#" -gt 0 ]; do
       ;;
     --tcp-only)
       TCP_ONLY=1
+      shift
+      ;;
+    --list-peers)
+      LIST_PEERS=1
       shift
       ;;
     -h|--help)
@@ -137,20 +195,44 @@ done
 
 cd "$ROOT/packages/sigil-bitcoin-node"
 
-set -- probe \
+case "$MODE" in
+  probe|run|sync|header-sync|block-sync) ;;
+  *)
+    echo "unknown mode: $MODE" >&2
+    usage >&2
+    exit 2
+    ;;
+esac
+
+set -- "$MODE" \
   --chain "$CHAIN" \
   --data-dir "$DATA_DIR" \
   --max-peers "$MAX_PEERS" \
   --max-retries "$MAX_RETRIES" \
   --max-steps "$MAX_STEPS" \
   --max-blocks "$MAX_BLOCKS" \
+  --block-catchup-blocks "$BLOCK_CATCHUP_BLOCKS" \
+  --block-catchup-interval "$BLOCK_CATCHUP_INTERVAL" \
+  --header-refresh-interval "$HEADER_REFRESH_INTERVAL" \
+  --validation-blocks "$VALIDATION_BLOCKS" \
   --max-seeds "$MAX_SEEDS" \
   --max-addresses "$MAX_ADDRESSES" \
   --resolve-timeout "$RESOLVE_TIMEOUT" \
   --connect-timeout "$CONNECT_TIMEOUT" \
   --read-timeout "$READ_TIMEOUT"
 
+if [ "$MODE" = "run" ] || [ "$MODE" = "sync" ] || [ "$MODE" = "header-sync" ] || [ "$MODE" = "block-sync" ]; then
+  set -- "$@" --iterations 0 --retry-delay "$RETRY_DELAY"
+  if [ "$DEADLINE" -gt 0 ]; then
+    set -- "$@" --deadline-ms "$((DEADLINE * 1000))"
+  fi
+fi
+
 if [ "$TCP_ONLY" -eq 1 ]; then
+  if [ "$MODE" != "probe" ]; then
+    echo "--tcp-only is only valid with --mode probe" >&2
+    exit 2
+  fi
   set -- "$@" --tcp-only
 fi
 
@@ -170,7 +252,8 @@ run_probe_command() {
       echo "timeout command is required for --deadline; rerun with --deadline 0 to disable" >&2
       exit 2
     fi
-    timeout --kill-after=5s "${DEADLINE}s" \
+    guard_seconds=$((DEADLINE + GUARD_PADDING))
+    timeout --kill-after=5s "${guard_seconds}s" \
       guix shell -m ../../manifest.scm -- \
         "$SIGIL" run --redirects ../../dev-redirects.sgl -- "$@"
   else
@@ -188,6 +271,12 @@ if [ "$probe_status" -eq 0 ]; then
 fi
 if [ "$probe_status" -eq 124 ] || [ "$probe_status" -eq 137 ]; then
   echo "probe-deadline: exceeded ${DEADLINE}s" >&2
+  guix shell -m ../../manifest.scm -- \
+    "$SIGIL" run --redirects ../../dev-redirects.sgl -- \
+      run --chain "$CHAIN" --data-dir "$DATA_DIR" \
+      --iterations 0 --deadline-ms 1 --max-peers 1 --max-retries 0 \
+      --retry-delay 0 --resolve-timeout 1 --connect-timeout 1 \
+      --read-timeout 1 >/dev/null 2>&1 || true
 fi
 
 guix shell -m ../../manifest.scm -- \
@@ -198,8 +287,10 @@ guix shell -m ../../manifest.scm -- \
   "$SIGIL" run --redirects ../../dev-redirects.sgl -- \
     peers summary --chain "$CHAIN" --data-dir "$DATA_DIR" || true
 
-guix shell -m ../../manifest.scm -- \
-  "$SIGIL" run --redirects ../../dev-redirects.sgl -- \
-    peers list --chain "$CHAIN" --data-dir "$DATA_DIR" || true
+if [ "$LIST_PEERS" -eq 1 ]; then
+  guix shell -m ../../manifest.scm -- \
+    "$SIGIL" run --redirects ../../dev-redirects.sgl -- \
+      peers list --chain "$CHAIN" --data-dir "$DATA_DIR" || true
+fi
 
 exit 1

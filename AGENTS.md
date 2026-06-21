@@ -88,6 +88,7 @@ Current CLI surface:
 - `block-sync`
 - `sync`
 - `run`
+- `listen`
 
 The node currently persists peers, headers, blocks, validation state, status,
 and run-loop metadata in SQLite. Prefer extending that persisted state over
@@ -106,6 +107,9 @@ Live P2P guidance:
 - Use `scripts/live-testnet-probe.sh --chain bitcoin-signet` for bounded live
   probes. It also accepts `--socks5 127.0.0.1:9050`, or
   `SIGIL_BITCOIN_LIVE_SOCKS5=127.0.0.1:9050`.
+- The live probe script has an internal node deadline plus an external process
+  guard. If Guix/build startup consumes the guard, raise `--guard-padding`
+  instead of increasing socket timeouts.
 
 Consensus gotcha from live signet testing: BIP34 coinbase height commitments
 must accept minimally encoded script-number small-int opcodes `OP_0` through

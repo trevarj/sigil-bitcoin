@@ -273,6 +273,56 @@
     (assert-error (headers-message-parse (oversized-headers-payload)))))
 
 (test-group "relay messages"
+  (test "serializes and parses legacy addr messages"
+    (let* ((ipv4 (p2p-address time: 100
+                              services: 1
+                              network-id: addrv2-network-ipv4
+                              address: #u8(93 184 216 34)
+                              port: 8333))
+           (ipv6 (p2p-address time: 101
+                              services: 1
+                              network-id: addrv2-network-ipv6
+                              address: %ipv6-loopback
+                              port: 18333))
+           (parsed (addr-message-parse (addr-message (list ipv4 ipv6)))))
+      (assert-equal 2 (length parsed))
+      (assert-equal addrv2-network-ipv4 (p2p-address-network-id (car parsed)))
+      (assert-equal #u8(93 184 216 34) (p2p-address-address (car parsed)))
+      (assert-equal 8333 (p2p-address-port (car parsed)))
+      (assert-equal addrv2-network-ipv6 (p2p-address-network-id (cadr parsed)))
+      (assert-equal %ipv6-loopback (p2p-address-address (cadr parsed)))))
+
+  (test "serializes and parses addrv2 messages"
+    (let* ((item (p2p-address time: 200
+                              services: 9
+                              network-id: addrv2-network-ipv4
+                              address: #u8(203 0 113 9)
+                              port: 38333))
+           (parsed (addrv2-message-parse (addrv2-message (list item)))))
+      (assert-equal 1 (length parsed))
+      (assert-equal 200 (p2p-address-time (car parsed)))
+      (assert-equal 9 (p2p-address-services (car parsed)))
+      (assert-equal addrv2-network-ipv4 (p2p-address-network-id (car parsed)))
+      (assert-equal #u8(203 0 113 9) (p2p-address-address (car parsed)))
+      (assert-equal 38333 (p2p-address-port (car parsed)))))
+
+  (test "rejects malformed addrv2 address lengths"
+    (assert-error
+      (addrv2-message
+        (list (p2p-address time: 1
+                           services: 1
+                           network-id: addrv2-network-ipv4
+                           address: #u8(1 2 3)
+                           port: 8333))))
+    (assert-error
+      (addrv2-message-parse #u8(#x01
+                                #x01 #x00 #x00 #x00
+                                #x01
+                                #x01
+                                #x03
+                                #x01 #x02 #x03
+                                #x20 #x8d))))
+
   (test "serializes and parses inventory vectors"
     (let* ((item (inventory-vector type: inv-block
                                    hash: (block-header-hash %genesis-header)))
@@ -288,6 +338,9 @@
                     (getdata-message (list item)))
       (assert-equal (inventory-message-serialize (list item))
                     (notfound-message (list item)))))
+
+  (test "getaddr uses an empty payload"
+    (assert-equal #u8() (getaddr-message)))
 
   (test "serializes and parses tx and block payloads"
     (assert-equal (transaction-txid %coinbase-tx)
@@ -443,6 +496,14 @@
       (assert-equal "getheaders" (p2p-envelope-command (car (reverse outbound))))
       (assert-equal (list (block-header-hash %genesis-header))
                     (getheaders-message-locator-hashes msg))))
+
+  (test "queues getaddr after handshake"
+    (let* ((queued (p2p-session-request-addresses (make-ready-session)))
+           (outbound (p2p-session-outbound queued))
+           (request (car (reverse outbound))))
+      (assert-true (peer-state-handshake-complete? (p2p-session-state queued)))
+      (assert-equal "getaddr" (p2p-envelope-command request))
+      (assert-equal #u8() (p2p-envelope-payload request))))
 
   (test "drains outbound queue"
     (let* ((started (p2p-session-start (make-session)))

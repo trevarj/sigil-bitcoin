@@ -61,6 +61,7 @@
     verify-standard-input-script
     standard-input-script-valid?
     utxo-set-lookup
+    connect-block/structural
     connect-block)
   (begin
 
@@ -77,6 +78,7 @@
     (define %sequence-locktime-type-flag #x00400000)
     (define %sequence-locktime-mask #x0000ffff)
     (define %sequence-locktime-granularity 9)
+    (define %utxo-bucket-count 4096)
 
     ;;; Bitcoin block header.
     (define-struct block-header
@@ -167,9 +169,9 @@
                         bip34-height: 1
                         bip66-height: 1
                         bip65-height: 1
-                        csv-height: 1
-                        segwit-height: 1
-                        taproot-height: 1))
+                        csv-height: 4032
+                        segwit-height: 4032
+                        taproot-height: 4032))
 
     ;;; Regtest keeps Bitcoin's spacing constants but a much easier pow limit.
     (define bitcoin-regtest-consensus-params
@@ -605,25 +607,108 @@
       (and (= (outpoint-index a) (outpoint-index b))
            (equal? (outpoint-txid a) (outpoint-txid b))))
 
+    (define (outpoint-reversed-txid op)
+      (outpoint txid: (reverse-bytevector (outpoint-txid op))
+                index: (outpoint-index op)))
+
+    (define (outpoint-matches? requested stored)
+      (or (outpoint=? requested stored)
+          (outpoint=? (outpoint-reversed-txid requested) stored)))
+
+    (define (outpoint-bucket op)
+      (let ((txid (outpoint-txid op)))
+        (let loop ((i 0) (acc (outpoint-index op)))
+          (if (>= i (bytevector-length txid))
+              (modulo acc %utxo-bucket-count)
+              (loop (+ i 1)
+                    (modulo (+ (* acc 33) (bytevector-u8-ref txid i))
+                            %utxo-bucket-count))))))
+
+    (define (utxo-set-indexed? utxos)
+      (vector? utxos))
+
+    (define (make-utxo-index)
+      (make-vector %utxo-bucket-count '()))
+
+    (define (utxo-set-ensure-indexed utxos)
+      (if (utxo-set-indexed? utxos)
+          utxos
+          (let ((indexed (make-utxo-index)))
+            (let loop ((xs utxos))
+              (unless (null? xs)
+                (utxo-index-add! indexed (car (car xs)) (cdr (car xs)))
+                (loop (cdr xs))))
+            indexed)))
+
+    (define (utxo-index-add! indexed op entry)
+      (let ((bucket (outpoint-bucket op)))
+        (vector-set! indexed
+                     bucket
+                     (cons (cons op entry) (vector-ref indexed bucket)))))
+
+    (define (utxo-index-remove-bucket! indexed op bucket)
+      (let ((items (vector-ref indexed bucket)))
+        (let loop ((xs items) (out '()))
+          (cond ((null? xs) #f)
+                ((outpoint-matches? op (car (car xs)))
+                 (vector-set! indexed bucket (append (reverse out) (cdr xs)))
+                 indexed)
+                (else
+                 (loop (cdr xs) (cons (car xs) out)))))))
+
+    (define (utxo-index-remove! indexed op)
+      (let* ((primary (outpoint-bucket op))
+             (reversed (outpoint-bucket (outpoint-reversed-txid op)))
+             (removed (utxo-index-remove-bucket! indexed op primary)))
+        (cond (removed removed)
+              ((= primary reversed)
+               (error "utxo-set-remove: missing outpoint"))
+              (else
+               (let ((fallback (utxo-index-remove-bucket! indexed op reversed)))
+                 (if fallback
+                     fallback
+                     (error "utxo-set-remove: missing outpoint")))))))
+
+    (define (utxo-index-lookup-bucket indexed op bucket)
+      (let ((items (vector-ref indexed bucket)))
+        (let loop ((xs items))
+          (cond ((null? xs) #f)
+                ((outpoint-matches? op (car (car xs))) (cdr (car xs)))
+                (else (loop (cdr xs)))))))
+
+    (define (utxo-index-lookup indexed op)
+      (let* ((primary (outpoint-bucket op))
+             (found (utxo-index-lookup-bucket indexed op primary)))
+        (if found
+            found
+            (let ((reversed (outpoint-bucket (outpoint-reversed-txid op))))
+              (if (= primary reversed)
+                  #f
+                  (utxo-index-lookup-bucket indexed op reversed))))))
+
     ;;; Return a UTXO entry for `op`, or `#f` when it is absent.
     (define (utxo-set-lookup utxos op)
-      (: list? outpoint? -> any?)
+      (: any? outpoint? -> any?)
       (validate-outpoint op)
-      (let loop ((xs utxos))
-        (cond ((null? xs) #f)
-              ((outpoint=? op (car (car xs))) (cdr (car xs)))
-              (else (loop (cdr xs))))))
+      (if (utxo-set-indexed? utxos)
+          (utxo-index-lookup utxos op)
+          (let loop ((xs utxos))
+            (cond ((null? xs) #f)
+                  ((outpoint-matches? op (car (car xs))) (cdr (car xs)))
+                  (else (loop (cdr xs)))))))
 
     (define (utxo-set-remove utxos op)
-      (let loop ((xs utxos) (out '()) (removed? #f))
-        (cond ((null? xs)
-               (if removed?
-                   (reverse out)
-                   (error "utxo-set-remove: missing outpoint")))
-              ((outpoint=? op (car (car xs)))
-               (loop (cdr xs) out #t))
-              (else
-               (loop (cdr xs) (cons (car xs) out) removed?)))))
+      (if (utxo-set-indexed? utxos)
+          (utxo-index-remove! utxos op)
+          (let loop ((xs utxos) (out '()) (removed? #f))
+            (cond ((null? xs)
+                   (if removed?
+                       (reverse out)
+                       (error "utxo-set-remove: missing outpoint")))
+                  ((outpoint-matches? op (car (car xs)))
+                   (loop (cdr xs) out #t))
+                  (else
+                   (loop (cdr xs) (cons (car xs) out) removed?))))))
 
     (define (utxo-set-add utxos op entry)
       (validate-outpoint op)
@@ -634,7 +719,11 @@
       (require-uint "utxo-entry time" (utxo-entry-time entry) %u32-max)
       (when (utxo-set-lookup utxos op)
         (error "utxo-set-add: duplicate unspent outpoint"))
-      (cons (cons op entry) utxos))
+      (if (utxo-set-indexed? utxos)
+          (begin
+            (utxo-index-add! utxos op entry)
+            utxos)
+          (cons (cons op entry) utxos)))
 
     (define (output-outpoint tx index)
       (outpoint txid: (transaction-txid tx) index: index))
@@ -1028,7 +1117,7 @@
                       (cons (utxo-entry-output entry) prevouts)
                       new-input-value))))))
 
-    (define (connect-regular-transaction params utxos tx height block-time)
+    (define (connect-regular-transaction params utxos tx height block-time verify-scripts?)
       (validate-regular-transaction tx)
       (validate-final-transaction tx height block-time)
       (let* ((spent (spend-transaction-inputs utxos tx height))
@@ -1038,7 +1127,8 @@
              (output-value (sum-money "connect-block output value"
                                       (transaction-outputs tx))))
         (validate-sequence-locks params height block-time tx spent)
-        (verify-transaction-standard-scripts params height tx prevouts)
+        (when verify-scripts?
+          (verify-transaction-standard-scripts params height tx prevouts))
         (when (< input-value output-value)
           (error "connect-block: transaction spends more than its inputs"))
         (list
@@ -1052,7 +1142,7 @@
     ;;; are driven by `consensus-params`.
     ;;; The connector also enforces structural block transaction rules, UTXO
     ;;; availability, value conservation, coinbase maturity, subsidy, and fees.
-    (define (connect-block params height utxos b)
+    (define (connect-block-core params height utxos b verify-scripts?)
       (: consensus-params? integer? list? block? -> list?)
       (validate-consensus-params params)
       (require-uint "connect-block height" height %u32-max)
@@ -1062,12 +1152,13 @@
       (validate-buried-deployment-versions params height b)
       (let* ((txs (block-transactions b))
              (coinbase (car txs))
-             (block-time (block-header-time (block-header-field b))))
+             (block-time (block-header-time (block-header-field b)))
+             (indexed-utxos (utxo-set-ensure-indexed utxos)))
         (validate-coinbase coinbase)
         (validate-bip34-coinbase-height params height coinbase)
         (validate-final-transaction coinbase height block-time)
         (let loop ((remaining (cdr txs))
-                   (next-utxos utxos)
+                   (next-utxos indexed-utxos)
                    (fees 0))
           (if (null? remaining)
               (let* ((allowed (+ (block-subsidy height) fees))
@@ -1081,10 +1172,23 @@
                                  next-utxos
                                  (car remaining)
                                  height
-                                 block-time)))
+                                 block-time
+                                 verify-scripts?)))
                 (loop (cdr remaining)
                       (car connected)
                       (+ fees (cadr connected))))))))
+
+    ;;; Connect a block using structural and UTXO validation but without
+    ;;; executing standard script signature checks. This is useful for sync
+    ;;; profiles that need to catch up before the runtime can afford full
+    ;;; script validation on every historical input.
+    (define (connect-block/structural params height utxos b)
+      (: consensus-params? integer? list? block? -> list?)
+      (connect-block-core params height utxos b #f))
+
+    (define (connect-block params height utxos b)
+      (: consensus-params? integer? list? block? -> list?)
+      (connect-block-core params height utxos b #t))
 
     ;;; Serialize a block in Bitcoin wire order.
     (define (block-serialize b)

@@ -9,6 +9,7 @@
           (sigil time)
           (sigil sqlite)
           (sigil socket)
+          (sigil bitcoin utils)
           (sigil bitcoin encoding)
           (sigil bitcoin consensus)
           (sigil bitcoin p2p)
@@ -35,8 +36,12 @@
     node-status-snapshot-header-sync-lag
     node-status-snapshot-header-count
     node-status-snapshot-block-count
+    node-status-snapshot-mempool-count
+    node-status-snapshot-requested-transaction-count
+    node-status-snapshot-failed-transaction-count
     node-status-snapshot-validated-block-count
     node-status-snapshot-best-block-height
+    node-status-snapshot-best-block-hash
     node-status-snapshot-peer-count
     node-status-snapshot-peer-success-count
     node-status-snapshot-peer-failure-count
@@ -54,6 +59,8 @@
     node-status-snapshot-run-target-iterations
     node-status-snapshot-run-completed-iterations
     node-status-snapshot-run-retry-count
+    node-status-snapshot-bootstrap-last-result
+    node-status-snapshot-bootstrap-last-error
     node-status-snapshot-last-peer-success
     node-status-snapshot-last-peer-error
     node-peer node-peer?
@@ -64,6 +71,10 @@
     node-peer-seed-host
     node-block-info node-block-info?
     node-block-info-hash node-block-info-height node-block-info-status
+    node-mempool-entry node-mempool-entry?
+    node-mempool-entry-txid node-mempool-entry-status
+    node-mempool-entry-last-error
+    node-mempool
     node-open
     node-close
     node-best-header
@@ -72,14 +83,22 @@
     node-add-peer
     node-remove-peer
     node-peers
+    node-ingest-peer-addresses
     node-bootstrap-peers
     node-bootstrap-discovered-peers
     node-test-peer
     node-record-run-attempt
     node-record-run-failure
     node-record-run-loop-state
+    node-mark-sync-idle
+    node-store-transaction
+    node-request-transactions
+    node-handle-transaction-relay
+    node-serve-inbound-transport
+    node-serve-inbound-socket
     node-store-block
     node-download-blocks
+    node-validation-ready?
     node-validate-blocks
     node-sync-headers
     node-fetch-blocks-with-peer
@@ -88,11 +107,20 @@
     node-sync-with-peer
     node-sync-configured-peer
     node-sync-with-peers
-    node-sync)
+    node-sync
+    headers-for-sync-attempt)
   (begin
 
     (define %schema-version "1")
     (define %zero32 (make-bytevector 32 0))
+    (define %service-node-network 1)
+    (define %service-node-network-limited 1024)
+    ;; Bitcoin Core defines coinbase maturity as 100 blocks. Keep this local
+    ;; until consensus params grow a chain-specific maturity field.
+    (define %node-coinbase-maturity 100)
+    (define %block-request-stale-seconds 120)
+    (define %transaction-request-stale-seconds 120)
+    (define %validation-attempt-blocks 128)
     (define %ipv6-loopback
       #u8(#x00 #x00 #x00 #x00 #x00 #x00 #x00 #x00
           #x00 #x00 #x00 #x00 #x00 #x00 #x00 #x01))
@@ -165,8 +193,12 @@
       (header-sync-lag integer?)
       (header-count integer?)
       (block-count integer?)
+      (mempool-count integer?)
+      (requested-transaction-count integer?)
+      (failed-transaction-count integer?)
       (validated-block-count integer?)
       (best-block-height integer?)
+      (best-block-hash string?)
       (peer-count integer?)
       (peer-success-count integer?)
       (peer-failure-count integer?)
@@ -184,6 +216,8 @@
       (run-target-iterations integer?)
       (run-completed-iterations integer?)
       (run-retry-count integer?)
+      (bootstrap-last-result string?)
+      (bootstrap-last-error string?)
       (last-peer-success string?)
       (last-peer-error string?))
 
@@ -213,6 +247,16 @@
       (hash string?)
       (height integer?)
       (status string?))
+
+    ;;; Persisted mempool transaction status.
+    ;;;
+    ;;; ```scheme
+    ;;; (node-mempool-entry-status entry)
+    ;;; ```
+    (define-struct node-mempool-entry
+      (txid string?)
+      (status string?)
+      (last-error string?))
 
     (define bitcoin-mainnet-chain
       (chain-config name: "bitcoin-mainnet"
@@ -280,7 +324,9 @@
                     consensus-params: bitcoin-signet-consensus-params
                     extensions: '((signet . ((status . partial)
                                              (challenge . "512103ad5e0edad18cb1f0fc0d28a3d4f1f3e445640337489abb10404f2d1e086be430210359ef5021964fe22d6f8e05b2463c9540ce96883fe3b278760f048f5189f2e6c452ae")
-                                             (block-signature-validation . planned))))))
+                                             (block-signature-validation . planned)))
+                                  (validation . ((profile . structural)
+                                                 (standard-script-checks . deferred))))))
 
     (define bitcoin-regtest-chain
       (chain-config name: "bitcoin-regtest"
@@ -324,6 +370,18 @@
         (if entry
             (cdr entry)
             default)))
+
+    (define (extension-ref extension key default)
+      (let ((entry (assoc key extension)))
+        (if entry
+            (cdr entry)
+            default)))
+
+    (define (chain-validation-profile chain)
+      (extension-ref
+        (chain-config-extension chain 'validation '())
+        'profile
+        'full))
 
     ;;; Return optional chain-specific mining metadata.
     ;;;
@@ -414,6 +472,9 @@
       (sqlite-exec
         db
         "CREATE TABLE IF NOT EXISTS blocks (hash TEXT PRIMARY KEY, height INTEGER NOT NULL, status TEXT NOT NULL, block_hex TEXT, validated INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0, requested_by TEXT, requested_at INTEGER NOT NULL DEFAULT 0, request_count INTEGER NOT NULL DEFAULT 0, last_error TEXT NOT NULL DEFAULT '')")
+      (sqlite-exec
+        db
+        "CREATE TABLE IF NOT EXISTS mempool (txid TEXT PRIMARY KEY, tx_hex TEXT, status TEXT NOT NULL, first_seen INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0, announced_by TEXT NOT NULL DEFAULT '', requested_by TEXT NOT NULL DEFAULT '', request_count INTEGER NOT NULL DEFAULT 0, last_error TEXT NOT NULL DEFAULT '')")
       (sqlite-exec
         db
         "CREATE TABLE IF NOT EXISTS utxos (txid TEXT NOT NULL, output_index INTEGER NOT NULL, value INTEGER NOT NULL, script_pubkey TEXT NOT NULL, coinbase INTEGER NOT NULL, height INTEGER NOT NULL, time INTEGER NOT NULL, created_by TEXT NOT NULL, spent_by TEXT, spent_height INTEGER, active INTEGER NOT NULL DEFAULT 1, PRIMARY KEY(txid, output_index))")
@@ -528,15 +589,41 @@
       (let ((row (sqlite-query-row db "SELECT COUNT(*) AS count FROM blocks WHERE block_hex IS NOT NULL")))
         (if row (row-ref row "count") 0)))
 
+    (define (db-mempool-count db)
+      (let ((row (sqlite-query-row db "SELECT COUNT(*) AS count FROM mempool WHERE tx_hex IS NOT NULL AND status = 'available'")))
+        (if row (row-ref row "count") 0)))
+
+    (define (db-mempool-status-count db status)
+      (let ((row (sqlite-query-row
+                   db
+                   "SELECT COUNT(*) AS count FROM mempool WHERE status = ?"
+                   status)))
+        (if row (row-ref row "count") 0)))
+
     (define (db-validated-block-count db)
       (let ((row (sqlite-query-row db "SELECT COUNT(*) AS count FROM blocks WHERE validated = 1")))
         (if row (row-ref row "count") 0)))
 
     (define (db-best-block-height db)
-      (let ((row (sqlite-query-row db "SELECT MAX(height) AS height FROM blocks WHERE validated = 1")))
-        (if (and row (row-ref row "height"))
-            (row-ref row "height")
-            0)))
+      (metadata-number db "active-chain-tip-height" 0))
+
+    (define (db-best-block-hash db)
+      (db-metadata db "active-chain-tip-hash" ""))
+
+    (define (db-set-active-chain-tip db hash-text height)
+      (db-set-metadata db "active-chain-tip-hash" hash-text)
+      (db-set-metadata db "active-chain-tip-height" (number->string height)))
+
+    (define (db-reconcile-active-chain-tip db genesis-hash-text)
+      ;; Older databases predate active-chain metadata. Rebuild it from the
+      ;; validated prefix on the current best-header chain at open time.
+      (let* ((best (db-best-header-row db))
+             (rows (if best (db-chain-rows-to-row db best) '()))
+             (height (validated-on-best-chain-height db rows))
+             (row (row-at-height rows height)))
+        (if row
+            (db-set-active-chain-tip db (row-ref row "hash") height)
+            (db-set-active-chain-tip db genesis-hash-text 0))))
 
     (define (db-peer-count db)
       (let ((row (sqlite-query-row db "SELECT COUNT(*) AS count FROM peers")))
@@ -610,50 +697,182 @@
         height
         hash-text))
 
-    (define (db-header-rows-missing-blocks db limit)
+    (define (db-child-header-rows db hash-text)
       (sqlite-query
         db
-        "SELECT h.hash, h.prev_hash, h.height, h.work, h.header_hex, h.time, h.bits, h.valid FROM headers h LEFT JOIN blocks b ON h.hash = b.hash WHERE h.valid = 1 AND h.height > 0 AND (b.hash IS NULL OR b.block_hex IS NULL) ORDER BY h.height ASC LIMIT ?"
-        limit))
+        "SELECT hash, prev_hash, height, work, header_hex, time, bits, valid FROM headers WHERE prev_hash = ? AND valid = 1"
+        hash-text))
 
-    (define (db-header-rows-requestable-blocks db peer-key limit)
-      (sqlite-query
-        db
-        "SELECT h.hash, h.prev_hash, h.height, h.work, h.header_hex, h.time, h.bits, h.valid FROM headers h LEFT JOIN blocks b ON h.hash = b.hash WHERE h.valid = 1 AND h.height > 0 AND (b.hash IS NULL OR (b.block_hex IS NULL AND (b.status IS NULL OR b.status = 'header' OR b.status = 'requested' OR (b.status = 'failed' AND COALESCE(b.requested_by, '') <> ?)))) ORDER BY h.height ASC LIMIT ?"
-        peer-key
-        limit))
+    (define (db-mark-header-branch-invalid db hash-text reason)
+      ;; Invalid block data makes this header and every connected descendant
+      ;; unusable for active-chain selection.
+      (let loop ((queue (list (cons hash-text reason))))
+        (unless (null? queue)
+          (let* ((entry (car queue))
+                 (current-hash (car entry))
+                 (current-reason (cdr entry))
+                 (row (db-header-row db current-hash))
+                 (children (if row
+                               (db-child-header-rows db current-hash)
+                               '())))
+            (when row
+              (db-set-block-invalid db
+                                    current-hash
+                                    (header-row-height row)
+                                    current-reason))
+            (sqlite-run db
+                        "UPDATE headers SET valid = 0 WHERE hash = ?"
+                        current-hash)
+            (loop
+              (append
+                (cdr queue)
+                (map (lambda (child)
+                       (cons (row-ref child "hash") "ancestor-invalid"))
+                     children)))))))
+
+    (define (hash-text-member-height db hashes)
+      (cond ((null? hashes) #f)
+            (else
+             (let ((row (db-header-row db (hex-encode (car hashes)))))
+               (if row
+                   (header-row-height row)
+                   (hash-text-member-height db (cdr hashes)))))))
+
+    (define (zero-hash? hash)
+      (equal? hash %zero32))
+
+    (define (take-until-stop rows stop-hash)
+      (if (zero-hash? stop-hash)
+          rows
+          (let loop ((xs rows) (out '()))
+            (cond ((null? xs) (reverse out))
+                  (else
+                   (let ((next (car xs)))
+                     (if (equal? (hex-decode (row-ref next "hash"))
+                                 stop-hash)
+                         (reverse (cons next out))
+                         (loop (cdr xs) (cons next out)))))))))
+
+    (define (db-best-chain-header-rows-after db locator-hashes stop-hash limit)
+      (let* ((best (db-best-header-row db))
+             (rows (if best (db-chain-rows-to-row db best) '()))
+             (locator-height (hash-text-member-height db locator-hashes))
+             (start-height (if locator-height locator-height 0))
+             (stop-height (if (zero-hash? stop-hash)
+                              #f
+                              (hash-text-member-height db (list stop-hash)))))
+        (if (and stop-height (<= stop-height start-height))
+            '()
+            (take-up-to
+              (take-until-stop
+                (filter (lambda (row) (> (header-row-height row) start-height))
+                        rows)
+                stop-hash)
+              limit))))
+
+    (define (requested-block-stale? block-row)
+      (let ((requested-at (or (row-ref block-row "requested_at") 0)))
+        (or (= requested-at 0)
+            (>= (- (current-unix-second) requested-at)
+                %block-request-stale-seconds))))
+
+    (define (requestable-block-row? db peer-key row)
+      (let ((height (header-row-height row)))
+        (and (> height 0)
+             (let ((block-row (db-block-row-by-height-and-hash
+                                db
+                                height
+                                (row-ref row "hash"))))
+               (or (not block-row)
+                   (and (not (row-ref block-row "block_hex"))
+                        (let ((status (row-ref block-row "status")))
+                          (or (not status)
+                              (string=? status "header")
+                              (and (string=? status "requested")
+                                   (or (requested-block-stale? block-row)
+                                       (not (string=?
+                                              peer-key
+                                              (or (row-ref block-row
+                                                           "requested_by")
+                                                  "")))))
+                              (and (string=? status "failed")
+                                   (or (requested-block-stale? block-row)
+                                       (not (string=?
+                                              peer-key
+                                              (or (row-ref block-row
+                                                           "requested_by")
+                                                  "")))))))))))))
+
+    (define (db-best-chain-requestable-block-rows db peer-key limit)
+      ;; Request blocks only for the active best-header path. Stale fork
+      ;; headers stay persisted, but they should not consume sync bandwidth.
+      (let ((rows (let ((best (db-best-header-row db)))
+                    (if best (db-chain-rows-to-row db best) '()))))
+        (take-up-to
+          (filter (lambda (row) (requestable-block-row? db peer-key row))
+                  rows)
+          limit)))
 
     (define (db-mark-block-requested db hash-text height peer-key)
-      (if (db-block-row db hash-text)
-          (sqlite-run
-            db
-            "UPDATE blocks SET height = ?, status = 'requested', requested_by = ?, requested_at = 0, request_count = request_count + 1, last_error = '' WHERE hash = ?"
-            height
-            peer-key
-            hash-text)
-          (sqlite-run
-            db
-            "INSERT INTO blocks(hash, height, status, block_hex, validated, updated_at, requested_by, requested_at, request_count, last_error) VALUES (?, ?, 'requested', NULL, 0, 0, ?, 0, 1, '')"
-            hash-text
-            height
-            peer-key)))
+      (let ((now (current-unix-second)))
+        (if (db-block-row db hash-text)
+            (sqlite-run
+              db
+              "UPDATE blocks SET height = ?, status = 'requested', requested_by = ?, requested_at = ?, request_count = request_count + 1, last_error = '' WHERE hash = ?"
+              height
+              peer-key
+              now
+              hash-text)
+            (sqlite-run
+              db
+              "INSERT INTO blocks(hash, height, status, block_hex, validated, updated_at, requested_by, requested_at, request_count, last_error) VALUES (?, ?, 'requested', NULL, 0, 0, ?, ?, 1, '')"
+              hash-text
+              height
+              peer-key
+              now))))
+
+    (define (db-mark-block-request-stale db hash-text peer-key)
+      (sqlite-run
+        db
+        "UPDATE blocks SET requested_at = 1 WHERE hash = ? AND status = 'requested' AND requested_by = ? AND block_hex IS NULL"
+        hash-text
+        peer-key))
+
+    (define (db-mark-blocking-requested-blocks-stale db)
+      ;; A downloaded tail behind a requested gap means validation cannot move
+      ;; until that gap is retried. Keep the fresh-request cooldown for the
+      ;; current tail, but make the blocking prefix immediately requestable.
+      (sqlite-run
+        db
+        "UPDATE blocks SET requested_at = 1 WHERE status = 'requested' AND block_hex IS NULL AND height <= COALESCE((SELECT MAX(height) FROM blocks WHERE block_hex IS NOT NULL), -1)"))
+
+    (define (db-mark-requested-blocks-stale db)
+      ;; When every candidate peer fails to make block progress, make the
+      ;; outstanding requests retryable for the next bounded attempt instead of
+      ;; waiting out the wall-clock stale window.
+      (sqlite-run
+        db
+        "UPDATE blocks SET requested_at = 1 WHERE status = 'requested' AND block_hex IS NULL"))
 
     (define (db-mark-block-failed db hash-text height peer-key reason)
-      (if (db-block-row db hash-text)
-          (sqlite-run
-            db
-            "UPDATE blocks SET height = ?, status = 'failed', requested_by = ?, requested_at = 0, last_error = ? WHERE hash = ? AND block_hex IS NULL"
-            height
-            peer-key
-            reason
-            hash-text)
-          (sqlite-run
-            db
-            "INSERT INTO blocks(hash, height, status, block_hex, validated, updated_at, requested_by, requested_at, request_count, last_error) VALUES (?, ?, 'failed', NULL, 0, 0, ?, 0, 0, ?)"
-            hash-text
-            height
-            peer-key
-            reason)))
+      (let ((now (current-unix-second)))
+        (if (db-block-row db hash-text)
+            (sqlite-run
+              db
+              "UPDATE blocks SET height = ?, status = 'failed', requested_by = ?, requested_at = ?, last_error = ? WHERE hash = ? AND block_hex IS NULL"
+              height
+              peer-key
+              now
+              reason
+              hash-text)
+            (sqlite-run
+              db
+              "INSERT INTO blocks(hash, height, status, block_hex, validated, updated_at, requested_by, requested_at, request_count, last_error) VALUES (?, ?, 'failed', NULL, 0, 0, ?, ?, 0, ?)"
+              hash-text
+              height
+              peer-key
+              now
+              reason))))
 
     (define (db-chain-to-row db row)
       (let loop ((current row) (headers '()))
@@ -690,8 +909,12 @@
       (db-ensure-metadata db "run-target-iterations" "0")
       (db-ensure-metadata db "run-completed-iterations" "0")
       (db-ensure-metadata db "run-retry-count" "0")
+      (db-ensure-metadata db "bootstrap-last-result" "")
+      (db-ensure-metadata db "bootstrap-last-error" "")
       (let* ((genesis (chain-config-genesis-header chain))
              (hash-text (hex-encode (chain-config-genesis-hash chain))))
+        (db-ensure-metadata db "active-chain-tip-hash" hash-text)
+        (db-ensure-metadata db "active-chain-tip-height" "0")
         (unless (db-header-row db hash-text)
           (db-insert-header
             db
@@ -699,7 +922,8 @@
             (hex-encode (block-header-previous-block genesis))
             0
             (block-header-chain-work genesis)
-            genesis))))
+            genesis))
+        (db-reconcile-active-chain-tip db hash-text)))
 
     (define (db-peer-row->peer row)
       (node-peer address: (row-ref row "address")
@@ -724,7 +948,7 @@
     (define (db-last-peer-error db)
       (let ((row (sqlite-query-row
                    db
-                   "SELECT address, port, last_error FROM peers WHERE last_error <> '' ORDER BY failures DESC, score ASC, address ASC, port ASC LIMIT 1")))
+                   "SELECT address, port, last_error FROM peers WHERE last_error <> '' ORDER BY last_attempt DESC, failures DESC, score ASC, address ASC, port ASC LIMIT 1")))
         (if row
             (string-append (peer-endpoint-text (row-ref row "address")
                                                (row-ref row "port"))
@@ -771,6 +995,143 @@
                        height: (row-ref row "height")
                        status: (row-ref row "status")))
 
+    (define (db-mempool-row db txid-text)
+      (sqlite-query-row
+        db
+        "SELECT txid, tx_hex, status, first_seen, updated_at, announced_by, requested_by, request_count, last_error FROM mempool WHERE txid = ?"
+        txid-text))
+
+    (define (db-mempool-entry row)
+      (node-mempool-entry txid: (row-ref row "txid")
+                          status: (row-ref row "status")
+                          last-error: (row-ref row "last_error")))
+
+    ;;; Return persisted mempool transaction entries.
+    ;;;
+    ;;; ```scheme
+    ;;; (node-mempool n)
+    ;;; ```
+    (define (node-mempool n)
+      (: node? -> list?)
+      (map db-mempool-entry
+           (sqlite-query
+             (node-db n)
+             "SELECT txid, tx_hex, status, first_seen, updated_at, announced_by, requested_by, request_count, last_error FROM mempool ORDER BY updated_at ASC, txid ASC")))
+
+    (define (db-mark-transaction-announced db txid-text peer-name)
+      (let ((now (current-unix-second)))
+        (if (db-mempool-row db txid-text)
+            (sqlite-run
+              db
+              "UPDATE mempool SET announced_by = ?, updated_at = ? WHERE txid = ? AND tx_hex IS NULL"
+              peer-name
+              now
+              txid-text)
+            (sqlite-run
+              db
+              "INSERT INTO mempool(txid, tx_hex, status, first_seen, updated_at, announced_by, requested_by, request_count, last_error) VALUES (?, NULL, 'announced', ?, ?, ?, '', 0, '')"
+              txid-text
+              now
+              now
+              peer-name))))
+
+    (define (db-mark-transaction-requested db txid-text peer-name)
+      (let ((now (current-unix-second)))
+        (if (db-mempool-row db txid-text)
+            (sqlite-run
+              db
+              "UPDATE mempool SET status = 'requested', requested_by = ?, request_count = request_count + 1, updated_at = ?, last_error = '' WHERE txid = ? AND tx_hex IS NULL"
+              peer-name
+              now
+              txid-text)
+            (sqlite-run
+              db
+              "INSERT INTO mempool(txid, tx_hex, status, first_seen, updated_at, announced_by, requested_by, request_count, last_error) VALUES (?, NULL, 'requested', ?, ?, '', ?, 1, '')"
+              txid-text
+              now
+              now
+              peer-name))))
+
+    (define (db-mark-transaction-notfound db txid-text peer-name)
+      (let ((now (current-unix-second)))
+        (if (db-mempool-row db txid-text)
+            (sqlite-run
+              db
+              "UPDATE mempool SET status = 'failed', requested_by = ?, updated_at = ?, last_error = 'notfound' WHERE txid = ? AND tx_hex IS NULL"
+              peer-name
+              now
+              txid-text)
+            (sqlite-run
+              db
+              "INSERT INTO mempool(txid, tx_hex, status, first_seen, updated_at, announced_by, requested_by, request_count, last_error) VALUES (?, NULL, 'failed', ?, ?, '', ?, 0, 'notfound')"
+              txid-text
+              now
+              now
+              peer-name))))
+
+    (define (db-store-transaction db tx source)
+      (let* ((txid-text (hex-encode (transaction-txid tx)))
+             (tx-hex (hex-encode (transaction-serialize tx)))
+             (now (current-unix-second)))
+        (if (db-mempool-row db txid-text)
+            (sqlite-run
+              db
+              "UPDATE mempool SET tx_hex = ?, status = 'available', updated_at = ?, announced_by = CASE WHEN announced_by = '' THEN ? ELSE announced_by END, last_error = '' WHERE txid = ?"
+              tx-hex
+              now
+              source
+              txid-text)
+            (sqlite-run
+              db
+              "INSERT INTO mempool(txid, tx_hex, status, first_seen, updated_at, announced_by, requested_by, request_count, last_error) VALUES (?, ?, 'available', ?, ?, ?, '', 0, '')"
+              txid-text
+              tx-hex
+              now
+              now
+              source))
+        (db-mempool-entry (db-mempool-row db txid-text))))
+
+    (define (db-reject-transaction db tx source reason)
+      (let* ((txid-text (hex-encode (transaction-txid tx)))
+             (now (current-unix-second)))
+        (if (db-mempool-row db txid-text)
+            (sqlite-run
+              db
+              "UPDATE mempool SET tx_hex = NULL, status = 'rejected', updated_at = ?, announced_by = CASE WHEN announced_by = '' THEN ? ELSE announced_by END, last_error = ? WHERE txid = ?"
+              now
+              source
+              reason
+              txid-text)
+            (sqlite-run
+              db
+              "INSERT INTO mempool(txid, tx_hex, status, first_seen, updated_at, announced_by, requested_by, request_count, last_error) VALUES (?, NULL, 'rejected', ?, ?, ?, '', 0, ?)"
+              txid-text
+              now
+              now
+              source
+              reason))
+        (db-mempool-entry (db-mempool-row db txid-text))))
+
+    (define (db-mark-transaction-confirmed db tx block-hash)
+      (let ((txid-text (hex-encode (transaction-txid tx)))
+            (now (current-unix-second)))
+        (when (db-mempool-row db txid-text)
+          (sqlite-run
+            db
+            "UPDATE mempool SET status = 'confirmed', updated_at = ?, last_error = ? WHERE txid = ?"
+            now
+            (string-append "block:" block-hash)
+            txid-text))))
+
+    (define (db-mark-transaction-conflicted db txid-text block-hash)
+      (let ((now (current-unix-second)))
+        (sqlite-run
+          db
+          "UPDATE mempool SET status = 'conflicted', updated_at = ?, last_error = ? WHERE txid = ? AND status = 'available'"
+          now
+          (string-append "block:" block-hash)
+          txid-text)))
+
     (define (db-set-block-status db hash-text height status block-hex validated?)
       (if (db-block-row db hash-text)
           (if (or (string=? status "downloaded") (string=? status "valid"))
@@ -799,6 +1160,21 @@
             block-hex
             (if validated? 1 0))))
 
+    (define (db-set-block-invalid db hash-text height reason)
+      (if (db-block-row db hash-text)
+          (sqlite-run
+            db
+            "UPDATE blocks SET height = ?, status = 'invalid', validated = 0, updated_at = 0, last_error = ? WHERE hash = ?"
+            height
+            reason
+            hash-text)
+          (sqlite-run
+            db
+            "INSERT INTO blocks(hash, height, status, block_hex, validated, updated_at, requested_by, requested_at, request_count, last_error) VALUES (?, ?, 'invalid', NULL, 0, 0, NULL, 0, 0, ?)"
+            hash-text
+            height
+            reason)))
+
     (define (db-mark-header-block db hash-text height)
       (unless (db-block-row db hash-text)
         (db-set-block-status db hash-text height "header" #f #f)))
@@ -820,6 +1196,13 @@
         db
         "SELECT txid, output_index, value, script_pubkey, coinbase, height, time, created_by, spent_by, spent_height, active FROM utxos WHERE active = 1 ORDER BY height ASC, txid ASC, output_index ASC"))
 
+    (define (db-active-utxo-row db op)
+      (sqlite-query-row
+        db
+        "SELECT txid, output_index, value, script_pubkey, coinbase, height, time, created_by, spent_by, spent_height, active FROM utxos WHERE txid = ? AND output_index = ? AND active = 1"
+        (hex-encode (outpoint-txid op))
+        (outpoint-index op)))
+
     (define (utxo-row->pair row)
       (cons
         (outpoint txid: (hex-decode (row-ref row "txid"))
@@ -834,13 +1217,19 @@
     (define (db-active-utxos db)
       (map utxo-row->pair (db-active-utxo-rows db)))
 
+    (define (db-mempool-available-rows db)
+      (sqlite-query
+        db
+        "SELECT txid, tx_hex, status, first_seen, updated_at, announced_by, requested_by, request_count, last_error FROM mempool WHERE tx_hex IS NOT NULL AND status = 'available' ORDER BY updated_at ASC, txid ASC"))
+
     (define (db-spend-utxo db op block-hash height)
       (sqlite-run
         db
-        "UPDATE utxos SET active = 0, spent_by = ?, spent_height = ? WHERE txid = ? AND output_index = ? AND active = 1"
+        "UPDATE utxos SET active = 0, spent_by = ?, spent_height = ? WHERE (txid = ? OR txid = ?) AND output_index = ? AND active = 1"
         block-hash
         height
         (hex-encode (outpoint-txid op))
+        (hex-encode (reverse-bytevector (outpoint-txid op)))
         (outpoint-index op)))
 
     (define (db-insert-utxo db op output coinbase? height block-time block-hash)
@@ -856,7 +1245,35 @@
         block-time
         block-hash))
 
+    (define (db-validated-block-hashes-after-height db height)
+      (map (lambda (row) (row-ref row "hash"))
+           (sqlite-query
+             db
+             "SELECT hash FROM blocks WHERE height > ? AND validated = 1 ORDER BY height ASC, hash ASC"
+             height)))
+
+    (define (db-restore-mempool-effects-for-block db hash-text)
+      (let ((now (current-unix-second))
+            (reason (string-append "block:" hash-text)))
+        (sqlite-run
+          db
+          "UPDATE mempool SET status = 'available', updated_at = ?, last_error = '' WHERE tx_hex IS NOT NULL AND status = 'confirmed' AND last_error = ?"
+          now
+          reason)
+        (sqlite-run
+          db
+          "UPDATE mempool SET status = 'available', updated_at = ?, last_error = '' WHERE tx_hex IS NOT NULL AND status = 'conflicted' AND last_error = ?"
+          now
+          reason)))
+
+    (define (db-restore-mempool-effects-after-height db height)
+      (for-each
+        (lambda (hash-text)
+          (db-restore-mempool-effects-for-block db hash-text))
+        (db-validated-block-hashes-after-height db height)))
+
     (define (db-rollback-active-chain-to-height db height)
+      (db-restore-mempool-effects-after-height db height)
       (sqlite-run db
                   "DELETE FROM utxos WHERE created_by IN (SELECT hash FROM blocks WHERE height > ? AND validated = 1)"
                   height)
@@ -927,8 +1344,13 @@
           header-sync-lag: (best-header-sync-lag row)
           header-count: (db-header-count db)
           block-count: (db-block-count db)
+          mempool-count: (db-mempool-count db)
+          requested-transaction-count: (db-mempool-status-count db
+                                                                "requested")
+          failed-transaction-count: (db-mempool-status-count db "failed")
           validated-block-count: (db-validated-block-count db)
           best-block-height: (db-best-block-height db)
+          best-block-hash: (db-best-block-hash db)
           peer-count: (db-peer-count db)
           peer-success-count: (db-peer-result-count db "success")
           peer-failure-count: (db-peer-result-count db "failure")
@@ -951,6 +1373,8 @@
                                       "run-completed-iterations"
                                       0)
           run-retry-count: (metadata-number db "run-retry-count" 0)
+          bootstrap-last-result: (db-metadata db "bootstrap-last-result" "")
+          bootstrap-last-error: (db-metadata db "bootstrap-last-error" "")
           last-peer-success: (db-last-peer-success db)
           last-peer-error: (db-last-peer-error db))))
 
@@ -1050,6 +1474,18 @@
           address port address port address port address port address port address port address port final-source final-seed-host)
         (db-peer-row->peer (node-peer-row n address port))))
 
+    (define (node-upsert-peer-seen n address port source seed-host seen-time)
+      (node-upsert-peer n address port source seed-host)
+      (when (> seen-time 0)
+        (sqlite-run
+          (node-db n)
+          "UPDATE peers SET last_seen = CASE WHEN last_seen < ? THEN ? ELSE last_seen END WHERE address = ? AND port = ?"
+          seen-time
+          seen-time
+          address
+          port))
+      (db-peer-row->peer (node-peer-row n address port)))
+
     ;;; Add or update a manually configured peer.
     ;;;
     ;;; ```scheme
@@ -1090,6 +1526,19 @@
         "SELECT address, port, score, failures, last_seen, last_attempt, last_result, last_error, source, seed_host FROM peers WHERE address = ? AND port = ?"
         address
         port))
+
+    (define (node-peer-candidate-rows n)
+      ;; Candidate order is tuned for live sync. Manual peers and peers that
+      ;; have already completed useful work should not be buried by addr gossip.
+      (sqlite-query
+        (node-db n)
+        "SELECT address, port, score, failures, last_seen, last_attempt, last_result, last_error, source, seed_host FROM peers ORDER BY CASE WHEN score > 0 THEN 0 WHEN last_result = 'success' THEN 0 WHEN last_result = '' THEN 1 ELSE 2 END ASC, CASE source WHEN 'manual' THEN 0 ELSE 1 END ASC, score DESC, failures ASC, last_seen DESC, last_attempt ASC, address ASC, port ASC"))
+
+    (define (node-peer-candidates n max-peers)
+      (let ((peers (map db-peer-row->peer (node-peer-candidate-rows n))))
+        (if (= max-peers 1)
+            (take-up-to peers max-peers)
+            (diverse-take-peers peers max-peers))))
 
     (define (fd-list-contains? fd xs)
       (cond ((null? xs) #f)
@@ -1139,7 +1588,13 @@
             (and (= a 100) (>= b 64) (<= b 127))
             (and (= a 169) (= b 254))
             (and (= a 172) (>= b 16) (<= b 31))
+            (and (= a 192) (= b 0))
+            (and (= a 192) (= b 88) (= (caddr octets) 99))
+            (and (= a 192) (= b 0) (= (caddr octets) 2))
             (and (= a 192) (= b 168))
+            (and (= a 198) (>= b 18) (<= b 19))
+            (and (= a 198) (= b 51) (= (caddr octets) 100))
+            (and (= a 203) (= b 0) (= (caddr octets) 113))
             (>= a 224))))
 
     (define (routable-ipv6-address? address)
@@ -1159,6 +1614,12 @@
                 (routable-ipv6-address? address)
                 #t))))
 
+    (define (announced-block-service? services)
+      ;; Addr gossip can include clients that do not serve block data. Keep
+      ;; peers that advertise full or limited block-serving capability.
+      (or (not (= 0 (bitwise-and services %service-node-network)))
+          (not (= 0 (bitwise-and services %service-node-network-limited)))))
+
     (define (add-discovered-addresses n seed-host seed-port addresses max-addresses)
       (let loop ((xs addresses)
                  (kept 0)
@@ -1171,11 +1632,234 @@
                    (existing (node-peer-row n address port)))
               (if (routable-peer-address? address)
                   (begin
-                    (node-upsert-peer n address port "discovered" seed-host)
+                    (node-upsert-peer-seen n
+                                           address
+                                           port
+                                           "discovered"
+                                           seed-host
+                                           (current-unix-second))
                     (loop (cdr xs)
                           (+ kept 1)
                           (if existing added (+ added 1))))
                   (loop (cdr xs) kept added))))))
+
+    (define (ipv4-address-text bytes)
+      (string-append (number->string (bytevector-u8-ref bytes 0))
+                     "."
+                     (number->string (bytevector-u8-ref bytes 1))
+                     "."
+                     (number->string (bytevector-u8-ref bytes 2))
+                     "."
+                     (number->string (bytevector-u8-ref bytes 3))))
+
+    (define (ipv4-octets->bytevector octets)
+      (bytevector (car octets)
+                  (cadr octets)
+                  (caddr octets)
+                  (cadddr octets)))
+
+    (define (ipv6-hextet-text bytes offset)
+      (hex-encode (bytevector (bytevector-u8-ref bytes offset)
+                              (bytevector-u8-ref bytes (+ offset 1)))))
+
+    (define (hex-char-value ch)
+      (let ((n (char->integer ch)))
+        (cond ((and (>= n (char->integer #\0))
+                    (<= n (char->integer #\9)))
+               (- n (char->integer #\0)))
+              ((and (>= n (char->integer #\a))
+                    (<= n (char->integer #\f)))
+               (+ 10 (- n (char->integer #\a))))
+              ((and (>= n (char->integer #\A))
+                    (<= n (char->integer #\F)))
+               (+ 10 (- n (char->integer #\A))))
+              (else #f))))
+
+    (define (ipv6-hextet-number text)
+      (let ((len (string-length text)))
+        (if (or (= len 0) (> len 4))
+            #f
+            (let loop ((i 0) (value 0))
+              (if (>= i len)
+                  value
+                  (let ((digit (hex-char-value (string-ref text i))))
+                    (if digit
+                        (let ((next (+ (* value 16) digit)))
+                          (if (> next #xffff)
+                              #f
+                              (loop (+ i 1) next)))
+                        #f)))))))
+
+    (define (empty-string-member? items)
+      (cond ((null? items) #f)
+            ((string=? "" (car items)) #t)
+            (else (empty-string-member? (cdr items)))))
+
+    (define (ipv6-parts-left parts)
+      (let loop ((xs parts) (out '()))
+        (cond ((null? xs) (reverse out))
+              ((string=? "" (car xs)) (reverse out))
+              (else (loop (cdr xs) (cons (car xs) out))))))
+
+    (define (ipv6-parts-right parts)
+      (let skip-left ((xs parts))
+        (cond ((null? xs) '())
+              ((string=? "" (car xs))
+               (let skip-empty ((ys xs))
+                 (if (and (not (null? ys)) (string=? "" (car ys)))
+                     (skip-empty (cdr ys))
+                     ys)))
+              (else (skip-left (cdr xs))))))
+
+    (define (repeat-number value count)
+      (let loop ((i 0) (out '()))
+        (if (>= i count)
+            (reverse out)
+            (loop (+ i 1) (cons value out)))))
+
+    (define (parse-ipv6-hextets parts)
+      (let loop ((xs parts) (out '()))
+        (if (null? xs)
+            (reverse out)
+            (let ((n (ipv6-hextet-number (car xs))))
+              (if n
+                  (loop (cdr xs) (cons n out))
+                  #f)))))
+
+    (define (ipv6-hextets address)
+      (let ((parts (string-split address ":")))
+        (if (empty-string-member? parts)
+            (let* ((left (ipv6-parts-left parts))
+                   (right (ipv6-parts-right parts))
+                   (left-values (parse-ipv6-hextets left))
+                   (right-values (parse-ipv6-hextets right))
+                   (zero-count (- 8 (length left) (length right))))
+              (if (and left-values
+                       right-values
+                       (not (empty-string-member? right))
+                       (> zero-count 0))
+                  (append left-values
+                          (repeat-number 0 zero-count)
+                          right-values)
+                  #f))
+            (let ((values (parse-ipv6-hextets parts)))
+              (if (and values (= 8 (length values)))
+                  values
+                  #f)))))
+
+    (define (ipv6-hextets->bytevector hextets)
+      (let ((out (make-bytevector 16 0)))
+        (let loop ((xs hextets) (offset 0))
+          (if (null? xs)
+              out
+              (let ((value (car xs)))
+                (bytevector-u8-set! out
+                                    offset
+                                    (bitwise-and
+                                      (arithmetic-shift value -8)
+                                      #xff))
+                (bytevector-u8-set! out
+                                    (+ offset 1)
+                                    (bitwise-and value #xff))
+                (loop (cdr xs) (+ offset 2)))))))
+
+    (define (ipv6-address-bytes address)
+      (let ((hextets (ipv6-hextets address)))
+        (if hextets
+            (ipv6-hextets->bytevector hextets)
+            #f)))
+
+    (define (ipv6-address-text bytes)
+      (let loop ((offset 0) (parts '()))
+        (if (>= offset 16)
+            (let join ((xs (reverse parts)) (out ""))
+              (cond ((null? xs) out)
+                    ((string=? out "") (join (cdr xs) (car xs)))
+                    (else (join (cdr xs)
+                                (string-append out ":" (car xs))))))
+            (loop (+ offset 2)
+                  (cons (ipv6-hextet-text bytes offset) parts)))))
+
+    (define (p2p-address->peer-address item)
+      (let ((network-id (p2p-address-network-id item))
+            (address (p2p-address-address item)))
+        (cond ((and (= network-id addrv2-network-ipv4)
+                    (= 4 (bytevector-length address)))
+               (ipv4-address-text address))
+              ((and (= network-id addrv2-network-ipv6)
+                    (= 16 (bytevector-length address)))
+               (ipv6-address-text address))
+              (else #f))))
+
+    ;;; Persist routable peer addresses announced by a connected peer.
+    ;;;
+    ;;; Unsupported networks are ignored until the node can dial those
+    ;;; transports directly.
+    ;;;
+    ;;; ```scheme
+    ;;; (node-ingest-peer-addresses n (addr-message-parse payload) "addr" 1000)
+    ;;; ```
+    (define (node-ingest-peer-addresses n addresses source max-addresses)
+      (: node? list? string? integer? -> integer?)
+      (let loop ((xs addresses)
+                 (kept 0)
+                 (added 0))
+        (if (or (null? xs) (>= kept max-addresses))
+            added
+            (let* ((item (car xs))
+                   (address (p2p-address->peer-address item))
+                   (port (p2p-address-port item)))
+              (if (and address
+                       (routable-peer-address? address)
+                       (announced-block-service?
+                         (p2p-address-services item)))
+                  (let ((existing (node-peer-row n address port)))
+                    (node-upsert-peer-seen n
+                                           address
+                                           port
+                                           "discovered"
+                                           source
+                                           (p2p-address-time item))
+                    (loop (cdr xs)
+                          (+ kept 1)
+                          (if existing added (+ added 1))))
+                  (loop (cdr xs) kept added))))))
+
+    (define (node-peer->p2p-address n peer)
+      (let* ((address (node-peer-address peer))
+             (octets (ipv4-octets address))
+             (services (chain-config-services (node-chain n))))
+        (cond (octets
+               (p2p-address time: 0
+                            services: services
+                            network-id: addrv2-network-ipv4
+                            address: (ipv4-octets->bytevector octets)
+                            port: (node-peer-port peer)))
+              ((string-contains? address ":")
+               (let ((bytes (ipv6-address-bytes address)))
+                 (if bytes
+                     (p2p-address time: 0
+                                  services: services
+                                  network-id: addrv2-network-ipv6
+                                  address: bytes
+                                  port: (node-peer-port peer))
+                     #f)))
+              (else #f))))
+
+    (define (ingest-peer-address-envelope n envelope)
+      (let ((command (p2p-envelope-command envelope))
+            (payload (p2p-envelope-payload envelope)))
+        (cond ((string=? command "addr")
+               (node-ingest-peer-addresses n
+                                           (addr-message-parse payload)
+                                           "addr"
+                                           p2p-max-addresses-per-message))
+              ((string=? command "addrv2")
+               (node-ingest-peer-addresses n
+                                           (addrv2-message-parse payload)
+                                           "addrv2"
+                                           p2p-max-addresses-per-message))
+              (else 0))))
 
     ;;; Resolve chain-configured seed peers and persist discovered peers.
     ;;;
@@ -1195,10 +1879,24 @@
       (db-set-metadata (node-db n) "bootstrap-last-result" "running")
       (let loop ((seeds (take-up-to (chain-config-seed-peers (node-chain n))
                                     max-seeds))
-                 (added 0))
+                 (added 0)
+                 (failed? #f))
         (cond ((null? seeds)
-               (db-set-metadata (node-db n) "bootstrap-last-result" "success")
-               (db-set-metadata (node-db n) "bootstrap-last-error" "")
+               (cond ((not failed?)
+                      (db-set-metadata (node-db n)
+                                       "bootstrap-last-result"
+                                       "success")
+                      (db-set-metadata (node-db n)
+                                       "bootstrap-last-error"
+                                       ""))
+                     ((> added 0)
+                      (db-set-metadata (node-db n)
+                                       "bootstrap-last-result"
+                                       "partial"))
+                     (else
+                      (db-set-metadata (node-db n)
+                                       "bootstrap-last-result"
+                                       "failure")))
                added)
               (else
                (let* ((seed (car seeds))
@@ -1211,8 +1909,10 @@
                                            "failure")
                           (db-set-metadata (node-db n)
                                            "bootstrap-last-error"
-                                           "resolve failed")
-                          (loop (cdr seeds) added)))
+                                           (stage-failure-reason
+                                             "resolve failed"
+                                             err))
+                          (loop (cdr seeds) added #t)))
                    (let* ((resolved (resolver seed-host seed-port timeout-ms))
                           (addresses (if resolved resolved '()))
                           (new-count (add-discovered-addresses
@@ -1221,7 +1921,7 @@
                                        seed-port
                                        addresses
                                        max-addresses)))
-                     (loop (cdr seeds) (+ added new-count)))))))))
+                     (loop (cdr seeds) (+ added new-count) failed?))))))))
 
     ;;; Resolve configured seed peers with the default resolver.
     ;;;
@@ -1233,17 +1933,22 @@
       (node-bootstrap-discovered-peers n default-seed-resolver 2000 8 16))
 
     (define (node-peer-success n address port)
-      (sqlite-run (node-db n)
-                  "UPDATE peers SET score = score + 1, last_seen = 0, last_attempt = 0, last_result = 'success', last_error = '' WHERE address = ? AND port = ?"
-                  address
-                  port))
+      (let ((now (current-unix-second)))
+        (sqlite-run (node-db n)
+                    "UPDATE peers SET score = score + 1, last_seen = ?, last_attempt = ?, last_result = 'success', last_error = '' WHERE address = ? AND port = ?"
+                    now
+                    now
+                    address
+                    port)))
 
     (define (node-peer-failure-with-error n address port reason)
-      (sqlite-run (node-db n)
-                  "UPDATE peers SET failures = failures + 1, score = score - 1, last_attempt = 0, last_result = 'failure', last_error = ? WHERE address = ? AND port = ?"
-                  reason
-                  address
-                  port))
+      (let ((now (current-unix-second)))
+        (sqlite-run (node-db n)
+                    "UPDATE peers SET failures = failures + 1, score = score - 1, last_attempt = ?, last_result = 'failure', last_error = ? WHERE address = ? AND port = ?"
+                    now
+                    reason
+                    address
+                    port)))
 
     (define (node-peer-failure n address port)
       (node-peer-failure-with-error n address port "failure"))
@@ -1268,9 +1973,12 @@
         (db-set-metadata db "run-last-result" result)
         (node-status n)))
 
-    (define (node-record-run-failure n)
+    (define (node-record-run-failure n . maybe-reason)
       (: node? -> node-status-snapshot?)
-      (node-record-run-attempt n "failure" "run failed"))
+      (node-record-run-attempt
+        n
+        "failure"
+        (if (null? maybe-reason) "run failed" (car maybe-reason))))
 
     ;;; Record long-running node loop state for status inspection.
     ;;;
@@ -1291,6 +1999,16 @@
                          "run-retry-count"
                          (number->string retry-count))
         (node-status n)))
+
+    ;;; Mark the current sync stage idle after a controlled loop exit.
+    ;;;
+    ;;; ```scheme
+    ;;; (node-mark-sync-idle n)
+    ;;; ```
+    (define (node-mark-sync-idle n)
+      (: node? -> node-status-snapshot?)
+      (db-set-sync-stage (node-db n) "idle")
+      (node-status n))
 
     ;;; Test whether a peer transport can be opened and update peer health.
     ;;;
@@ -1347,29 +2065,57 @@
                          locator-hashes: (node-header-locator n)
                          stop-hash: %zero32))))))
 
-    (define (sync-headers-loop n read-envelope write-envelope max-steps)
+    (define (write-getaddr n write-envelope)
+      (write-envelope
+        (p2p-envelope magic: (chain-config-magic (node-chain n))
+                      command: "getaddr"
+                      payload: (getaddr-message))))
+
+    (define %node-headers-per-sync-attempt 1024)
+
+    (define (headers-for-sync-attempt headers)
+      (take-up-to headers %node-headers-per-sync-attempt))
+
+    (define (sync-headers-loop n read-envelope write-envelope max-steps peer-name)
+      (write-getaddr n write-envelope)
       (write-getheaders n write-envelope)
       (let loop ((remaining max-steps) (inserted 0))
         (if (<= remaining 0)
-            (error "node-sync-headers: header sync did not complete")
+            (if (> inserted 0)
+                inserted
+                (error "node-sync-headers: header sync did not complete"))
             (let ((envelope (read-envelope)))
               (if (string=? "headers" (p2p-envelope-command envelope))
                   (let* ((headers (headers-message-parse
                                     (p2p-envelope-payload envelope)))
-                         (count (node-ingest-headers n headers))
+                         (attempt-headers
+                           (headers-for-sync-attempt headers))
+                         (count (node-ingest-headers n attempt-headers))
                          (total (+ inserted count)))
-                    (if (= (length headers) p2p-max-headers-per-message)
+                    (if (and (= (length headers)
+                                (length attempt-headers))
+                             (= (length headers) p2p-max-headers-per-message))
                         (begin
                           (write-getheaders n write-envelope)
                           (loop (- remaining 1) total))
                         total))
-                  (loop (- remaining 1) inserted))))))
+                  (begin
+                    (node-handle-transaction-relay
+                      n
+                      envelope
+                      peer-name
+                      write-envelope
+                      p2p-max-inventory-per-message)
+                    (loop (- remaining 1) inserted)))))))
 
     (define (peer-key address port)
       (string-append address ":" (number->string port)))
 
     (define (pending-block-rows n peer-name max-blocks)
-      (db-header-rows-requestable-blocks (node-db n) peer-name max-blocks))
+      (db-best-chain-requestable-block-rows
+        (node-db n)
+        peer-name
+        max-blocks))
 
     (define (block-row->inventory row)
       (inventory-vector type: inv-block
@@ -1382,6 +2128,14 @@
                                    (row-ref row "hash")
                                    (header-row-height row)
                                    peer-name))
+        rows))
+
+    (define (mark-unreceived-requested-rows-stale db rows peer-name)
+      (for-each
+        (lambda (row)
+          (db-mark-block-request-stale db
+                                       (row-ref row "hash")
+                                       peer-name))
         rows))
 
     (define (mark-notfound-inventory db items peer-name)
@@ -1402,6 +2156,421 @@
                           (loop (cdr xs) (+ count 1)))
                         (loop (cdr xs) count)))
                   (loop (cdr xs) count))))))
+
+    (define (mark-next-requested-block-failed db peer-name reason)
+      ;; A peer can send an invalid, unknown, or unexpected block instead of
+      ;; the requested inventory. Mark one outstanding request so later peers
+      ;; can retry it without leaving the row stuck in `requested`.
+      (let ((row (sqlite-query-row
+                   db
+                   "SELECT hash, height FROM blocks WHERE status = 'requested' AND requested_by = ? AND block_hex IS NULL ORDER BY height ASC, hash ASC LIMIT 1"
+                   peer-name)))
+        (if row
+            (begin
+              (db-mark-block-failed db
+                                    (row-ref row "hash")
+                                    (row-ref row "height")
+                                    peer-name
+                                    reason)
+              1)
+            0)))
+
+    (define (block-inventory-vector b)
+      (inventory-vector type: inv-block
+                        hash: (block-header-hash (block-header-field b))))
+
+    (define (transaction-inventory? item)
+      (let ((type (inventory-vector-type item)))
+        (= type inv-tx)))
+
+    (define (requested-transaction-stale? row)
+      (let ((updated-at (or (row-ref row "updated_at") 0)))
+        (or (= updated-at 0)
+            (>= (- (current-unix-second) updated-at)
+                %transaction-request-stale-seconds))))
+
+    (define (transaction-retry-held? status)
+      (or (string=? status "requested")
+          (string=? status "failed")))
+
+    (define (transaction-inventory-row-missing? db item peer-name)
+      (let* ((txid-text (hex-encode (inventory-vector-hash item)))
+             (row (db-mempool-row db txid-text)))
+        (or (not row)
+            (and (not (string=? "rejected" (row-ref row "status")))
+                 (not (row-ref row "tx_hex"))
+                 (let ((status (row-ref row "status")))
+                   (or (not (transaction-retry-held? status))
+                       (requested-transaction-stale? row)
+                       (not (string=?
+                              peer-name
+                              (or (row-ref row "requested_by") "")))))))))
+
+    (define (same-inventory-vector? left right)
+      (and (= (inventory-vector-type left) (inventory-vector-type right))
+           (equal? (inventory-vector-hash left)
+                   (inventory-vector-hash right))))
+
+    (define (inventory-vector-member? item items)
+      (cond ((null? items) #f)
+            ((same-inventory-vector? item (car items)) #t)
+            (else (inventory-vector-member? item (cdr items)))))
+
+    (define (requestable-transaction-inventory db items peer-name max-tx)
+      (let loop ((xs items) (out '()))
+        (if (or (null? xs) (>= (length out) max-tx))
+            (reverse out)
+            (let ((item (car xs)))
+              (if (and (transaction-inventory? item)
+                       (transaction-inventory-row-missing? db item peer-name)
+                       (not (inventory-vector-member? item out)))
+                  (loop (cdr xs) (cons item out))
+                  (loop (cdr xs) out))))))
+
+    (define (mark-transaction-announcements db items peer-name)
+      (let loop ((xs items) (count 0))
+        (if (null? xs)
+            count
+            (let ((item (car xs)))
+              (if (transaction-inventory? item)
+                  (begin
+                    (db-mark-transaction-announced
+                      db
+                      (hex-encode (inventory-vector-hash item))
+                      peer-name)
+                    (loop (cdr xs) (+ count 1)))
+                  (loop (cdr xs) count))))))
+
+    (define (mark-requested-transaction-inventory db items peer-name)
+      (for-each
+        (lambda (item)
+          (db-mark-transaction-requested
+            db
+            (hex-encode (inventory-vector-hash item))
+            peer-name))
+        items))
+
+    (define (mark-notfound-transactions db items peer-name)
+      (let loop ((xs items) (count 0))
+        (if (null? xs)
+            count
+            (let ((item (car xs)))
+              (if (transaction-inventory? item)
+                  (begin
+                    (db-mark-transaction-notfound
+                      db
+                      (hex-encode (inventory-vector-hash item))
+                      peer-name)
+                    (loop (cdr xs) (+ count 1)))
+                  (loop (cdr xs) count))))))
+
+    (define (write-headers-response n request write-envelope)
+      (let* ((message (getheaders-message-parse (p2p-envelope-payload request)))
+             (rows (db-best-chain-header-rows-after
+                     (node-db n)
+                     (getheaders-message-locator-hashes message)
+                     (getheaders-message-stop-hash message)
+                     p2p-max-headers-per-message))
+             (headers (map header-row->header rows)))
+        (write-envelope
+          (p2p-envelope magic: (chain-config-magic (node-chain n))
+                        command: "headers"
+                        payload: (headers-message-serialize headers)))
+        (length headers)))
+
+    (define (advertisable-peer-addresses n max-addresses)
+      (let loop ((peers (node-peers n))
+                 (out '()))
+        (if (or (null? peers) (>= (length out) max-addresses))
+            (reverse out)
+            (let ((addr (node-peer->p2p-address n (car peers))))
+              (if addr
+                  (loop (cdr peers) (cons addr out))
+                  (loop (cdr peers) out))))))
+
+    (define (write-address-response n write-envelope)
+      (let ((addresses (advertisable-peer-addresses
+                         n
+                         p2p-max-addresses-per-message)))
+        (write-envelope
+          (p2p-envelope magic: (chain-config-magic (node-chain n))
+                        command: "addrv2"
+                        payload: (addrv2-message addresses)))
+        (length addresses)))
+
+    (define (inbound-handle-envelope n session envelope peer-name write-envelope max-tx)
+      (let ((command (p2p-envelope-command envelope)))
+        (cond ((string=? command "getheaders")
+               (write-headers-response n envelope write-envelope)
+               session)
+              ((string=? command "getaddr")
+               (unless (= 0 (bytevector-length (p2p-envelope-payload envelope)))
+                 (error "getaddr: expected empty payload"))
+               (write-address-response n write-envelope)
+               session)
+              ((or (string=? command "addr")
+                   (string=? command "addrv2")
+                   (string=? command "inv")
+                   (string=? command "tx")
+                   (string=? command "notfound"))
+               (node-handle-transaction-relay n
+                                              envelope
+                                              peer-name
+                                              write-envelope
+                                              max-tx)
+               session)
+              (else
+               (p2p-session-flush
+                 write-envelope
+                 (p2p-session-apply-envelope session envelope))))))
+
+    ;;; Serve one inbound peer over an already accepted transport.
+    ;;;
+    ;;; The transport callbacks match outbound sync transports:
+    ;;; `read-envelope`, `write-envelope`, and `close-proc`. Work is bounded by
+    ;;; `max-steps` so tests and CLI probes cannot hang indefinitely.
+    ;;;
+    ;;; ```scheme
+    ;;; (node-serve-inbound-transport n "127.0.0.1" 18444 read write close 8 32)
+    ;;; ```
+    (define (node-serve-inbound-transport n address port read-envelope write-envelope close-proc max-steps max-tx)
+      (: node? string? integer? procedure? procedure? procedure? integer? integer? -> node-status-snapshot?)
+      (when (<= max-steps 0)
+        (error "node-serve-inbound-transport: max-steps must be positive"))
+      (when (<= max-tx 0)
+        (error "node-serve-inbound-transport: max-tx must be positive"))
+      (let ((peer-name (peer-key address port)))
+        (node-upsert-peer n address port "inbound" "")
+        (guard (err
+                (else
+                 (guard (close-err (else #f))
+                   (close-proc))
+                 (node-peer-failure-with-error
+                   n
+                   address
+                   port
+                   (stage-failure-reason "inbound failed" err))
+                 (db-set-sync-failure
+                   (node-db n)
+                   "inbound"
+                   (stage-failure-reason "inbound failed" err))
+                 (raise err)))
+          (let* ((start (node-status-snapshot-best-height (node-status n)))
+                 (session (make-node-session n start)))
+            (db-set-sync-stage (node-db n) "inbound-handshake")
+            (let ((ready (p2p-session-handshake
+                           read-envelope
+                           write-envelope
+                           session
+                           max-steps)))
+              (db-set-sync-stage (node-db n) "inbound")
+              (let loop ((remaining max-steps)
+                         (current ready))
+                (if (<= remaining 0)
+                    (begin
+                      (close-proc)
+                      (db-set-sync-stage (node-db n) "idle")
+                      (db-clear-sync-failure (node-db n))
+                      (node-peer-success n address port)
+                      (node-status n))
+                    (loop (- remaining 1)
+                          (inbound-handle-envelope
+                            n
+                            current
+                            (read-envelope)
+                            peer-name
+                            write-envelope
+                            max-tx)))))))))
+
+    ;;; Serve one inbound peer over an accepted socket.
+    ;;;
+    ;;; ```scheme
+    ;;; (node-serve-inbound-socket n "inbound" 1 sock 5000 8 32)
+    ;;; ```
+    (define (node-serve-inbound-socket n address port sock read-timeout max-steps max-tx)
+      (: node? string? integer? any? integer? integer? integer? -> node-status-snapshot?)
+      (node-serve-inbound-transport
+        n
+        address
+        port
+        (lambda () (p2p-socket-read-envelope-timeout sock read-timeout))
+        (lambda (envelope)
+          (p2p-socket-write-envelope sock envelope))
+        (lambda () (socket-close sock))
+        max-steps
+        max-tx))
+
+    (define (node-outpoint=? left right)
+      (and (= (outpoint-index left) (outpoint-index right))
+           (equal? (outpoint-txid left) (outpoint-txid right))))
+
+    (define (transaction-spends-outpoint? tx op)
+      (let loop ((inputs (transaction-inputs tx)))
+        (cond ((null? inputs) #f)
+              ((node-outpoint=? (txin-previous-output (car inputs)) op) #t)
+              (else (loop (cdr inputs))))))
+
+    (define (mempool-spends-outpoint? db op txid-text)
+      (let loop ((rows (db-mempool-available-rows db)))
+        (cond ((null? rows) #f)
+              ((string=? txid-text (row-ref (car rows) "txid"))
+               (loop (cdr rows)))
+              ((transaction-spends-outpoint?
+                 (transaction-parse (hex-decode (row-ref (car rows) "tx_hex")))
+                 op)
+               #t)
+              (else (loop (cdr rows))))))
+
+    (define (seen-outpoint? op seen)
+      (cond ((null? seen) #f)
+            ((node-outpoint=? op (car seen)) #t)
+            (else (seen-outpoint? op (cdr seen)))))
+
+    (define (list-ref-or-false xs index)
+      (cond ((< index 0) #f)
+            ((null? xs) #f)
+            ((= index 0) (car xs))
+            (else (list-ref-or-false (cdr xs) (- index 1)))))
+
+    (define (mempool-parent-output db op txid-text)
+      (let* ((parent-txid (hex-encode (outpoint-txid op)))
+             (row (db-mempool-row db parent-txid)))
+        (if (or (not row)
+                (not (string=? "available" (row-ref row "status")))
+                (string=? parent-txid txid-text)
+                (not (row-ref row "tx_hex")))
+            #f
+            (list-ref-or-false
+              (transaction-outputs
+                (transaction-parse (hex-decode (row-ref row "tx_hex"))))
+              (outpoint-index op)))))
+
+    (define (policy-prevout-value db op txid-text spend-height)
+      (let ((row (db-active-utxo-row db op)))
+        (cond (row
+               (if (row-immature-coinbase? row spend-height)
+                   "immature-coinbase"
+                   (row-ref row "value")))
+              (else
+               (let ((output (mempool-parent-output db op txid-text)))
+                 (if output
+                     (txout-value output)
+                     "missing-input"))))))
+
+    (define (row-immature-coinbase? row spend-height)
+      (and (= 1 (row-ref row "coinbase"))
+           (< (- spend-height (row-ref row "height"))
+              %node-coinbase-maturity)))
+
+    (define (transaction-input-policy-failure db tx)
+      (let ((txid-text (hex-encode (transaction-txid tx)))
+            (spend-height (+ (db-best-block-height db) 1)))
+        (let loop ((inputs (transaction-inputs tx))
+                   (seen '())
+                   (input-value 0))
+          (if (null? inputs)
+              (if (< input-value (transaction-output-value tx))
+                  "spends-more-than-inputs"
+                  "")
+              (let* ((op (txin-previous-output (car inputs)))
+                     (value (policy-prevout-value db op txid-text spend-height)))
+                (cond ((seen-outpoint? op seen)
+                       "duplicate-input")
+                      ((string? value)
+                       value)
+                      ((mempool-spends-outpoint? db op txid-text)
+                       "mempool-conflict")
+                      (else
+                       (let ((next-value (+ input-value value)))
+                         (if (> next-value bitcoin-max-money)
+                             "input-value-overflow"
+                             (loop (cdr inputs)
+                                   (cons op seen)
+                                   next-value))))))))))
+
+    ;;; Persist a transaction in the local mempool cache.
+    ;;;
+    ;;; Basic mempool policy rejects coinbase transactions, missing or immature
+    ;;; inputs, conflicting spends, duplicate inputs, and transactions spending
+    ;;; more than their active UTXO or mempool parent inputs.
+    ;;;
+    ;;; ```scheme
+    ;;; (node-store-transaction n tx "peer")
+    ;;; ```
+    (define (node-store-transaction n tx source)
+      (: node? transaction? string? -> node-mempool-entry?)
+      (if (coinbase-transaction? tx)
+          (db-reject-transaction (node-db n) tx source "coinbase")
+          (let ((failure (transaction-input-policy-failure (node-db n) tx)))
+            (if (string=? failure "")
+                (db-store-transaction (node-db n) tx source)
+                (db-reject-transaction (node-db n) tx source failure)))))
+
+    ;;; Request announced transaction inventory that is not already stored.
+    ;;;
+    ;;; ```scheme
+    ;;; (node-request-transactions n items "peer" write-envelope 32)
+    ;;; ```
+    (define (node-request-transactions n items peer-name write-envelope max-tx)
+      (: node? list? string? procedure? integer? -> integer?)
+      (when (<= max-tx 0)
+        (error "node-request-transactions: max-tx must be positive"))
+      (let* ((db (node-db n))
+             (requestable (requestable-transaction-inventory
+                            db
+                            items
+                            peer-name
+                            max-tx)))
+        (mark-transaction-announcements db items peer-name)
+        (if (null? requestable)
+            0
+            (begin
+              (mark-requested-transaction-inventory db requestable peer-name)
+              (write-envelope
+                (p2p-envelope magic: (chain-config-magic (node-chain n))
+                              command: "getdata"
+                              payload: (getdata-message requestable)))
+              (length requestable)))))
+
+    ;;; Process transaction relay envelopes during sync.
+    ;;;
+    ;;; Address announcements are also handled here so long-running loops learn
+    ;;; peers and transactions through one side-effect path.
+    ;;;
+    ;;; ```scheme
+    ;;; (node-handle-transaction-relay n envelope "peer" write-envelope 32)
+    ;;; ```
+    (define (node-handle-transaction-relay n envelope peer-name write-envelope max-tx)
+      (: node? p2p-envelope? string? procedure? integer? -> integer?)
+      (let ((command (p2p-envelope-command envelope))
+            (payload (p2p-envelope-payload envelope)))
+        (cond ((string=? command "addr")
+               (node-ingest-peer-addresses n
+                                           (addr-message-parse payload)
+                                           "addr"
+                                           p2p-max-addresses-per-message))
+              ((string=? command "addrv2")
+               (node-ingest-peer-addresses n
+                                           (addrv2-message-parse payload)
+                                           "addrv2"
+                                           p2p-max-addresses-per-message))
+              ((string=? command "inv")
+               (node-request-transactions n
+                                          (inventory-message-parse payload)
+                                          peer-name
+                                          write-envelope
+                                          max-tx))
+              ((string=? command "tx")
+               (node-store-transaction n
+                                       (tx-message-parse payload)
+                                       peer-name)
+               1)
+              ((string=? command "notfound")
+               (mark-notfound-transactions
+                 (node-db n)
+                 (inventory-message-parse payload)
+                 peer-name))
+              (else 0))))
 
     ;;; Persist a block and mark it downloaded.
     ;;;
@@ -1429,6 +2598,7 @@
     ;;; (node-download-blocks n read-envelope write-envelope 64 16)
     ;;; ```
     (define (node-download-blocks-for-peer n peer-name read-envelope write-envelope max-steps max-blocks)
+      (db-mark-blocking-requested-blocks-stale (node-db n))
       (let* ((rows (pending-block-rows n peer-name max-blocks))
              (items (map block-row->inventory rows)))
         (if (null? items)
@@ -1443,37 +2613,140 @@
                               command: "getdata"
                               payload: (getdata-message items)))
               (db-set-sync-stage (node-db n) "block-download")
-              (let loop ((remaining max-steps) (stored 0) (failed 0))
-                (cond ((or (<= remaining 0)
-                           (>= (+ stored failed) (length items)))
-                       (db-set-sync-stage (node-db n) "idle")
-                       stored)
+              (guard (err
                       (else
-                       (let ((envelope (read-envelope)))
-                         (cond ((string=? "block" (p2p-envelope-command envelope))
-                                (node-store-block n
-                                                  (block-message-parse
-                                                    (p2p-envelope-payload envelope)))
-                                (loop (- remaining 1) (+ stored 1) failed))
-                               ((string=? "notfound" (p2p-envelope-command envelope))
-                                (let ((count (mark-notfound-inventory
+                       ;; A transport timeout or disconnect says nothing about
+                       ;; the requested blocks. Make the gap immediately
+                       ;; retryable so validation is not pinned behind a fresh
+                       ;; requested row from a dead peer.
+                       (mark-unreceived-requested-rows-stale
+                         (node-db n)
+                         rows
+                         peer-name)
+                       (raise err)))
+                (let loop ((remaining max-steps) (stored 0) (failed 0))
+                  (cond ((or (<= remaining 0)
+                             (>= (+ stored failed) (length items)))
+                         (when (and (> max-steps 0)
+                                    (<= remaining 0)
+                                    (< (+ stored failed) (length items)))
+                           (mark-unreceived-requested-rows-stale
+                             (node-db n)
+                             rows
+                             peer-name))
+                         (db-set-sync-stage (node-db n) "idle")
+                         stored)
+                        (else
+                         (let ((envelope (read-envelope)))
+                           (cond ((string=? "block" (p2p-envelope-command envelope))
+                                  (guard (err
+                                          (else
+                                           (let ((reason
+                                                   (stage-failure-reason
+                                                     "bad block"
+                                                     err)))
+                                             (mark-next-requested-block-failed
                                                (node-db n)
-                                               (inventory-message-parse
-                                                 (p2p-envelope-payload envelope))
-                                               peer-name)))
-                                  (loop (- remaining 1) stored (+ failed count))))
-                               (else
-                                (loop (- remaining 1) stored failed)))))))))))
+                                               peer-name
+                                               reason)
+                                             (db-set-sync-failure
+                                               (node-db n)
+                                               "block-download"
+                                               reason)
+                                             (error reason))))
+                                    (let ((b (block-message-parse
+                                               (p2p-envelope-payload envelope))))
+                                      ;; Live peers can deliver blocks late or
+                                      ;; out of batch order. Store any block
+                                      ;; whose header is known; unknown headers
+                                      ;; still fail through `node-store-block`.
+                                      (node-store-block n b)
+                                      (loop (- remaining 1)
+                                            (+ stored 1)
+                                            failed))))
+                                 ((string=? "notfound" (p2p-envelope-command envelope))
+                                  (let ((count (mark-notfound-inventory
+                                                 (node-db n)
+                                                 (inventory-message-parse
+                                                   (p2p-envelope-payload envelope))
+                                                 peer-name)))
+                                    (loop (- remaining 1) stored (+ failed count))))
+                                 (else
+                                  (node-handle-transaction-relay
+                                    n
+                                    envelope
+                                    peer-name
+                                    write-envelope
+                                    p2p-max-inventory-per-message)
+                                  (loop (- remaining 1) stored failed))))))))))))
 
     (define (node-download-blocks n read-envelope write-envelope max-steps max-blocks)
       (: node? procedure? procedure? integer? integer? -> integer?)
       (node-download-blocks-for-peer n "" read-envelope write-envelope max-steps max-blocks))
+
+    (define (node-download-block-batches-for-peer n peer-name read-envelope write-envelope max-steps max-blocks)
+      ;; Reuse a handshaken transport for several bounded getdata batches. This
+      ;; keeps live catch-up from spending most attempts on repeated handshakes.
+      (let loop ((remaining-batches (max 1 max-steps))
+                 (stored-total 0))
+        (if (<= remaining-batches 0)
+            stored-total
+            (let ((stored (node-download-blocks-for-peer
+                            n
+                            peer-name
+                            read-envelope
+                            write-envelope
+                            max-steps
+                            max-blocks)))
+              (if (> stored 0)
+                  (loop (- remaining-batches 1)
+                        (+ stored-total stored))
+                  (+ stored-total stored))))))
 
     (define (downloaded-block-row->block row)
       (block-parse (hex-decode (row-ref row "block_hex"))))
 
     (define (outpoint-for-output tx index)
       (outpoint txid: (transaction-txid tx) index: index))
+
+    (define (block-spends-outpoint? txs op)
+      (let tx-loop ((remaining-txs txs))
+        (cond ((null? remaining-txs) #f)
+              (else
+               (let input-loop ((inputs (transaction-inputs (car remaining-txs))))
+                 (cond ((null? inputs)
+                        (tx-loop (cdr remaining-txs)))
+                       ((node-outpoint=? (txin-previous-output (car inputs)) op)
+                        #t)
+                       (else
+                        (input-loop (cdr inputs)))))))))
+
+    (define (transaction-conflicts-with-block? tx block-txs)
+      (let input-loop ((inputs (transaction-inputs tx)))
+        (cond ((null? inputs) #f)
+              ((block-spends-outpoint? block-txs
+                                       (txin-previous-output (car inputs)))
+               #t)
+              (else
+               (input-loop (cdr inputs))))))
+
+    (define (mark-mempool-block-effects db b hash-text)
+      (let ((txs (block-transactions b)))
+        (let confirmed-loop ((remaining txs))
+          (unless (null? remaining)
+            (db-mark-transaction-confirmed db (car remaining) hash-text)
+            (confirmed-loop (cdr remaining))))
+        (let conflict-loop ((rows (db-mempool-available-rows db)))
+          (unless (null? rows)
+            (let* ((row (car rows))
+                   (tx (transaction-parse
+                         (hex-decode (row-ref row "tx_hex")))))
+              (when (transaction-conflicts-with-block? tx txs)
+                (db-mark-transaction-conflicted
+                  db
+                  (row-ref row "txid")
+                  hash-text))
+              (conflict-loop (cdr rows)))))))
 
     (define (apply-block-utxo-transition db b height hash-text)
       (let ((block-time (block-header-time (block-header-field b))))
@@ -1524,6 +2797,11 @@
     (define (rows-after-height rows height)
       (filter (lambda (row) (> (header-row-height row) height)) rows))
 
+    (define (row-at-height rows height)
+      (cond ((null? rows) #f)
+            ((= height (header-row-height (car rows))) (car rows))
+            (else (row-at-height (cdr rows) height))))
+
     (define (validate-block-row n row utxos)
       (let* ((db (node-db n))
              (height (header-row-height row))
@@ -1536,11 +2814,19 @@
                               (block-header-serialize
                                 (header-row->header row)))
                 (error "node-validate-blocks: block header mismatch"))
-              (let ((next-utxos (connect-block
-                                  (chain-config-consensus-params (node-chain n))
-                                  height
-                                  utxos
-                                  b)))
+              (let ((next-utxos
+                      (if (eq? 'structural
+                                (chain-validation-profile (node-chain n)))
+                          (connect-block/structural
+                            (chain-config-consensus-params (node-chain n))
+                            height
+                            utxos
+                            b)
+                          (connect-block
+                            (chain-config-consensus-params (node-chain n))
+                            height
+                            utxos
+                            b))))
                 (apply-block-utxo-transition db b height hash-text)
                 (db-set-block-status db
                                      hash-text
@@ -1548,47 +2834,85 @@
                                      "valid"
                                      (row-ref block-row "block_hex")
                                      #t)
+                (db-set-active-chain-tip db hash-text height)
+                (mark-mempool-block-effects db b hash-text)
                 next-utxos)))))
+
+    ;;; Return true when the next best-chain block is downloaded and ready.
+    ;;;
+    ;;; ```scheme
+    ;;; (node-validation-ready? n)
+    ;;; ```
+    (define (node-validation-ready? n)
+      (: node? -> boolean?)
+      (let* ((db (node-db n))
+             (rows (best-chain-rows n))
+             (resume-height (validated-on-best-chain-height db rows))
+             (next-rows (rows-after-height rows resume-height)))
+        (if (null? next-rows)
+            #f
+            (let* ((row (car next-rows))
+                   (block-row (db-block-row-by-height-and-hash
+                                db
+                                (header-row-height row)
+                                (row-ref row "hash"))))
+              (and block-row
+                   (if (row-ref block-row "block_hex") #t #f))))))
 
     ;;; Validate downloaded blocks in height order and mark accepted blocks.
     ;;;
     ;;; ```scheme
     ;;; (node-validate-blocks n)
     ;;; ```
-    (define (node-validate-blocks n)
-      (: node? -> integer?)
+    (define (node-validate-blocks n . maybe-limit)
+      (: node? integer? ... -> integer?)
       (db-set-sync-stage (node-db n) "validation")
-      (let* ((db (node-db n))
+      (let* ((limit (if (null? maybe-limit) #f (car maybe-limit)))
+             (db (node-db n))
              (rows (best-chain-rows n))
              (resume-height (validated-on-best-chain-height db rows)))
         (db-rollback-active-chain-to-height db resume-height)
+        (let ((resume-row (row-at-height rows resume-height)))
+          (when resume-row
+            (db-set-active-chain-tip db
+                                     (row-ref resume-row "hash")
+                                     resume-height)))
         (let loop ((remaining (rows-after-height rows resume-height))
                    (utxos (db-active-utxos db))
                    (validated 0))
-          (if (null? remaining)
+          (if (or (null? remaining)
+                  (and limit (>= validated limit)))
               (begin
                 (db-set-sync-stage (node-db n) "idle")
                 validated)
-              (let ((next-utxos (validate-block-row n (car remaining) utxos)))
-                (if next-utxos
-                    (loop (cdr remaining) next-utxos (+ validated 1))
-                    (begin
-                      (db-set-sync-stage (node-db n) "idle")
-                      validated)))))))
+              (guard (err
+                      (else
+                       (let* ((row (car remaining))
+                              (hash-text (row-ref row "hash"))
+                              (height (header-row-height row))
+                              (reason (exception-message-or
+                                        err
+                                        "block validation failed")))
+                         (db-mark-header-branch-invalid db hash-text reason)
+                         (db-set-sync-failure db "validation" reason)
+                         validated)))
+                (let ((next-utxos (validate-block-row n (car remaining) utxos)))
+                  (if next-utxos
+                      (loop (cdr remaining) next-utxos (+ validated 1))
+                      (begin
+                        (db-set-sync-stage (node-db n) "idle")
+                        validated))))))))
 
-    ;;; Run a bounded peer handshake/header sync and persist received headers.
-    ;;;
-    ;;; ```scheme
-    ;;; (node-sync-headers n read-envelope write-envelope 64)
-    ;;; ```
-    (define (node-sync-headers n read-envelope write-envelope max-steps)
-      (: node? procedure? procedure? integer? -> node-status-snapshot?)
+    (define (node-sync-headers-for-peer n read-envelope write-envelope max-steps peer-name)
       (let* ((start (node-status-snapshot-best-height (node-status n)))
              (session (make-node-session n start)))
         (db-set-sync-stage (node-db n) "handshake")
         (guard (err
                 (else
-                 (db-set-sync-failure (node-db n) "handshake" "handshake failed")
+                 (db-set-sync-failure
+                   (node-db n)
+                   "handshake"
+                   (stage-failure-reason "handshake failed" err))
                  (raise err)))
           (p2p-session-handshake read-envelope
                                  write-envelope
@@ -1597,12 +2921,28 @@
         (db-set-sync-stage (node-db n) "header-sync")
         (guard (err
                 (else
-                 (db-set-sync-failure (node-db n) "header-sync" "header sync failed")
+                 (db-set-sync-failure
+                   (node-db n)
+                   "header-sync"
+                   (stage-failure-reason "header sync failed" err))
                  (raise err)))
-          (sync-headers-loop n read-envelope write-envelope max-steps))
+          (sync-headers-loop n read-envelope write-envelope max-steps peer-name))
         (db-set-sync-stage (node-db n) "idle")
         (db-clear-sync-failure (node-db n))
         (node-status n)))
+
+    ;;; Run a bounded peer handshake/header sync and persist received headers.
+    ;;;
+    ;;; ```scheme
+    ;;; (node-sync-headers n read-envelope write-envelope 64)
+    ;;; ```
+    (define (node-sync-headers n read-envelope write-envelope max-steps)
+      (: node? procedure? procedure? integer? -> node-status-snapshot?)
+      (node-sync-headers-for-peer n
+                                  read-envelope
+                                  write-envelope
+                                  max-steps
+                                  "direct"))
 
     ;;; Run headers, block download, and block validation over one transport.
     ;;;
@@ -1642,7 +2982,10 @@
           (db-set-sync-stage (node-db n) "handshake")
           (guard (err
                   (else
-                   (db-set-sync-failure (node-db n) "handshake" "handshake failed")
+                   (db-set-sync-failure
+                     (node-db n)
+                     "handshake"
+                     (stage-failure-reason "handshake failed" err))
                    (raise err)))
             (p2p-session-handshake read-envelope
                                    write-envelope
@@ -1650,14 +2993,17 @@
                                    max-steps)))
         (guard (err
                 (else
-                 (db-set-sync-failure (node-db n) "block-download" "block download failed")
+                 (db-set-sync-failure
+                   (node-db n)
+                   "block-download"
+                   (stage-failure-reason "block download failed" err))
                  (raise err)))
-          (node-download-blocks-for-peer n
-                                         (peer-key address port)
-                                         read-envelope
-                                         write-envelope
-                                         max-steps
-                                         max-blocks))
+          (node-download-block-batches-for-peer n
+                                                (peer-key address port)
+                                                read-envelope
+                                                write-envelope
+                                                max-steps
+                                                max-blocks))
         (guard (err
                 (else
                  (db-set-sync-failure
@@ -1665,7 +3011,7 @@
                    "validation"
                    (stage-failure-reason "validation failed" err))
                  (raise err)))
-          (node-validate-blocks n))
+          (node-validate-blocks n %validation-attempt-blocks))
         (db-clear-sync-failure (node-db n))
         (node-peer-success n address port)
         (node-status n)))
@@ -1686,17 +3032,24 @@
                  port
                  (db-metadata (node-db n) "sync-last-error" "sync failed"))
                (raise err)))
-        (node-sync-headers n read-envelope write-envelope max-steps)
+        (node-sync-headers-for-peer n
+                                    read-envelope
+                                    write-envelope
+                                    max-steps
+                                    (peer-key address port))
         (guard (err
                 (else
-                 (db-set-sync-failure (node-db n) "block-download" "block download failed")
+                 (db-set-sync-failure
+                   (node-db n)
+                   "block-download"
+                   (stage-failure-reason "block download failed" err))
                  (raise err)))
-          (node-download-blocks-for-peer n
-                                         (peer-key address port)
-                                         read-envelope
-                                         write-envelope
-                                         max-steps
-                                         max-blocks))
+          (node-download-block-batches-for-peer n
+                                                (peer-key address port)
+                                                read-envelope
+                                                write-envelope
+                                                max-steps
+                                                max-blocks))
         (guard (err
                 (else
                  (db-set-sync-failure
@@ -1704,7 +3057,7 @@
                    "validation"
                    (stage-failure-reason "validation failed" err))
                  (raise err)))
-          (node-validate-blocks n))
+          (node-validate-blocks n %validation-attempt-blocks))
         (db-clear-sync-failure (node-db n))
         (node-peer-success n address port)
         (node-status n)))
@@ -1771,9 +3124,49 @@
             ((caddr transport)))
           #f))
 
+    (define (node-sync-progress-snapshot n)
+      (let ((status (node-status n)))
+        (list (node-status-snapshot-best-hash status)
+              (node-status-snapshot-best-height status)
+              (node-status-snapshot-header-count status)
+              (node-status-snapshot-block-count status)
+              (node-status-snapshot-validated-block-count status)
+              (node-status-snapshot-best-block-height status)
+              (node-status-snapshot-best-block-hash status))))
+
+    (define (node-sync-progress-made? before n)
+      (not (equal? before (node-sync-progress-snapshot n))))
+
+    (define (block-fetch-work-remains? status)
+      (or (> (node-status-snapshot-pending-block-count status) 0)
+          (> (node-status-snapshot-requested-block-count status) 0)))
+
+    (define (yield-progress-status n address port before)
+      ;; Live peers can advance headers or blocks and then time out while the
+      ;; node asks for more. Preserve the useful progress as a bounded sync
+      ;; yield, but do not hide consensus validation failures.
+      (let ((status (node-status n)))
+        (if (and (node-sync-progress-made? before n)
+                 (not (string=? "validation"
+                                (node-status-snapshot-sync-failed-stage
+                                  status))))
+            (begin
+              (node-validate-blocks n %validation-attempt-blocks)
+              (when (string=? "validation"
+                              (node-status-snapshot-sync-failed-stage
+                                (node-status n)))
+                (error (node-status-snapshot-sync-last-error
+                         (node-status n))))
+              (db-set-sync-stage (node-db n) "idle")
+              (db-clear-sync-failure (node-db n))
+              (node-peer-success n address port)
+              (node-status n))
+            #f)))
+
     (define (sync-peer-via-connector n peer connect-peer max-steps max-blocks)
       (let ((address (node-peer-address peer))
             (port (node-peer-port peer))
+            (before (node-sync-progress-snapshot n))
             (transport #f))
         (node-ensure-peer n address port)
         (guard (err
@@ -1787,7 +3180,7 @@
             (guard (err
                     (else
                      (transport-close transport)
-                     #f))
+                     (yield-progress-status n address port before)))
               (let ((status (node-sync-with-peer n
                                                  address
                                                  port
@@ -1823,6 +3216,7 @@
     (define (fetch-blocks-peer-via-connector n peer connect-peer max-steps max-blocks)
       (let ((address (node-peer-address peer))
             (port (node-peer-port peer))
+            (before (node-sync-progress-snapshot n))
             (transport #f))
         (node-ensure-peer n address port)
         (guard (err
@@ -1836,7 +3230,7 @@
             (guard (err
                     (else
                      (transport-close transport)
-                     #f))
+                     (yield-progress-status n address port before)))
               (let ((status (node-fetch-blocks-with-peer n
                                                          address
                                                          port
@@ -1845,7 +3239,10 @@
                                                          max-steps
                                                          max-blocks)))
                 (transport-close transport)
-                status))
+                (if (or (node-sync-progress-made? before n)
+                        (not (block-fetch-work-remains? (node-status n))))
+                    status
+                    #f)))
             #f)))
 
     ;;; Fetch pending blocks from one explicitly configured peer.
@@ -1888,9 +3285,7 @@
       (when (<= max-peers 0)
         (error "node-fetch-blocks-with-peers: max-peers must be positive"))
       (let loop ((attempt 0))
-        (let ((peers (if (= max-peers 1)
-                         (take-up-to (node-peers n) max-peers)
-                         (diverse-take-peers (node-peers n) max-peers))))
+        (let ((peers (node-peer-candidates n max-peers)))
           (when (null? peers)
             (error "node-fetch-blocks-with-peers: no peers configured"))
           (let ((status (try-peer-block-list n
@@ -1900,7 +3295,8 @@
                                              max-blocks)))
             (cond (status status)
                   ((>= attempt max-retries)
-                   (error "node-fetch-blocks-with-peers: max retries exceeded"))
+                   (db-mark-requested-blocks-stale (node-db n))
+                   (node-status n))
                   (else
                    (loop (+ attempt 1))))))))
 
@@ -1930,9 +3326,7 @@
       (when (<= max-peers 0)
         (error "node-sync-with-peers: max-peers must be positive"))
       (let loop ((attempt 0))
-        (let ((peers (if (= max-peers 1)
-                         (take-up-to (node-peers n) max-peers)
-                         (diverse-take-peers (node-peers n) max-peers))))
+        (let ((peers (node-peer-candidates n max-peers)))
           (when (null? peers)
             (error "node-sync-with-peers: no peers configured"))
           (let ((status (try-peer-list n
@@ -1942,7 +3336,7 @@
                                        max-blocks)))
             (cond (status status)
                   ((>= attempt max-retries)
-                   (error "node-sync-with-peers: max retries exceeded"))
+                   (node-status n))
                   (else
                    (loop (+ attempt 1)))))))))
 
@@ -1959,8 +3353,12 @@
     (%module-export! 'node-status-snapshot-best-header-time)
     (%module-export! 'node-status-snapshot-header-sync-lag)
     (%module-export! 'node-status-snapshot-block-count)
+    (%module-export! 'node-status-snapshot-mempool-count)
+    (%module-export! 'node-status-snapshot-requested-transaction-count)
+    (%module-export! 'node-status-snapshot-failed-transaction-count)
     (%module-export! 'node-status-snapshot-validated-block-count)
     (%module-export! 'node-status-snapshot-best-block-height)
+    (%module-export! 'node-status-snapshot-best-block-hash)
     (%module-export! 'node-status-snapshot-peer-count)
     (%module-export! 'node-status-snapshot-peer-success-count)
     (%module-export! 'node-status-snapshot-peer-failure-count)
@@ -1978,6 +3376,8 @@
     (%module-export! 'node-status-snapshot-run-target-iterations)
     (%module-export! 'node-status-snapshot-run-completed-iterations)
     (%module-export! 'node-status-snapshot-run-retry-count)
+    (%module-export! 'node-status-snapshot-bootstrap-last-result)
+    (%module-export! 'node-status-snapshot-bootstrap-last-error)
     (%module-export! 'node-status-snapshot-last-peer-success)
     (%module-export! 'node-status-snapshot-last-peer-error)
     (%module-export! 'node-peer)
@@ -1997,18 +3397,32 @@
     (%module-export! 'node-block-info-hash)
     (%module-export! 'node-block-info-height)
     (%module-export! 'node-block-info-status)
+    (%module-export! 'node-mempool-entry)
+    (%module-export! 'node-mempool-entry?)
+    (%module-export! 'node-mempool-entry-txid)
+    (%module-export! 'node-mempool-entry-status)
+    (%module-export! 'node-mempool-entry-last-error)
+    (%module-export! 'node-mempool)
     (%module-export! 'node-header-locator)
     (%module-export! 'node-add-peer)
     (%module-export! 'node-remove-peer)
     (%module-export! 'node-peers)
+    (%module-export! 'node-ingest-peer-addresses)
     (%module-export! 'node-bootstrap-peers)
     (%module-export! 'node-bootstrap-discovered-peers)
     (%module-export! 'node-test-peer)
     (%module-export! 'node-record-run-attempt)
     (%module-export! 'node-record-run-failure)
     (%module-export! 'node-record-run-loop-state)
+    (%module-export! 'node-mark-sync-idle)
+    (%module-export! 'node-store-transaction)
+    (%module-export! 'node-request-transactions)
+    (%module-export! 'node-handle-transaction-relay)
+    (%module-export! 'node-serve-inbound-transport)
+    (%module-export! 'node-serve-inbound-socket)
     (%module-export! 'node-store-block)
     (%module-export! 'node-download-blocks)
+    (%module-export! 'node-validation-ready?)
     (%module-export! 'node-validate-blocks)
     (%module-export! 'node-fetch-blocks-with-peer)
     (%module-export! 'node-fetch-blocks-configured-peer)
@@ -2016,4 +3430,5 @@
     (%module-export! 'node-sync-with-peer)
     (%module-export! 'node-sync-configured-peer)
     (%module-export! 'node-sync-with-peers)
-    (%module-export! 'node-sync))
+    (%module-export! 'node-sync)
+    (%module-export! 'headers-for-sync-attempt))

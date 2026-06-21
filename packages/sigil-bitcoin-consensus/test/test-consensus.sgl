@@ -2,6 +2,7 @@
         (sigil crypto)
         (sigil secp256k1)
         (sigil bitcoin consensus)
+        (sigil bitcoin utils)
         (sigil bitcoin encoding)
         (sigil bitcoin primitives)
         (sigil bitcoin script)
@@ -176,6 +177,20 @@
     version: 1
     inputs: (list
       (txin previous-output: (outpoint txid: (transaction-txid prev-tx)
+                                      index: 0)
+            script-sig: #u8(#x51)
+            sequence: #xffffffff
+            witness: '()))
+    outputs: (list
+      (txout value: value script-pubkey: #u8(#x51)))
+    lock-time: 0))
+
+(define (make-reversed-txid-spend-tx prev-tx value)
+  (transaction
+    version: 1
+    inputs: (list
+      (txin previous-output: (outpoint txid: (reverse-bytevector
+                                               (transaction-txid prev-tx))
                                       index: 0)
             script-sig: #u8(#x51)
             sequence: #xffffffff
@@ -503,6 +518,29 @@
           (utxo-set-lookup updated
                            (outpoint txid: (transaction-txid spend) index: 0))))))
 
+  (test "connects spends whose prevout txid is reversed"
+    (let* ((funding (make-coinbase-tx 5000))
+           (initial (connect-block
+                      bitcoin-regtest-consensus-params
+                      0
+                      '()
+                      (make-test-block (list funding) 1)))
+           (spend (make-reversed-txid-spend-tx funding 4000))
+           (coinbase (make-coinbase-tx (+ (block-subsidy 100) 1000)))
+           (b (make-test-block (list coinbase spend) 2))
+           (updated (connect-block
+                      bitcoin-regtest-consensus-params
+                      100
+                      initial
+                      b)))
+      (assert-false
+        (utxo-set-lookup updated
+                         (outpoint txid: (transaction-txid funding) index: 0)))
+      (assert-true
+        (utxo-entry?
+          (utxo-set-lookup updated
+                           (outpoint txid: (transaction-txid spend) index: 0))))))
+
   (test "enforces BIP34 coinbase heights and deployment versions"
     (let* ((coinbase (make-bip34-coinbase-tx (block-subsidy 2) 2))
            (small-int-coinbase
@@ -636,6 +674,30 @@
                                       (car (transaction-outputs funding))))))
           (assert-error
             (connect-block bitcoin-regtest-consensus-params 100 initial b))))
+
+      (test "structural block connection defers P2PKH signature checks"
+        (let* ((funding (make-p2pkh-coinbase-tx 5000))
+               (initial (connect-block
+                          bitcoin-regtest-consensus-params
+                          0
+                          '()
+                          (make-test-block (list funding) 1)))
+               (unsigned (make-unsigned-spend-tx funding 4000))
+               (spend (transaction-set-input-script-sig
+                        (transaction-sign-p2pkh-input unsigned 0 %one)
+                        0
+                        #u8(#x01 #x01 #x01 #x02)))
+               (coinbase (make-coinbase-tx (+ (block-subsidy 100) 1000)))
+               (b (make-test-block (list coinbase spend) 2))
+               (updated (connect-block/structural
+                          bitcoin-regtest-consensus-params
+                          100
+                          initial
+                          b)))
+          (assert-true
+            (utxo-entry?
+              (utxo-set-lookup updated
+                               (outpoint txid: (transaction-txid spend) index: 0))))))
 
       (test "validates signed native P2WPKH spends during block connection"
         (let* ((funding (make-p2wpkh-coinbase-tx 5000))

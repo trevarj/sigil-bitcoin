@@ -17,8 +17,15 @@
     bitcoin-regtest-magic
     p2p-max-payload-size
     p2p-max-headers-per-message
+    p2p-max-addresses-per-message
+    p2p-max-inventory-per-message
     network-address network-address?
     network-address-services network-address-ip network-address-port
+    p2p-address p2p-address?
+    p2p-address-time p2p-address-services p2p-address-network-id
+    p2p-address-address p2p-address-port
+    addrv2-network-ipv4 addrv2-network-ipv6 addrv2-network-torv3
+    addrv2-network-i2p addrv2-network-cjdns addrv2-network-yggdrasil
     version-message version-message?
     version-message-version version-message-services version-message-timestamp
     version-message-addr-recv version-message-addr-from version-message-nonce
@@ -56,6 +63,11 @@
     verack-message
     ping-message
     pong-message
+    getaddr-message
+    addr-message
+    addr-message-parse
+    addrv2-message
+    addrv2-message-parse
     getheaders-message-serialize
     getheaders-message-parse
     headers-message-serialize
@@ -91,6 +103,7 @@
     p2p-session-handshake
     p2p-session-sync-headers
     p2p-session-next-getheaders
+    p2p-session-request-addresses
     p2p-session-request-inventory
     p2p-peer-create
     p2p-peer-select
@@ -105,10 +118,25 @@
     (define bitcoin-regtest-magic #u8(#xfa #xbf #xb5 #xda))
     (define p2p-max-payload-size (* 32 1024 1024))
     (define p2p-max-headers-per-message 2000)
+    (define p2p-max-addresses-per-message 1000)
+    (define p2p-max-inventory-per-message 50000)
+    (define addrv2-network-ipv4 #x01)
+    (define addrv2-network-ipv6 #x02)
+    (define addrv2-network-torv3 #x04)
+    (define addrv2-network-i2p #x05)
+    (define addrv2-network-cjdns #x06)
+    (define addrv2-network-yggdrasil #x07)
 
     (define-struct network-address
       (services integer?)
       (ip bytevector?)
+      (port integer?))
+
+    (define-struct p2p-address
+      (time integer?)
+      (services integer?)
+      (network-id integer?)
+      (address bytevector?)
       (port integer?))
 
     (define-struct version-message
@@ -194,6 +222,39 @@
                     #xffff)
       addr)
 
+    (define (addrv2-address-length network-id)
+      (cond ((= network-id addrv2-network-ipv4) 4)
+            ((= network-id addrv2-network-ipv6) 16)
+            ((= network-id addrv2-network-torv3) 32)
+            ((= network-id addrv2-network-i2p) 32)
+            ((= network-id addrv2-network-cjdns) 16)
+            ((= network-id addrv2-network-yggdrasil) 16)
+            (else #f)))
+
+    (define (require-p2p-address item)
+      (unless (p2p-address? item)
+        (error "p2p-address: expected p2p-address"))
+      (require-uint "p2p-address time" (p2p-address-time item) %u32-max)
+      (require-uint "p2p-address services" (p2p-address-services item) %u64-max)
+      (require-uint "p2p-address network-id" (p2p-address-network-id item) %u8-max)
+      (require-bytevector "p2p-address address" (p2p-address-address item))
+      (require-uint "p2p-address port" (p2p-address-port item) #xffff)
+      (let ((expected (addrv2-address-length (p2p-address-network-id item))))
+        (when (and expected
+                   (not (= expected
+                           (bytevector-length (p2p-address-address item)))))
+          (error "p2p-address: invalid address length")))
+      item)
+
+    (define (require-p2p-address-list items)
+      (unless (list? items)
+        (error "address message: expected list"))
+      (when (> (length items) p2p-max-addresses-per-message)
+        (error "address message: too many addresses"))
+      (do ((xs items (cdr xs)))
+          ((null? xs) items)
+        (require-p2p-address (car xs))))
+
     (define (require-command command)
       (unless (string? command)
         (error "p2p command: expected string"))
@@ -218,6 +279,8 @@
     (define (require-inventory-list items)
       (unless (list? items)
         (error "inventory message: expected list"))
+      (when (> (length items) p2p-max-inventory-per-message)
+        (error "inventory message: too many inventory vectors"))
       (do ((xs items (cdr xs)))
           ((null? xs) items)
         (require-inventory-vector (car xs))))
@@ -417,6 +480,177 @@
         (list (network-address services: services ip: ip port: port)
               (+ offset 26))))
 
+    (define (ipv4-mapped-address? ip)
+      (and (= 16 (bytevector-length ip))
+           (= 0 (bytevector-u8-ref ip 0))
+           (= 0 (bytevector-u8-ref ip 1))
+           (= 0 (bytevector-u8-ref ip 2))
+           (= 0 (bytevector-u8-ref ip 3))
+           (= 0 (bytevector-u8-ref ip 4))
+           (= 0 (bytevector-u8-ref ip 5))
+           (= 0 (bytevector-u8-ref ip 6))
+           (= 0 (bytevector-u8-ref ip 7))
+           (= 0 (bytevector-u8-ref ip 8))
+           (= 0 (bytevector-u8-ref ip 9))
+           (= #xff (bytevector-u8-ref ip 10))
+           (= #xff (bytevector-u8-ref ip 11))))
+
+    (define (legacy-ip->p2p-address time services ip port)
+      (if (ipv4-mapped-address? ip)
+          (p2p-address time: time
+                       services: services
+                       network-id: addrv2-network-ipv4
+                       address: (bytevector-copy ip 12 16)
+                       port: port)
+          (p2p-address time: time
+                       services: services
+                       network-id: addrv2-network-ipv6
+                       address: ip
+                       port: port)))
+
+    (define (p2p-address->legacy-ip item)
+      (let ((network-id (p2p-address-network-id item))
+            (address (p2p-address-address item)))
+        (cond ((= network-id addrv2-network-ipv4)
+               (bytevector-append
+                 #u8(#x00 #x00 #x00 #x00 #x00 #x00 #x00 #x00
+                     #x00 #x00 #xff #xff)
+                 address))
+              ((= network-id addrv2-network-ipv6)
+               address)
+              (else
+               (error "addr-message: legacy addr supports only IPv4 and IPv6")))))
+
+    (define (addr-entry-serialize item)
+      (require-p2p-address item)
+      (bytevector-append
+        (u32-le (p2p-address-time item))
+        (u64-le (p2p-address-services item))
+        (p2p-address->legacy-ip item)
+        (u16-be (p2p-address-port item))))
+
+    (define (addr-entry-parse bytes offset)
+      (ensure-available "addr entry" bytes offset 30)
+      (let ((time (read-u32-le bytes offset "addr time"))
+            (services (read-u64-le bytes (+ offset 4) "addr services"))
+            (ip (bytevector-copy bytes (+ offset 12) (+ offset 28)))
+            (port (read-u16-be bytes (+ offset 28) "addr port")))
+        (list (legacy-ip->p2p-address time services ip port)
+              (+ offset 30))))
+
+    ;;; Serialize a legacy `addr` message.
+    ;;;
+    ;;; ```scheme
+    ;;; (addr-message (list (p2p-address time: 1 services: 1 network-id: 1 address: #u8(127 0 0 1) port: 8333)))
+    ;;; ```
+    (define (addr-message items)
+      (: list? -> bytevector?)
+      (require-p2p-address-list items)
+      (let ((payloads (map addr-entry-serialize items)))
+        (if (null? payloads)
+            (compact-size-encode 0)
+            (bytevector-append
+              (compact-size-encode (length items))
+              (apply bytevector-append payloads)))))
+
+    ;;; Parse a legacy `addr` message.
+    ;;;
+    ;;; ```scheme
+    ;;; (addr-message-parse (addr-message '()))
+    ;;; ```
+    (define (addr-message-parse bytes)
+      (: bytevector? -> list?)
+      (require-bytevector "addr-message-parse" bytes)
+      (let* ((count-result (compact-size-decode-at bytes 0))
+             (count (car count-result)))
+        (when (> count p2p-max-addresses-per-message)
+          (error "addr-message-parse: too many addresses"))
+        (let loop ((i 0) (cursor (cadr count-result)) (items '()))
+          (if (>= i count)
+              (begin
+                (unless (= cursor (bytevector-length bytes))
+                  (error "addr-message-parse: trailing bytes"))
+                (reverse items))
+              (let ((parsed (addr-entry-parse bytes cursor)))
+                (loop (+ i 1)
+                      (cadr parsed)
+                      (cons (car parsed) items)))))))
+
+    (define (addrv2-entry-serialize item)
+      (require-p2p-address item)
+      (bytevector-append
+        (u32-le (p2p-address-time item))
+        (compact-size-encode (p2p-address-services item))
+        (make-bytevector 1 (p2p-address-network-id item))
+        (compact-size-encode (bytevector-length (p2p-address-address item)))
+        (p2p-address-address item)
+        (u16-be (p2p-address-port item))))
+
+    (define (addrv2-entry-parse bytes offset)
+      (ensure-available "addrv2 entry" bytes offset 4)
+      (let* ((time (read-u32-le bytes offset "addrv2 time"))
+             (services-result (compact-size-decode-at bytes (+ offset 4)))
+             (services (car services-result))
+             (network-offset (cadr services-result)))
+        (ensure-available "addrv2 network id" bytes network-offset 1)
+        (let* ((network-id (read-byte bytes network-offset "addrv2 network id"))
+               (length-result (compact-size-decode-at bytes (+ network-offset 1)))
+               (address-len (car length-result))
+               (address-offset (cadr length-result))
+               (port-offset (+ address-offset address-len))
+               (expected (addrv2-address-length network-id)))
+          (when (> address-len 512)
+            (error "addrv2-message-parse: address too long"))
+          (when (and expected (not (= expected address-len)))
+            (error "addrv2-message-parse: invalid address length"))
+          (ensure-available "addrv2 address" bytes address-offset address-len)
+          (ensure-available "addrv2 port" bytes port-offset 2)
+          (list (p2p-address
+                  time: time
+                  services: services
+                  network-id: network-id
+                  address: (bytevector-copy bytes address-offset port-offset)
+                  port: (read-u16-be bytes port-offset "addrv2 port"))
+                (+ port-offset 2)))))
+
+    ;;; Serialize a BIP155 `addrv2` message.
+    ;;;
+    ;;; ```scheme
+    ;;; (addrv2-message (list (p2p-address time: 1 services: 1 network-id: 1 address: #u8(127 0 0 1) port: 8333)))
+    ;;; ```
+    (define (addrv2-message items)
+      (: list? -> bytevector?)
+      (require-p2p-address-list items)
+      (let ((payloads (map addrv2-entry-serialize items)))
+        (if (null? payloads)
+            (compact-size-encode 0)
+            (bytevector-append
+              (compact-size-encode (length items))
+              (apply bytevector-append payloads)))))
+
+    ;;; Parse a BIP155 `addrv2` message.
+    ;;;
+    ;;; ```scheme
+    ;;; (addrv2-message-parse (addrv2-message '()))
+    ;;; ```
+    (define (addrv2-message-parse bytes)
+      (: bytevector? -> list?)
+      (require-bytevector "addrv2-message-parse" bytes)
+      (let* ((count-result (compact-size-decode-at bytes 0))
+             (count (car count-result)))
+        (when (> count p2p-max-addresses-per-message)
+          (error "addrv2-message-parse: too many addresses"))
+        (let loop ((i 0) (cursor (cadr count-result)) (items '()))
+          (if (>= i count)
+              (begin
+                (unless (= cursor (bytevector-length bytes))
+                  (error "addrv2-message-parse: trailing bytes"))
+                (reverse items))
+              (let ((parsed (addrv2-entry-parse bytes cursor)))
+                (loop (+ i 1)
+                      (cadr parsed)
+                      (cons (car parsed) items)))))))
+
     (define (varstr-serialize text)
       (let ((raw (string->ascii-bytes text)))
         (bytevector-append (compact-size-encode (bytevector-length raw)) raw)))
@@ -490,6 +724,15 @@
 
     (define (pong-message nonce)
       (nonce-message "pong nonce" nonce))
+
+    ;;; Return the empty payload for a `getaddr` peer-discovery request.
+    ;;;
+    ;;; ```scheme
+    ;;; (getaddr-message)
+    ;;; ```
+    (define (getaddr-message)
+      (: -> bytevector?)
+      #u8())
 
     (define (getheaders-message-serialize msg)
       (: getheaders-message? -> bytevector?)
@@ -604,6 +847,8 @@
       (require-bytevector "inventory-message-parse" bytes)
       (let* ((count-result (compact-size-decode-at bytes 0))
              (count (car count-result)))
+        (when (> count p2p-max-inventory-per-message)
+          (error "inventory-message-parse: too many inventory vectors"))
         (let loop ((i 0) (cursor (cadr count-result)) (items '()))
           (if (>= i count)
               (begin
@@ -874,6 +1119,15 @@
       (if (null? items)
           session
           (p2p-session-queue session "getdata" (getdata-message items))))
+
+    ;;; Queue a `getaddr` request for peer address discovery.
+    ;;;
+    ;;; ```scheme
+    ;;; (p2p-session-request-addresses session)
+    ;;; ```
+    (define (p2p-session-request-addresses session)
+      (: p2p-session? -> p2p-session?)
+      (p2p-session-queue session "getaddr" (getaddr-message)))
 
     (define (inventory-vector=? a b)
       (and (= (inventory-vector-type a) (inventory-vector-type b))

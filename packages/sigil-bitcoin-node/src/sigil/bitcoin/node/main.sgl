@@ -11,7 +11,16 @@
           (sigil bitcoin p2p))
   (export main
           run-peers
+          run-header-sync
           run-loop
+          run-listen
+          run-progress-snapshot
+          run-progress-made?
+          deadline-attempt-args
+          run-loop-attempt-mode
+          run-loop-attempt-args
+          maybe-bootstrap-sync-peers
+          fetch-blocks-node-once
           run-probe)
   (begin
 
@@ -24,10 +33,11 @@
       (println "  sigil-bitcoin-node peers summary [--chain CHAIN] [--data-dir DIR]")
       (println "  sigil-bitcoin-node peers remove HOST[:PORT]|[IPv6]:PORT [--chain CHAIN] [--data-dir DIR]")
       (println "  sigil-bitcoin-node peers test HOST[:PORT]|[IPv6]:PORT [--chain CHAIN] [--data-dir DIR] [--socks5 HOST[:PORT]] [--resolve-timeout N] [--connect-timeout N] [--read-timeout N]")
-      (println "  sigil-bitcoin-node header-sync --peer HOST[:PORT]|[IPv6]:PORT [--chain CHAIN] [--data-dir DIR] [--socks5 HOST[:PORT]] [--max-steps N] [--resolve-timeout N] [--connect-timeout N] [--read-timeout N]")
-      (println "  sigil-bitcoin-node block-sync [--peer HOST[:PORT]|[IPv6]:PORT] [--chain CHAIN] [--data-dir DIR] [--socks5 HOST[:PORT]] [--max-steps N] [--max-blocks N] [--max-peers N] [--max-retries N] [--resolve-timeout N] [--connect-timeout N] [--read-timeout N]")
-      (println "  sigil-bitcoin-node sync [--peer HOST[:PORT]|[IPv6]:PORT] [--chain CHAIN] [--data-dir DIR] [--socks5 HOST[:PORT]] [--max-steps N] [--max-blocks N] [--max-peers N] [--max-retries N] [--resolve-timeout N] [--connect-timeout N] [--read-timeout N]")
-      (println "  sigil-bitcoin-node run [--peer HOST[:PORT]|[IPv6]:PORT] [--chain CHAIN] [--data-dir DIR] [--socks5 HOST[:PORT]] [--max-steps N] [--max-blocks N] [--iterations N|0] [--max-peers N] [--max-retries N] [--retry-delay N] [--resolve-timeout N] [--connect-timeout N] [--read-timeout N]")
+      (println "  sigil-bitcoin-node header-sync [--peer HOST[:PORT]|[IPv6]:PORT] [--chain CHAIN] [--data-dir DIR] [--socks5 HOST[:PORT]] [--max-steps N] [--iterations N|0] [--deadline-ms N] [--max-peers N] [--max-retries N] [--max-seeds N] [--max-addresses N] [--retry-delay N] [--resolve-timeout N] [--connect-timeout N] [--read-timeout N]")
+      (println "  sigil-bitcoin-node block-sync [--peer HOST[:PORT]|[IPv6]:PORT] [--chain CHAIN] [--data-dir DIR] [--socks5 HOST[:PORT]] [--max-steps N] [--max-blocks N] [--iterations N|0] [--deadline-ms N] [--max-peers N] [--max-retries N] [--retry-delay N] [--resolve-timeout N] [--connect-timeout N] [--read-timeout N]")
+      (println "  sigil-bitcoin-node sync [--peer HOST[:PORT]|[IPv6]:PORT] [--chain CHAIN] [--data-dir DIR] [--socks5 HOST[:PORT]] [--max-steps N] [--max-blocks N] [--iterations N|0] [--deadline-ms N] [--max-peers N] [--max-retries N] [--retry-delay N] [--resolve-timeout N] [--connect-timeout N] [--read-timeout N]")
+      (println "  sigil-bitcoin-node run [--peer HOST[:PORT]|[IPv6]:PORT] [--chain CHAIN] [--data-dir DIR] [--socks5 HOST[:PORT]] [--max-steps N] [--max-blocks N] [--block-catchup-blocks N] [--block-catchup-interval N] [--header-refresh-interval N] [--validation-blocks N] [--iterations N|0] [--deadline-ms N] [--max-peers N] [--max-retries N] [--retry-delay N] [--resolve-timeout N] [--connect-timeout N] [--read-timeout N]")
+      (println "  sigil-bitcoin-node listen [--chain CHAIN] [--data-dir DIR] [--bind HOST] [--port N] [--backlog N] [--max-connections N|0] [--accept-timeout N] [--read-timeout N] [--max-steps N] [--max-tx N]")
       (println "  sigil-bitcoin-node probe [--tcp-only] [--peer HOST[:PORT]|[IPv6]:PORT] [--chain CHAIN] [--data-dir DIR] [--socks5 HOST[:PORT]] [--max-steps N] [--max-blocks N] [--max-peers N] [--resolve-timeout N] [--connect-timeout N] [--read-timeout N] [--max-seeds N] [--max-addresses N]")
       (println "")
       (println "chains: bitcoin-mainnet, bitcoin-testnet, bitcoin-testnet4, bitcoin-signet, bitcoin-regtest, sigilcoin"))
@@ -52,6 +62,16 @@
       (cond ((null? args) #f)
             ((string=? (car args) name) #t)
             (else (arg-present? (cdr args) name))))
+
+    (define (arg-drop args name)
+      (cond ((null? args) '())
+            ((and (string=? (car args) name) (not (null? (cdr args))))
+             (arg-drop (cddr args) name))
+            (else
+             (cons (car args) (arg-drop (cdr args) name)))))
+
+    (define (arg-set args name value)
+      (append (arg-drop args name) (list name value)))
 
     (define (string-prefix? prefix text)
       (let ((len (string-length prefix)))
@@ -131,8 +151,14 @@
       (println "header-sync-lag: ~a" (node-status-snapshot-header-sync-lag status))
       (println "headers: ~a" (node-status-snapshot-header-count status))
       (println "blocks: ~a" (node-status-snapshot-block-count status))
+      (println "mempool: ~a" (node-status-snapshot-mempool-count status))
+      (println "requested-transactions: ~a"
+               (node-status-snapshot-requested-transaction-count status))
+      (println "failed-transactions: ~a"
+               (node-status-snapshot-failed-transaction-count status))
       (println "validated-blocks: ~a" (node-status-snapshot-validated-block-count status))
       (println "best-block-height: ~a" (node-status-snapshot-best-block-height status))
+      (println "best-block-hash: ~a" (node-status-snapshot-best-block-hash status))
       (println "peers: ~a" (node-status-snapshot-peer-count status))
       (println "peer-successes: ~a" (node-status-snapshot-peer-success-count status))
       (println "peer-failures: ~a" (node-status-snapshot-peer-failure-count status))
@@ -153,6 +179,10 @@
                (node-status-snapshot-run-completed-iterations status))
       (println "run-retry-count: ~a"
                (node-status-snapshot-run-retry-count status))
+      (println "bootstrap-last-result: ~a"
+               (node-status-snapshot-bootstrap-last-result status))
+      (println "bootstrap-last-error: ~a"
+               (node-status-snapshot-bootstrap-last-error status))
       (println "last-peer-success: ~a" (node-status-snapshot-last-peer-success status))
       (println "last-peer-error: ~a" (node-status-snapshot-last-peer-error status))
       (println "sync-progress: ~a/~a"
@@ -501,47 +531,6 @@
         (status-number args "--connect-timeout" "5000")
         (status-number args "--read-timeout" "5000")))
 
-    (define (run-header-sync args)
-      (let ((peer-text (arg-value args "--peer" #f)))
-        (unless peer-text
-          (usage)
-          (error "header-sync: missing --peer"))
-        (with-node args
-          (lambda (n)
-            (let* ((chain (node-chain n))
-                   (peer (parse-peer peer-text
-                                     (chain-config-default-port chain)))
-                   (host (car peer))
-                   (port (cdr peer))
-                   (max-steps (status-number args "--max-steps" "64"))
-                   (timeouts (peer-timeouts args))
-                   (proxy (socks5-endpoint args)))
-              (node-add-peer n host port)
-              (if proxy
-                  (print-status
-                    (node-sync-configured-peer
-                      n
-                      host
-                      port
-                      (connect-node-peer-with-timeouts
-                        (car timeouts)
-                        (cadr timeouts)
-                        (caddr timeouts)
-                        proxy)
-                      max-steps
-                      0))
-                  (with-peer-socket n
-                                    peer
-                                    (car timeouts)
-                                    (cadr timeouts)
-                                    (caddr timeouts)
-                    (lambda (read-envelope write-envelope)
-                      (print-status
-                        (node-sync-headers n
-                                           read-envelope
-                                           write-envelope
-                                           max-steps))))))))))
-
     (define (sync-configured-peer-texts n peer-texts connect-peer max-steps max-blocks command)
       (let loop ((texts peer-texts))
         (if (null? texts)
@@ -580,6 +569,50 @@
                   (loop (cdr texts))
                   status)))))
 
+    (define (header-sync-node-once n args)
+      (let* ((peer-texts (arg-values args "--peer"))
+             (max-steps (status-number args "--max-steps" "64"))
+             (max-peers (status-number args "--max-peers" "8"))
+             (max-retries (status-number args "--max-retries" "0"))
+             (timeouts (peer-timeouts args))
+             (proxy (socks5-endpoint args))
+             (connect-peer (connect-node-peer-with-timeouts
+                             (car timeouts)
+                             (cadr timeouts)
+                             (caddr timeouts)
+                             proxy)))
+        (if (not (null? peer-texts))
+            (sync-configured-peer-texts
+              n
+              peer-texts
+              connect-peer
+              max-steps
+              0
+              "header-sync")
+            (begin
+              (maybe-bootstrap-sync-peers n args)
+              (node-sync-with-peers n
+                                    connect-peer
+                                    max-peers
+                                    max-retries
+                                    max-steps
+                                    0)))))
+
+    ;;; Run one header-only sync CLI invocation.
+    ;;;
+    ;;; Uses configured peers when `--peer` is supplied, otherwise falls back to
+    ;;; persisted/bootstrap peers. Block download is intentionally disabled.
+    ;;;
+    ;;; ```scheme
+    ;;; (run-header-sync '("--chain" "bitcoin-signet"))
+    ;;; ```
+    (define (run-header-sync args)
+      (: list? -> any?)
+      (run-sync-command args
+                        "header-sync"
+                        (lambda (n command attempt-args)
+                          (header-sync-node-once n attempt-args))))
+
     (define (sync-node-once n args command)
       (let* ((peer-texts (arg-values args "--peer"))
              (max-steps (status-number args "--max-steps" "64"))
@@ -600,30 +633,53 @@
               max-steps
               max-blocks
               command)
-            (node-sync-with-peers n
-                                  (connect-node-peer-with-timeouts
-                                    (car timeouts)
-                                    (cadr timeouts)
-                                    (caddr timeouts)
-                                    proxy)
-                                  max-peers
-                                  max-retries
-                                  max-steps
-                                  max-blocks))))
+            (begin
+              (maybe-bootstrap-sync-peers n args)
+              (node-sync-with-peers n
+                                    (connect-node-peer-with-timeouts
+                                      (car timeouts)
+                                      (cadr timeouts)
+                                      (caddr timeouts)
+                                      proxy)
+                                    max-peers
+                                    max-retries
+                                    max-steps
+                                    max-blocks)))))
 
-    (define (fetch-blocks-once n args command)
+    ;;; Bootstrap persisted peers for sync/run when no explicit peer exists.
+    ;;;
+    ;;; Tests may pass a resolver callback; command paths use the bounded DNS
+    ;;; resolver.
+    ;;;
+    ;;; ```scheme
+    ;;; (maybe-bootstrap-sync-peers n '("--max-seeds" "1"))
+    ;;; ```
+    (define (maybe-bootstrap-sync-peers n args . maybe-resolver)
+      (: node? list? -> integer?)
+      (if (or (arg-value args "--peer" #f)
+              (> (node-status-snapshot-peer-count (node-status n)) 0))
+          0
+          (let ((resolver (if (null? maybe-resolver)
+                              resolve-seed-host
+                              (car maybe-resolver)))
+                (resolve-timeout
+                  (status-number args "--resolve-timeout" "2000"))
+                (max-seeds
+                  (status-number args "--max-seeds" "8"))
+                (max-addresses
+                  (status-number args "--max-addresses" "16")))
+            (node-bootstrap-discovered-peers n
+                                            resolver
+                                            resolve-timeout
+                                            max-seeds
+                                            max-addresses))))
+
+    (define (fetch-blocks-node-once n args command connect-peer resolver)
       (let* ((peer-texts (arg-values args "--peer"))
              (max-steps (status-number args "--max-steps" "64"))
              (max-blocks (status-number args "--max-blocks" "1"))
              (max-peers (status-number args "--max-peers" "8"))
-             (max-retries (status-number args "--max-retries" "0"))
-             (timeouts (peer-timeouts args))
-             (proxy (socks5-endpoint args))
-             (connect-peer (connect-node-peer-with-timeouts
-                             (car timeouts)
-                             (cadr timeouts)
-                             (caddr timeouts)
-                             proxy)))
+             (max-retries (status-number args "--max-retries" "0")))
         (if (not (null? peer-texts))
             (fetch-blocks-configured-peer-texts
               n
@@ -632,12 +688,28 @@
               max-steps
               max-blocks
               command)
-            (node-fetch-blocks-with-peers n
-                                          connect-peer
-                                          max-peers
-                                          max-retries
-                                          max-steps
-                                          max-blocks))))
+            (begin
+              (maybe-bootstrap-sync-peers n args resolver)
+              (node-fetch-blocks-with-peers n
+                                            connect-peer
+                                            max-peers
+                                            max-retries
+                                            max-steps
+                                            max-blocks)))))
+
+    (define (fetch-blocks-once n args command)
+      (let* ((timeouts (peer-timeouts args))
+             (proxy (socks5-endpoint args))
+             (connect-peer (connect-node-peer-with-timeouts
+                             (car timeouts)
+                             (cadr timeouts)
+                             (caddr timeouts)
+                             proxy)))
+        (fetch-blocks-node-once n
+                                args
+                                command
+                                connect-peer
+                                resolve-seed-host)))
 
     (define (add-configured-peer-texts n peer-texts)
       (for-each
@@ -681,88 +753,412 @@
                     (loop (cdr peers) successes (+ failures 1))))))))
 
     (define (run-sync-once args command)
-      (with-node args
-        (lambda (n)
-          (print-status (sync-node-once n args command)))))
+      (run-sync-command args
+                        command
+                        (lambda (n command attempt-args)
+                          (sync-node-once n attempt-args command))))
 
     (define (run-block-sync-once args)
-      (with-node args
-        (lambda (n)
-          (print-status (fetch-blocks-once n args "block-sync")))))
+      (run-sync-command args
+                        "block-sync"
+                        (lambda (n command attempt-args)
+                          (fetch-blocks-once n attempt-args command))))
 
     (define (run-sync-attempt n args command)
       (guard (err (else #f))
         (sync-node-once n args command)
         #t))
 
-    (define (run-loop-sync-attempt n args)
+    ;;; Return the status fields used to decide whether a run attempt moved sync.
+    ;;;
+    ;;; ```scheme
+    ;;; (run-progress-snapshot (node-status n))
+    ;;; ```
+    (define (run-progress-snapshot status)
+      (list (node-status-snapshot-best-hash status)
+            (node-status-snapshot-best-height status)
+            (node-status-snapshot-header-count status)
+            (node-status-snapshot-block-count status)
+            (node-status-snapshot-validated-block-count status)
+            (node-status-snapshot-best-block-height status)
+            (node-status-snapshot-best-block-hash status)
+            (node-status-snapshot-mempool-count status)
+            (node-status-snapshot-requested-transaction-count status)
+            (node-status-snapshot-failed-transaction-count status)
+            (node-status-snapshot-peer-count status)
+            (node-status-snapshot-peer-success-count status)
+            (node-status-snapshot-peer-failure-count status)
+            (node-status-snapshot-pending-block-count status)
+            (node-status-snapshot-requested-block-count status)
+            (node-status-snapshot-failed-block-count status)))
+
+    ;;; Return true when `after` differs from a prior run progress snapshot.
+    ;;;
+    ;;; ```scheme
+    ;;; (run-progress-made? before (node-status n))
+    ;;; ```
+    (define (run-progress-made? before after)
+      (not (equal? before (run-progress-snapshot after))))
+
+    (define (deadline-attempt-args args deadline-ms)
+      ;; Keep deadline-driven live probes responsive by doing one seed, peer,
+      ;; and a small P2P message batch at a time; connect/read timeouts still
+      ;; bound each transport. Sixteen steps leaves room for version/verack,
+      ;; peer chatter, and a headers response without letting one peer
+      ;; monopolize a bounded run.
+      (if (>= deadline-ms 0)
+          (arg-set (arg-set (arg-set (arg-set (arg-set args "--max-peers" "1")
+                                              "--max-retries"
+                                              "0")
+                                     "--max-seeds"
+                                     "1")
+                            "--max-addresses"
+                            "8")
+                   "--max-steps"
+                   "16")
+          args))
+
+    (define %run-header-catchup-lag 7200)
+
+    (define (headers-near-tip? n)
+      (<= (node-status-snapshot-header-sync-lag (node-status n))
+          %run-header-catchup-lag))
+
+    (define (block-catchup-attempt? n args)
+      (let ((interval (status-number args "--block-catchup-interval" "1"))
+            (completed
+              (node-status-snapshot-run-completed-iterations (node-status n))))
+        (and (> interval 0)
+             (> completed 0)
+             (= (modulo completed interval) 0))))
+
+    (define (block-catchup-work? n)
+      (let ((status (node-status n)))
+        (or (> (node-status-snapshot-pending-block-count status) 0)
+            (> (node-status-snapshot-requested-block-count status) 0)
+            (< (node-status-snapshot-best-block-height status)
+               (node-status-snapshot-best-height status)))))
+
+    (define (validation-backlog? n)
+      (let ((status (node-status n)))
+        (and (> (node-status-snapshot-block-count status)
+                (node-status-snapshot-validated-block-count status))
+             (node-validation-ready? n))))
+
+    (define (header-refresh-attempt? n args)
+      (let ((interval (status-number args "--header-refresh-interval" "8"))
+            (completed
+              (node-status-snapshot-run-completed-iterations (node-status n))))
+        (and (> interval 0)
+             (> completed 0)
+             (= (modulo completed interval) 0))))
+
+    (define (block-catchup-block-count args)
+      (status-number
+        args
+        "--block-catchup-blocks"
+        (arg-value args "--max-blocks" "16")))
+
+    (define (validation-block-count args)
+      (status-number args "--validation-blocks" "128"))
+
+    ;;; Shape one long-running `run` attempt.
+    ;;;
+    ;;; Deadline-driven runs keep transport attempts small. While headers are
+    ;;; far behind wall-clock time, most attempts defer block download so one
+    ;;; peer cannot spend the entire bounded attempt budget waiting on block
+    ;;; payloads before the node has reached the header tip. A periodic catch-up
+    ;;; attempt still fetches a tiny block batch so validation can move while
+    ;;; header sync is catching up.
+    ;;;
+    ;;; ```scheme
+    ;;; (run-loop-attempt-args n '("--max-blocks" "8") 30000)
+    ;;; ```
+    (define (run-loop-attempt-mode n args deadline-ms)
+      (: node? list? integer? -> string?)
+      (cond ((validation-backlog? n)
+             "validation")
+            ((and (>= deadline-ms 0)
+                  (not (headers-near-tip? n))
+                  (block-catchup-work? n)
+                  (block-catchup-attempt? n args)
+                  (not (header-refresh-attempt? n args)))
+             "block-sync")
+            (else
+             "sync")))
+
+    (define (run-loop-attempt-args n args deadline-ms)
+      (: node? list? integer? -> list?)
+      (let ((attempt-args (deadline-attempt-args args deadline-ms)))
+        (cond ((and (>= deadline-ms 0)
+                    (not (headers-near-tip? n))
+                    (string=? "sync"
+                              (run-loop-attempt-mode n args deadline-ms)))
+               (arg-set attempt-args "--max-blocks" "0"))
+              ((string=? "block-sync"
+                         (run-loop-attempt-mode n args deadline-ms))
+               (arg-set attempt-args
+                        "--max-blocks"
+                        (number->string (block-catchup-block-count args))))
+              (else
+               attempt-args))))
+
+    (define (run-loop-sync-attempt n args deadline-ms)
       (guard (err
               (else
-               (node-record-run-failure n)
+               (node-record-run-failure
+                 n
+                 (string-append
+                   "run failed: "
+                   (exception-message-or err "run failed")))
                (print-status (node-status n))
                #f))
-        (sync-node-once n args "run")
-        (node-record-run-attempt n "success" "")
-        (print-status (node-status n))
-        #t))
+        (let ((before (run-progress-snapshot (node-status n)))
+              (attempt-mode (run-loop-attempt-mode n args deadline-ms))
+              (attempt-args (run-loop-attempt-args n args deadline-ms)))
+          (let ((status (cond ((string=? attempt-mode "validation")
+                               (node-validate-blocks
+                                 n
+                                 (validation-block-count attempt-args))
+                               (node-status n))
+                              ((string=? attempt-mode "block-sync")
+                               (fetch-blocks-once n attempt-args "run"))
+                              (else
+                               (sync-node-once n attempt-args "run")))))
+            (if (string=? "failed" (node-status-snapshot-sync-stage status))
+                (begin
+                  (node-record-run-failure
+                    n
+                    (node-status-snapshot-sync-last-error status))
+                  (print-status status)
+                  #f)
+                (begin
+                  (node-record-run-attempt n "success" "")
+                  (let ((after (node-status n)))
+                    (print-status after)
+                    (cons after (run-progress-made? before after)))))))))
 
     (define (iteration-limit-reached? iterations completed)
       (and (> iterations 0)
            (>= completed iterations)))
+
+    (define (now-ms)
+      (let ((jiffy (current-jiffy))
+            (per-second (jiffies-per-second)))
+        (floor (* 1000 (/ jiffy per-second)))))
+
+    (define (deadline-reached? start-ms deadline-ms)
+      (and (>= deadline-ms 0)
+           (>= (- (now-ms) start-ms) deadline-ms)))
+
+    (define (deadline-driven? iterations deadline-ms)
+      (and (= iterations 0) (>= deadline-ms 0)))
+
+    (define %deadline-attempt-padding-ms 1000)
+
+    (define (remaining-deadline-ms start-ms deadline-ms)
+      (- deadline-ms (- (now-ms) start-ms)))
+
+    (define (run-attempt-budget-ms args deadline-ms)
+      (let* ((attempt-args (deadline-attempt-args args deadline-ms))
+             (resolve-timeout (status-number attempt-args
+                                             "--resolve-timeout"
+                                             "2000"))
+             (connect-timeout (status-number attempt-args
+                                             "--connect-timeout"
+                                             "5000"))
+             (read-timeout (status-number attempt-args
+                                          "--read-timeout"
+                                          "5000"))
+             (max-steps (status-number attempt-args "--max-steps" "64")))
+        (+ resolve-timeout
+           connect-timeout
+           (* read-timeout max-steps)
+           %deadline-attempt-padding-ms)))
+
+    (define (deadline-has-attempt-budget? start-ms deadline-ms args)
+      (or (< deadline-ms 0)
+          (>= (remaining-deadline-ms start-ms deadline-ms)
+              (run-attempt-budget-ms args deadline-ms))))
+
+    (define (run-sync-command-attempt n command proc attempt-args)
+      (guard (err
+              (else
+               (print-status (node-status n))
+               #f))
+        (let ((before (run-progress-snapshot (node-status n))))
+          (let ((status (proc n command attempt-args)))
+            (print-status status)
+            (if (string=? "failed" (node-status-snapshot-sync-stage status))
+                #f
+                (cons status (run-progress-made? before status)))))))
+
+    (define (run-sync-command args command proc)
+      (with-node args
+        (lambda (n)
+          (let ((iterations (status-number args "--iterations" "1"))
+                (max-retries (status-number args "--max-retries" "0"))
+                (retry-delay (status-number args "--retry-delay" "0"))
+                (deadline-ms (status-number args "--deadline-ms" "-1"))
+                (start-ms (now-ms)))
+            (let loop ((completed 0) (retries 0) (last #f))
+              (if (or (iteration-limit-reached? iterations completed)
+                      (deadline-reached? start-ms deadline-ms)
+                      (not (deadline-has-attempt-budget?
+                             start-ms
+                             deadline-ms
+                             args)))
+                  (begin
+                    (let ((status (node-mark-sync-idle n)))
+                      (print-status status)
+                      status))
+                  (let ((attempt
+                          (run-sync-command-attempt
+                            n
+                            command
+                            proc
+                            (deadline-attempt-args args deadline-ms))))
+                    (if attempt
+                        (begin
+                          (when (and (= iterations 0)
+                                     (not (cdr attempt))
+                                     (> retry-delay 0))
+                            (sleep retry-delay))
+                          (loop (+ completed 1) 0 (car attempt)))
+                        (if (>= retries max-retries)
+                            (if (deadline-driven? iterations deadline-ms)
+                                (begin
+                                  (when (> retry-delay 0)
+                                    (sleep retry-delay))
+                                  (loop completed (+ retries 1) last))
+                                (error (string-append command
+                                                      ": max retries exceeded")))
+                            (begin
+                              (when (> retry-delay 0)
+                                (sleep retry-delay))
+                              (loop completed (+ retries 1) last)))))))))))
 
     (define (run-loop args)
       (with-node args
         (lambda (n)
           (let ((iterations (status-number args "--iterations" "1"))
                 (max-retries (status-number args "--max-retries" "3"))
-                (retry-delay (status-number args "--retry-delay" "0")))
+                (retry-delay (status-number args "--retry-delay" "0"))
+                (deadline-ms (status-number args "--deadline-ms" "-1"))
+                (start-ms (now-ms)))
+            (define initial-completed
+              (if (= iterations 0)
+                  (node-status-snapshot-run-completed-iterations
+                    (node-status n))
+                  0))
             (node-record-run-loop-state
               n
               (if (= iterations 0) "unbounded" "bounded")
               iterations
-              0
+              initial-completed
               0)
-            (let loop ((completed 0) (retries 0) (last #f))
+            (let loop ((completed initial-completed) (retries 0) (last #f))
               (node-record-run-loop-state
                 n
                 (if (= iterations 0) "unbounded" "bounded")
                 iterations
                 completed
                 retries)
-              (if (iteration-limit-reached? iterations completed)
-                  last
-                  (if (run-loop-sync-attempt n args)
-                      (loop (+ completed 1) 0 #t)
+              (if (or (iteration-limit-reached? iterations completed)
+                      (deadline-reached? start-ms deadline-ms)
+                      (not (deadline-has-attempt-budget?
+                             start-ms
+                             deadline-ms
+                             args)))
+                  (begin
+                    (let ((status (node-mark-sync-idle n)))
+                      (print-status status)
+                      status))
+                  (let ((attempt (run-loop-sync-attempt n args deadline-ms)))
+                    (if attempt
+                        (begin
+                          (when (and (= iterations 0)
+                                     (not (cdr attempt))
+                                     (> retry-delay 0))
+                            (sleep retry-delay))
+                          (loop (+ completed 1) 0 #t))
                       (begin
                         (if (>= retries max-retries)
-                            (begin
-                              (node-record-run-loop-state
-                                n
-                                (if (= iterations 0) "unbounded" "bounded")
-                                iterations
-                                completed
-                                retries)
-                              (error "run: max retries exceeded"))
+                            (if (deadline-driven? iterations deadline-ms)
+                                (begin
+                                  (when (> retry-delay 0)
+                                    (sleep retry-delay))
+                                  (loop completed (+ retries 1) last))
+                                (begin
+                                  (node-record-run-loop-state
+                                    n
+                                    (if (= iterations 0) "unbounded" "bounded")
+                                    iterations
+                                    completed
+                                    retries)
+                                  (error "run: max retries exceeded")))
                             (begin
                               (when (> retry-delay 0)
                                 (sleep retry-delay))
-                              (loop completed (+ retries 1) last)))))))))))
+                              (loop completed (+ retries 1) last))))))))))))
+
+    (define (connection-limit-reached? max-connections completed)
+      (and (> max-connections 0)
+           (>= completed max-connections)))
+
+    (define (run-listen args)
+      (: list? -> any?)
+      (with-node args
+        (lambda (n)
+          (let* ((bind-address (arg-value args "--bind" "127.0.0.1"))
+                 (port (status-number
+                         args
+                         "--port"
+                         (number->string
+                           (chain-config-default-port (node-chain n)))))
+                 (backlog (status-number args "--backlog" "8"))
+                 (max-connections
+                   (status-number args "--max-connections" "1"))
+                 (accept-timeout
+                   (status-number args "--accept-timeout" "5000"))
+                 (read-timeout (status-number args "--read-timeout" "5000"))
+                 (max-steps (status-number args "--max-steps" "8"))
+                 (max-tx (status-number args "--max-tx" "64"))
+                 (listener (tcp-listen port backlog bind-address)))
+            (unless listener
+              (error "listen: failed to bind TCP listener"))
+            (guard (err
+                    (else
+                     (socket-close listener)
+                     (error "listen: inbound server failed")))
+              (println "listening: ~a:~a" bind-address port)
+              (let loop ((completed 0) (last #f))
+                (if (connection-limit-reached? max-connections completed)
+                    (begin
+                      (socket-close listener)
+                      (print-status (node-status n))
+                      last)
+                    (if (socket-ready? listener accept-timeout)
+                        (let ((client (tcp-accept listener)))
+                          (if client
+                              (loop
+                                (+ completed 1)
+                                (node-serve-inbound-socket
+                                  n
+                                  "inbound"
+                                  (+ completed 1)
+                                  client
+                                  read-timeout
+                                  max-steps
+                                  max-tx))
+                              (loop completed last)))
+                        (begin
+                          (socket-close listener)
+                          (print-status (node-status n))
+                          last)))))))))
 
     (define (maybe-bootstrap-probe-peers n args)
-      (if (or (arg-value args "--peer" #f)
-              (> (node-status-snapshot-peer-count (node-status n)) 0))
-          0
-          (let ((resolve-timeout
-                  (status-number args "--resolve-timeout" "2000"))
-                (max-seeds
-                  (status-number args "--max-seeds" "8"))
-                (max-addresses
-                  (status-number args "--max-addresses" "16")))
-            (node-bootstrap-discovered-peers n
-                                            resolve-seed-host
-                                            resolve-timeout
-                                            max-seeds
-                                            max-addresses))))
+      (maybe-bootstrap-sync-peers n args))
 
     (define (run-probe args)
       (with-node args
@@ -775,7 +1171,12 @@
                         (else
                          (print-status (node-status n))
                          (error "probe: sync failed")))
-                  (print-status (sync-node-once n args "probe"))))))))
+                  (let ((status (sync-node-once n args "probe")))
+                    (print-status status)
+                    (when (string=? "failed"
+                                     (node-status-snapshot-sync-stage status))
+                      (error "probe: sync failed"))
+                    status)))))))
 
     (define (after-arg-separator args)
       (cond ((null? args) '())
@@ -805,6 +1206,8 @@
                (run-sync-once (cdr args) "sync"))
               ((string=? (car args) "run")
                (run-loop (cdr args)))
+              ((string=? (car args) "listen")
+               (run-listen (cdr args)))
               ((string=? (car args) "probe")
                (run-probe (cdr args)))
               (else
