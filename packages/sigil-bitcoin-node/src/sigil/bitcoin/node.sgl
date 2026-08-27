@@ -24,6 +24,7 @@
     chain-config-genesis-hash chain-config-consensus-params
     chain-config-extensions
     chain-config-extension chain-config-mining-metadata
+    chain-config-header-rules
     bitcoin-mainnet-chain bitcoin-testnet-chain bitcoin-testnet4-chain
     bitcoin-signet-chain bitcoin-regtest-chain
     chain-config-by-name
@@ -144,12 +145,18 @@
       (block-header-parse
         (hex-decode
           "0100000000000000000000000000000000000000000000000000000000000000000000003ba3edfd7a7b12b27ac72c3e67768f617fc81bc3888a51323a9fb8aa4b1e5e4adae5494dffff7f2002000000")))
+    ;; SigilCoin's real genesis is produced by the project that owns its rules.
+    ;; Until that config exists, the placeholder reuses regtest's genesis so the
+    ;; chain entry stays inspectable without inventing chain data here.
     (define %sigilcoin-genesis-header %bitcoin-regtest-genesis-header)
 
     ;;; Chain identity and network/consensus parameters used by the node.
     ;;;
-    ;;; The `extensions` alist is reserved for chain-specific hooks such as
-    ;;; SigilCoin's future IRC mining metadata.
+    ;;; The `extensions` alist carries chain-specific policy. The `consensus`
+    ;;; entry may hold `(rules . <header-rules>)` to replace Bitcoin's header
+    ;;; acceptance and fork choice, or `(rules . external)` to declare that
+    ;;; the rules are owned elsewhere. The `mining` entry carries mining
+    ;;; policy such as a coordination channel.
     ;;;
     ;;; ```scheme
     ;;; (chain-config-name bitcoin-mainnet-chain)
@@ -354,10 +361,14 @@
                     genesis-header: %sigilcoin-genesis-header
                     genesis-hash: (block-header-hash %sigilcoin-genesis-header)
                     consensus-params: bitcoin-regtest-consensus-params
-                    extensions: '((mining . ((status . placeholder)
-                                             (base . bitcoin-proof-of-work)
-                                             (irc-channel . "#sigilcoin")
-                                             (irc-mining . planned))))))
+                    ;; SigilCoin replaces hash proof-of-work with its own
+                    ;; header and fork-choice rule. The rule itself lives in
+                    ;; the SigilCoin project, so this entry only declares the
+                    ;; delegation; a runnable config attaches a `header-rules`
+                    ;; record under `(consensus (rules . ...))`.
+                    extensions: '((consensus . ((rules . external)))
+                                  (mining . ((rule . external)
+                                             (irc-channel . "#sigilcoin"))))))
 
     ;;; Return a chain-specific extension value or `default`.
     ;;;
@@ -394,6 +405,35 @@
     (define (chain-config-mining-metadata chain)
       (: chain-config? -> list?)
       (chain-config-extension chain 'mining '()))
+
+    ;;; Return the header acceptance and fork-choice rules for a chain.
+    ;;;
+    ;;; A chain attaches its own rules as `(consensus (rules . <header-rules>))`
+    ;;; in `extensions`. A chain that attaches nothing uses Bitcoin's rules, so
+    ;;; every Bitcoin chain config keeps today's behavior. The symbol `external`
+    ;;; declares that the rules belong to another project, which must build a
+    ;;; chain config carrying them before a node can run.
+    ;;;
+    ;;; ```scheme
+    ;;; (header-rules? (chain-config-header-rules bitcoin-mainnet-chain))
+    ;;; ```
+    (define (chain-config-header-rules chain)
+      (: chain-config? -> header-rules?)
+      (let ((rules (extension-ref (chain-config-extension chain 'consensus '())
+                                  'rules
+                                  bitcoin-header-rules)))
+        (cond ((header-rules? rules) rules)
+              ((eq? rules 'external)
+               (error (string-append
+                        "chain-config-header-rules: chain "
+                        (chain-config-name chain)
+                        " delegates its header rules; supply a chain config"
+                        " carrying a header-rules record")))
+              (else
+               (error "chain-config-header-rules: expected header rules")))))
+
+    (define (node-header-rules n)
+      (chain-config-header-rules (node-chain n)))
 
     ;;; Return a built-in chain config by canonical or short name.
     ;;;
@@ -440,8 +480,19 @@
     (define (header-row-work row)
       (string->number (row-ref row "work")))
 
+    ;; A header's ranking value is provisional until the block body it may be
+    ;; derived from has been validated. See `db-settle-header-work`.
+    (define (header-row-body-known? row)
+      (= 1 (row-ref row "body_known")))
+
     (define (header-row-height row)
       (row-ref row "height"))
+
+    (define %header-columns
+      "hash, prev_hash, height, work, header_hex, time, bits, valid, body_known")
+
+    (define (header-select tail)
+      (string-append "SELECT " %header-columns " FROM headers " tail))
 
     (define (db-column-exists? db table column)
       (let loop ((rows (sqlite-query
@@ -465,7 +516,7 @@
         "CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
       (sqlite-exec
         db
-        "CREATE TABLE IF NOT EXISTS headers (hash TEXT PRIMARY KEY, prev_hash TEXT NOT NULL, height INTEGER NOT NULL, work TEXT NOT NULL, header_hex TEXT NOT NULL, time INTEGER NOT NULL, bits INTEGER NOT NULL, valid INTEGER NOT NULL)")
+        "CREATE TABLE IF NOT EXISTS headers (hash TEXT PRIMARY KEY, prev_hash TEXT NOT NULL, height INTEGER NOT NULL, work TEXT NOT NULL, header_hex TEXT NOT NULL, time INTEGER NOT NULL, bits INTEGER NOT NULL, valid INTEGER NOT NULL, body_known INTEGER NOT NULL DEFAULT 0)")
       (sqlite-exec
         db
         "CREATE TABLE IF NOT EXISTS peers (address TEXT NOT NULL, port INTEGER NOT NULL, score INTEGER NOT NULL DEFAULT 0, failures INTEGER NOT NULL DEFAULT 0, last_seen INTEGER NOT NULL DEFAULT 0, last_attempt INTEGER NOT NULL DEFAULT 0, last_result TEXT NOT NULL DEFAULT '', last_error TEXT NOT NULL DEFAULT '', source TEXT NOT NULL DEFAULT 'manual', seed_host TEXT NOT NULL DEFAULT '', PRIMARY KEY(address, port))")
@@ -487,6 +538,7 @@
       (db-ensure-column db "blocks" "requested_at" "INTEGER NOT NULL DEFAULT 0")
       (db-ensure-column db "blocks" "request_count" "INTEGER NOT NULL DEFAULT 0")
       (db-ensure-column db "blocks" "last_error" "TEXT NOT NULL DEFAULT ''")
+      (db-ensure-column db "headers" "body_known" "INTEGER NOT NULL DEFAULT 0")
       (sqlite-run db
                   "INSERT OR REPLACE INTO metadata(key, value) VALUES (?, ?)"
                   "schema-version"
@@ -560,13 +612,13 @@
     (define (db-header-row db hash-text)
       (sqlite-query-row
         db
-        "SELECT hash, prev_hash, height, work, header_hex, time, bits, valid FROM headers WHERE hash = ?"
+        (header-select "WHERE hash = ?")
         hash-text))
 
     (define (db-insert-header db hash-text prev-text height work header)
       (sqlite-run
         db
-        "INSERT OR REPLACE INTO headers(hash, prev_hash, height, work, header_hex, time, bits, valid) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+        "INSERT OR REPLACE INTO headers(hash, prev_hash, height, work, header_hex, time, bits, valid, body_known) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)"
         hash-text
         prev-text
         height
@@ -576,10 +628,21 @@
         (block-header-bits header)
         1))
 
-    (define (db-all-header-rows db)
-      (sqlite-query
+    ;; Replace a header's provisional ranking value with the one its validated
+    ;; body produces. Bitcoin's rule ignores the body, so this rewrites the
+    ;; same number it already stored; a chain whose key lives in the body sees
+    ;; its real key here for the first time. Descendants keep their provisional
+    ;; values and pick this one up when their own bodies are validated, which
+    ;; happens in height order.
+    (define (db-settle-header-work db hash-text work)
+      (sqlite-run
         db
-        "SELECT hash, prev_hash, height, work, header_hex, time, bits, valid FROM headers WHERE valid = 1"))
+        "UPDATE headers SET work = ?, body_known = 1 WHERE hash = ?"
+        (number->string work)
+        hash-text))
+
+    (define (db-all-header-rows db)
+      (sqlite-query db (header-select "WHERE valid = 1")))
 
     (define (db-header-count db)
       (let ((row (sqlite-query-row db "SELECT COUNT(*) AS count FROM headers WHERE valid = 1")))
@@ -614,10 +677,10 @@
       (db-set-metadata db "active-chain-tip-hash" hash-text)
       (db-set-metadata db "active-chain-tip-height" (number->string height)))
 
-    (define (db-reconcile-active-chain-tip db genesis-hash-text)
+    (define (db-reconcile-active-chain-tip db rules genesis-hash-text)
       ;; Older databases predate active-chain metadata. Rebuild it from the
       ;; validated prefix on the current best-header chain at open time.
-      (let* ((best (db-best-header-row db))
+      (let* ((best (db-best-header-row db rules))
              (rows (if best (db-chain-rows-to-row db best) '()))
              (height (validated-on-best-chain-height db rows))
              (row (row-at-height rows height)))
@@ -669,38 +732,63 @@
     (define (failed-chain-block-count db rows)
       (chain-block-stage-count db rows "failed"))
 
-    (define (best-row rows)
-      (let loop ((xs rows) (best #f))
+    (define (max-header-row-height rows)
+      (let loop ((xs rows) (best 0))
         (cond ((null? xs) best)
-              ((not best) (loop (cdr xs) (car xs)))
-              ((> (header-row-work (car xs)) (header-row-work best))
-               (loop (cdr xs) (car xs)))
-              ((and (= (header-row-work (car xs)) (header-row-work best))
-                    (> (header-row-height (car xs)) (header-row-height best)))
-               (loop (cdr xs) (car xs)))
-              (else
-               (loop (cdr xs) best)))))
+              ((> (header-row-height (car xs)) best)
+               (loop (cdr xs) (header-row-height (car xs))))
+              (else (loop (cdr xs) best)))))
 
-    (define (db-best-header-row db)
-      (best-row (db-all-header-rows db)))
+    ;; Every stored header connects to a parent, so the stored heights are a
+    ;; contiguous range: a height is extended exactly when a taller header
+    ;; exists.
+    (define (header-row->chain-candidate row max-height)
+      (chain-candidate hash: (hex-decode (row-ref row "hash"))
+                       height: (header-row-height row)
+                       work: (header-row-work row)
+                       body-known?: (header-row-body-known? row)
+                       extended?: (< (header-row-height row) max-height)))
+
+    ;; Fork choice is whatever the chain's rules say. Bitcoin's rule ranks by
+    ;; accumulated work then height, which is the behavior this loop had before
+    ;; the rule became pluggable. Each row is converted to a candidate once,
+    ;; because the conversion decodes the hash a rule may never read.
+    (define (best-row rules rows)
+      (let ((better-chain? (header-rules-better-chain? rules))
+            (max-height (max-header-row-height rows)))
+        (let loop ((xs rows) (best #f) (best-candidate #f))
+          (cond ((null? xs) best)
+                ((not best)
+                 (loop (cdr xs)
+                       (car xs)
+                       (header-row->chain-candidate (car xs) max-height)))
+                (else
+                 (let ((candidate (header-row->chain-candidate (car xs)
+                                                               max-height)))
+                   (if (better-chain? candidate best-candidate)
+                       (loop (cdr xs) (car xs) candidate)
+                       (loop (cdr xs) best best-candidate))))))))
+
+    (define (db-best-header-row db rules)
+      (best-row rules (db-all-header-rows db)))
 
     (define (db-header-row-by-height db height)
       (sqlite-query-row
         db
-        "SELECT hash, prev_hash, height, work, header_hex, time, bits, valid FROM headers WHERE height = ? AND valid = 1"
+        (header-select "WHERE height = ? AND valid = 1")
         height))
 
     (define (db-header-row-by-height-and-hash db height hash-text)
       (sqlite-query-row
         db
-        "SELECT hash, prev_hash, height, work, header_hex, time, bits, valid FROM headers WHERE height = ? AND hash = ? AND valid = 1"
+        (header-select "WHERE height = ? AND hash = ? AND valid = 1")
         height
         hash-text))
 
     (define (db-child-header-rows db hash-text)
       (sqlite-query
         db
-        "SELECT hash, prev_hash, height, work, header_hex, time, bits, valid FROM headers WHERE prev_hash = ? AND valid = 1"
+        (header-select "WHERE prev_hash = ? AND valid = 1")
         hash-text))
 
     (define (db-mark-header-branch-invalid db hash-text reason)
@@ -753,8 +841,9 @@
                          (reverse (cons next out))
                          (loop (cdr xs) (cons next out)))))))))
 
-    (define (db-best-chain-header-rows-after db locator-hashes stop-hash limit)
-      (let* ((best (db-best-header-row db))
+    (define (db-best-chain-header-rows-after db rules locator-hashes stop-hash
+                                             limit)
+      (let* ((best (db-best-header-row db rules))
              (rows (if best (db-chain-rows-to-row db best) '()))
              (locator-height (hash-text-member-height db locator-hashes))
              (start-height (if locator-height locator-height 0))
@@ -803,10 +892,10 @@
                                                            "requested_by")
                                                   "")))))))))))))
 
-    (define (db-best-chain-requestable-block-rows db peer-key limit)
+    (define (db-best-chain-requestable-block-rows db rules peer-key limit)
       ;; Request blocks only for the active best-header path. Stale fork
       ;; headers stay persisted, but they should not consume sync bandwidth.
-      (let ((rows (let ((best (db-best-header-row db)))
+      (let ((rows (let ((best (db-best-header-row db rules)))
                     (if best (db-chain-rows-to-row db best) '()))))
         (take-up-to
           (filter (lambda (row) (requestable-block-row? db peer-key row))
@@ -912,6 +1001,7 @@
       (db-ensure-metadata db "bootstrap-last-result" "")
       (db-ensure-metadata db "bootstrap-last-error" "")
       (let* ((genesis (chain-config-genesis-header chain))
+             (rules (chain-config-header-rules chain))
              (hash-text (hex-encode (chain-config-genesis-hash chain))))
         (db-ensure-metadata db "active-chain-tip-hash" hash-text)
         (db-ensure-metadata db "active-chain-tip-height" "0")
@@ -921,9 +1011,9 @@
             hash-text
             (hex-encode (block-header-previous-block genesis))
             0
-            (block-header-chain-work genesis)
+            ((header-rules-chain-work rules) genesis #f 0)
             genesis))
-        (db-reconcile-active-chain-tip db hash-text)))
+        (db-reconcile-active-chain-tip db rules hash-text)))
 
     (define (db-peer-row->peer row)
       (node-peer address: (row-ref row "address")
@@ -1320,7 +1410,7 @@
     ;;; ```
     (define (node-best-header n)
       (: node? -> block-header?)
-      (let ((row (db-best-header-row (node-db n))))
+      (let ((row (db-best-header-row (node-db n) (node-header-rules n))))
         (if row
             (header-row->header row)
             (chain-config-genesis-header (node-chain n)))))
@@ -1333,7 +1423,7 @@
     (define (node-status n)
       (: node? -> node-status-snapshot?)
       (let* ((db (node-db n))
-             (row (db-best-header-row db))
+             (row (db-best-header-row db (node-header-rules n)))
              (rows (if row (db-chain-rows-to-row db row) '())))
         (node-status-snapshot
           chain: (chain-config-name (node-chain n))
@@ -1396,7 +1486,7 @@
     (define (node-header-locator n)
       (: node? -> list?)
       (let* ((db (node-db n))
-             (best (db-best-header-row db))
+             (best (db-best-header-row db (node-header-rules n)))
              (height (if best (header-row-height best) 0)))
         (let loop ((heights (locator-heights height)) (hashes '()))
           (if (null? heights)
@@ -1415,18 +1505,25 @@
 
     (define (ingest-one-header n header)
       (let* ((db (node-db n))
+             (rules (node-header-rules n))
              (hash-text (header-hash-text header)))
         (if (db-header-row db hash-text)
             #f
             (let* ((previous (previous-chain-for-header db header))
                    (prev-row (db-header-row db (header-prev-text header)))
                    (height (+ 1 (header-row-height prev-row)))
-                   (work (+ (header-row-work prev-row)
-                            (block-header-chain-work header))))
+                   ;; Headers-first sync has no body yet, so the rule supplies
+                   ;; a provisional value that `db-settle-header-work` replaces
+                   ;; once the body validates.
+                   (work ((header-rules-chain-work rules)
+                          header
+                          #f
+                          (header-row-work prev-row))))
               (unless (block-header-valid-after?
                         (chain-config-consensus-params (node-chain n))
                         previous
-                        header)
+                        header
+                        rules)
                 (error "node-ingest-headers: invalid header"))
               (db-insert-header db
                                 hash-text
@@ -2114,6 +2211,7 @@
     (define (pending-block-rows n peer-name max-blocks)
       (db-best-chain-requestable-block-rows
         (node-db n)
+        (node-header-rules n)
         peer-name
         max-blocks))
 
@@ -2268,6 +2366,7 @@
       (let* ((message (getheaders-message-parse (p2p-envelope-payload request)))
              (rows (db-best-chain-header-rows-after
                      (node-db n)
+                     (node-header-rules n)
                      (getheaders-message-locator-hashes message)
                      (getheaders-message-stop-hash message)
                      p2p-max-headers-per-message))
@@ -2776,7 +2875,9 @@
             (tx-loop (cdr txs) #f)))))
 
     (define (best-chain-rows n)
-      (db-chain-rows-to-row (node-db n) (db-best-header-row (node-db n))))
+      (db-chain-rows-to-row (node-db n)
+                            (db-best-header-row (node-db n)
+                                                (node-header-rules n))))
 
     (define (validated-on-best-chain-height db rows)
       (let loop ((xs rows) (height 0))
@@ -2801,6 +2902,20 @@
       (cond ((null? rows) #f)
             ((= height (header-row-height (car rows))) (car rows))
             (else (row-at-height (cdr rows) height))))
+
+    ;; The block body is only available here, so this is where a chain that
+    ;; ranks by something the header does not carry learns its real value.
+    (define (settle-header-work n row b)
+      (let* ((db (node-db n))
+             (prev-row (db-header-row db (row-ref row "prev_hash")))
+             (previous-work (if prev-row (header-row-work prev-row) 0)))
+        (db-settle-header-work
+          db
+          (row-ref row "hash")
+          ((header-rules-chain-work (node-header-rules n))
+           (header-row->header row)
+           b
+           previous-work))))
 
     (define (validate-block-row n row utxos)
       (let* ((db (node-db n))
@@ -2827,6 +2942,7 @@
                             height
                             utxos
                             b))))
+                (settle-header-work n row b)
                 (apply-block-utxo-transition db b height hash-text)
                 (db-set-block-status db
                                      hash-text

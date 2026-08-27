@@ -51,6 +51,13 @@
     block-header-chain-work
     next-required-bits
     block-header-links?
+    chain-candidate chain-candidate?
+    chain-candidate-hash chain-candidate-height chain-candidate-work
+    chain-candidate-body-known? chain-candidate-extended?
+    header-rules header-rules?
+    header-rules-accept? header-rules-chain-work
+    header-rules-better-chain?
+    bitcoin-header-rules
     block-header-valid-after?
     validate-header-chain
     header-chain-valid?
@@ -451,8 +458,62 @@
       (equal? (block-header-previous-block header)
               (block-header-hash previous)))
 
-    ;;; Validate a header against the existing ordered header chain.
-    (define (block-header-valid-after? params previous-headers header)
+    ;;; A competing chain tip considered by fork choice.
+    ;;;
+    ;;; `hash` is the internal 32-byte header hash and `height` the tip
+    ;;; height. `work` is the accumulated ranking value the active
+    ;;; `header-rules` produced for this tip. `body-known?` reports whether
+    ;;; that value was derived from a validated block body; while it is `#f`
+    ;;; the value is the provisional one computed at header ingest, before
+    ;;; any body was available. `extended?` reports that a later height
+    ;;; already builds on this candidate's height, which lets a rule refuse
+    ;;; to make a settled height the tip again.
+    ;;;
+    ;;; ```scheme
+    ;;; (chain-candidate-height
+    ;;;   (chain-candidate hash: (block-header-hash header)
+    ;;;                    height: 1
+    ;;;                    work: 2
+    ;;;                    body-known?: #f
+    ;;;                    extended?: #f))
+    ;;; ```
+    (define-struct chain-candidate
+      (hash bytevector?)
+      (height integer?)
+      (work integer?)
+      (body-known? boolean?)
+      (extended? boolean?))
+
+    ;;; Pluggable header-acceptance and fork-choice rules.
+    ;;;
+    ;;; `accept?` is called as `(accept? params previous-headers header)` and
+    ;;; returns whether the header extends the chain.
+    ;;;
+    ;;; `chain-work` is called as `(chain-work header block previous-work)`
+    ;;; and returns the accumulated ranking value of the chain ending at
+    ;;; `header`, given the accumulated value of its parent. `block` is the
+    ;;; validated block body when one is available and `#f` when it is not,
+    ;;; so a chain whose ranking key lives in the body returns a provisional
+    ;;; value for `#f` and the settled value once the body arrives. The value
+    ;;; is recomputed and re-persisted when a body is validated, so a chain
+    ;;; may rank by something no header carries.
+    ;;;
+    ;;; `better-chain?` is called as `(better-chain? candidate incumbent)` on
+    ;;; two `chain-candidate` records and returns whether the first strictly
+    ;;; outranks the second.
+    ;;;
+    ;;; Chains that do not use hash proof-of-work supply their own rules.
+    ;;; This library never interprets what a rule means; it only calls it.
+    ;;;
+    ;;; ```scheme
+    ;;; (header-rules? bitcoin-header-rules) ; => #t
+    ;;; ```
+    (define-struct header-rules
+      (accept? procedure?)
+      (chain-work procedure?)
+      (better-chain? procedure?))
+
+    (define (bitcoin-header-accept? params previous-headers header)
       (: consensus-params? list? block-header? -> boolean?)
       (validate-block-header header)
       (and (= (block-header-bits header)
@@ -461,34 +522,122 @@
            (or (null? previous-headers)
                (block-header-links? (last-item previous-headers) header))))
 
+    ;; Bitcoin's ranking key is hash proof-of-work, which the header carries
+    ;; in full. The body is irrelevant, so the provisional value computed at
+    ;; header ingest is already the final one and never changes.
+    (define (bitcoin-chain-work header block previous-work)
+      (+ previous-work (block-header-chain-work header)))
+
+    ;; Bitcoin prefers the most accumulated work, and on an exact work tie the
+    ;; longer chain. Ties beyond that keep the incumbent, which makes tip
+    ;; selection first-seen for indistinguishable candidates.
+    (define (bitcoin-better-chain? candidate incumbent)
+      (: chain-candidate? chain-candidate? -> boolean?)
+      (let ((candidate-work (chain-candidate-work candidate))
+            (incumbent-work (chain-candidate-work incumbent)))
+        (or (> candidate-work incumbent-work)
+            (and (= candidate-work incumbent-work)
+                 (> (chain-candidate-height candidate)
+                    (chain-candidate-height incumbent))))))
+
+    ;;; Bitcoin's header acceptance and fork-choice rules.
+    ;;;
+    ;;; This is the default everywhere `rules` is optional, so omitting the
+    ;;; argument is exactly Bitcoin behavior.
+    ;;;
+    ;;; ```scheme
+    ;;; ((header-rules-chain-work bitcoin-header-rules) header #f 0)
+    ;;; ```
+    (define bitcoin-header-rules
+      (header-rules accept?: bitcoin-header-accept?
+                    chain-work: bitcoin-chain-work
+                    better-chain?: bitcoin-better-chain?))
+
+    (define (rules-argument who maybe-rules)
+      (cond ((null? maybe-rules)
+             bitcoin-header-rules)
+            ((not (null? (cdr maybe-rules)))
+             (error (string-append who ": too many arguments")))
+            ((header-rules? (car maybe-rules))
+             (car maybe-rules))
+            (else
+             (error (string-append who ": expected header rules")))))
+
+    ;;; Validate a header against the existing ordered header chain.
+    ;;;
+    ;;; The optional `rules` argument replaces the acceptance rule; omitting
+    ;;; it applies Bitcoin's bits, proof-of-work and linkage checks.
+    ;;;
+    ;;; ```scheme
+    ;;; (block-header-valid-after? params (list genesis) header)
+    ;;; ```
+    (define (block-header-valid-after? params previous-headers header
+                                       . maybe-rules)
+      (: consensus-params? list? block-header? header-rules? ... -> boolean?)
+      ((header-rules-accept?
+         (rules-argument "block-header-valid-after?" maybe-rules))
+       params
+       previous-headers
+       header))
+
     ;;; Validate an ordered header chain and return it on success.
-    (define (validate-header-chain params headers)
-      (: consensus-params? list? -> list?)
+    ;;;
+    ;;; The optional `rules` argument replaces the acceptance rule.
+    ;;;
+    ;;; ```scheme
+    ;;; (validate-header-chain params (list genesis header))
+    ;;; ```
+    (define (validate-header-chain params headers . maybe-rules)
+      (: consensus-params? list? header-rules? ... -> list?)
       (validate-consensus-params params)
       (unless (list? headers)
         (error "validate-header-chain: expected header list"))
-      (let loop ((remaining headers) (accepted '()))
-        (if (null? remaining)
-            headers
-            (let ((history (reverse accepted))
-                  (header (car remaining)))
-              (unless (block-header-valid-after? params history header)
-                (error "validate-header-chain: invalid header"))
-              (loop (cdr remaining) (cons header accepted))))))
+      (let ((accept?
+              (header-rules-accept?
+                (rules-argument "validate-header-chain" maybe-rules))))
+        (let loop ((remaining headers) (accepted '()))
+          (if (null? remaining)
+              headers
+              (let ((history (reverse accepted))
+                    (header (car remaining)))
+                (unless (accept? params history header)
+                  (error "validate-header-chain: invalid header"))
+                (loop (cdr remaining) (cons header accepted)))))))
 
-    (define (header-chain-valid? params headers)
-      (: consensus-params? list? -> boolean?)
-      (guard (err (else #f))
-        (validate-header-chain params headers)
-        #t))
+    ;;; Return whether an ordered header chain validates.
+    ;;;
+    ;;; The optional `rules` argument replaces the acceptance rule.
+    ;;;
+    ;;; ```scheme
+    ;;; (header-chain-valid? params (list genesis header))
+    ;;; ```
+    (define (header-chain-valid? params headers . maybe-rules)
+      (: consensus-params? list? header-rules? ... -> boolean?)
+      ;; Resolve the rules outside the guard so a bad argument raises instead
+      ;; of being reported as an invalid chain.
+      (let ((rules (rules-argument "header-chain-valid?" maybe-rules)))
+        (guard (err (else #f))
+          (validate-header-chain params headers rules)
+          #t)))
 
-    (define (header-chain-work headers)
-      (: list? -> integer?)
-      (let loop ((xs headers) (work 0))
-        (if (null? xs)
-            work
-            (loop (cdr xs)
-                  (+ work (block-header-chain-work (car xs)))))))
+    ;;; Return the accumulated chain work of an ordered header chain.
+    ;;;
+    ;;; The optional `rules` argument replaces the per-header work rule.
+    ;;;
+    ;;; ```scheme
+    ;;; (header-chain-work (list genesis header))
+    ;;; ```
+    (define (header-chain-work headers . maybe-rules)
+      (: list? header-rules? ... -> integer?)
+      (let ((work-of
+              (header-rules-chain-work
+                (rules-argument "header-chain-work" maybe-rules))))
+        ;; No bodies are available here, so every header contributes its
+        ;; provisional value.
+        (let loop ((xs headers) (work 0))
+          (if (null? xs)
+              work
+              (loop (cdr xs) (work-of (car xs) #f work))))))
 
     (define (require-money who value)
       (require-uint who value bitcoin-max-money))

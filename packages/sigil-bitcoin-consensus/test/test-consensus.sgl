@@ -34,6 +34,30 @@
                                      (secp256k1-keypair-create %one)))
                  (script-op op-checksig)))
 
+;; Stand-in rules for a chain that does not rank by hash proof-of-work: every
+;; header contributes one unit of work, and the shorter chain wins.
+(define (%constant-work header b previous-work)
+  (+ previous-work 1))
+
+;; A ranking key no header carries: it comes out of the block body, and is a
+;; fixed provisional value until the body is available.
+(define (%body-derived-work header b previous-work)
+  (+ previous-work
+     (if b
+         (txout-value (car (transaction-outputs
+                             (car (block-transactions b)))))
+         0)))
+
+(define (%prefers-shorter-chain? candidate incumbent)
+  (< (chain-candidate-work candidate) (chain-candidate-work incumbent)))
+
+(define (%test-candidate height work body-known? extended?)
+  (chain-candidate hash: %one
+                   height: height
+                   work: work
+                   body-known?: body-known?
+                   extended?: extended?))
+
 (define %fast-params
   (consensus-params pow-limit-bits: #x207fffff
                     target-spacing: 10
@@ -470,6 +494,137 @@
            (bad (mine-header (list h0 h1 h2) 30 #x207fffff)))
       (assert-false
         (block-header-valid-after? %fast-params (list h0 h1 h2) bad)))))
+
+(test-group "header rules"
+  (test "defaults to bitcoin rules when none are supplied"
+    (let* ((h0 (mine-header '() 0 #x207fffff))
+           (h1 (mine-header (list h0) 10 #x207fffff))
+           (h2 (mine-header (list h0 h1) 20 #x207fffff))
+           (headers (list h0 h1 h2)))
+      (assert-true (header-rules? bitcoin-header-rules))
+      (assert-equal (block-header-valid-after? %fast-params (list h0) h1)
+                    (block-header-valid-after? %fast-params
+                                               (list h0)
+                                               h1
+                                               bitcoin-header-rules))
+      (assert-equal (header-chain-valid? %fast-params headers)
+                    (header-chain-valid? %fast-params
+                                         headers
+                                         bitcoin-header-rules))
+      (assert-equal (header-chain-work headers)
+                    (header-chain-work headers bitcoin-header-rules))
+      (assert-equal headers
+                    (validate-header-chain %fast-params
+                                           headers
+                                           bitcoin-header-rules))))
+
+  (test "custom acceptance rule overrides bitcoin acceptance"
+    (let* ((h0 (mine-header '() 0 #x207fffff))
+           (h1 (mine-header (list h0) 10 #x207fffff))
+           ;; Wrong bits at a retarget height: Bitcoin rejects this header.
+           (h2 (mine-header (list h0 h1) 20 #x207fffff))
+           (bad (mine-header (list h0 h1 h2) 30 #x207fffff))
+           (permissive (header-rules
+                         accept?: (lambda (params previous-headers header)
+                                    #t)
+                         chain-work: %constant-work
+                         better-chain?: %prefers-shorter-chain?))
+           (strict (header-rules
+                     accept?: (lambda (params previous-headers header) #f)
+                     chain-work: %constant-work
+                     better-chain?: %prefers-shorter-chain?)))
+      ;; Accepts what Bitcoin rejects.
+      (assert-false
+        (block-header-valid-after? %fast-params (list h0 h1 h2) bad))
+      (assert-true
+        (block-header-valid-after? %fast-params (list h0 h1 h2) bad permissive))
+      (assert-true
+        (header-chain-valid? %fast-params (list h0 h1 h2 bad) permissive))
+      ;; Rejects what Bitcoin accepts.
+      (assert-true (block-header-valid-after? %fast-params (list h0) h1))
+      (assert-false
+        (block-header-valid-after? %fast-params (list h0) h1 strict))
+      (assert-true (header-chain-valid? %fast-params (list h0 h1)))
+      (assert-false (header-chain-valid? %fast-params (list h0 h1) strict))
+      (assert-error (validate-header-chain %fast-params (list h0 h1) strict))))
+
+  (test "custom work rule replaces accumulated chain work"
+    (let* ((h0 (mine-header '() 0 #x207fffff))
+           (h1 (mine-header (list h0) 10 #x207fffff))
+           (rules (header-rules accept?: (lambda (p h x) #t)
+                                chain-work: %constant-work
+                                better-chain?: %prefers-shorter-chain?)))
+      (assert-equal 2 (header-chain-work (list h0 h1) rules))
+      (assert-false (= 2 (header-chain-work (list h0 h1))))))
+
+  (test "derives a ranking key from the block body when one is available"
+    (let* ((h0 (mine-header '() 0 #x207fffff))
+           (b (block header-field: h0
+                     transactions: (list (make-coinbase-tx 4200)))))
+      ;; Header-only sync has no body, so the key is the provisional value.
+      (assert-equal 0 (%body-derived-work h0 #f 0))
+      ;; The same header ranks differently once its body is known, which is
+      ;; the case no header field could express.
+      (assert-equal 4200 (%body-derived-work h0 b 0))
+      (assert-equal 4207 (%body-derived-work h0 b 7))
+      ;; Bitcoin's rule ignores the body, so its value never moves.
+      (let ((bitcoin-work (header-rules-chain-work bitcoin-header-rules)))
+        (assert-equal (bitcoin-work h0 #f 0) (bitcoin-work h0 b 0)))))
+
+  (test "ranks chain candidates with the supplied comparator"
+    (let ((low (%test-candidate 1 5 #f #f))
+          (high (chain-candidate hash: %two
+                                 height: 2
+                                 work: 9
+                                 body-known?: #f
+                                 extended?: #f))
+          (better? (header-rules-better-chain? bitcoin-header-rules)))
+      (assert-true (better? high low))
+      (assert-false (better? low high))
+      ;; Equal work falls back to height, and an exact tie keeps the incumbent.
+      (assert-true (better? (%test-candidate 3 5 #f #f) low))
+      (assert-false (better? (%test-candidate 1 5 #f #f) low))
+      (assert-true (%prefers-shorter-chain? low high))
+      (assert-false (%prefers-shorter-chain? high low))))
+
+  (test "carries body and extension state that bitcoin's rule ignores"
+    (let ((settled (%test-candidate 1 5 #t #t))
+          (provisional (%test-candidate 1 5 #f #f))
+          (better? (header-rules-better-chain? bitcoin-header-rules)))
+      (assert-true (chain-candidate-body-known? settled))
+      (assert-true (chain-candidate-extended? settled))
+      (assert-false (chain-candidate-body-known? provisional))
+      (assert-false (chain-candidate-extended? provisional))
+      ;; Bitcoin reads neither field, so neither can change its selection.
+      (assert-false (better? settled provisional))
+      (assert-false (better? provisional settled))))
+
+  (test "rejects a rules argument that is not a header-rules record"
+    (let ((h0 (mine-header '() 0 #x207fffff)))
+      (assert-error (block-header-valid-after? %fast-params '() h0 'nonsense))
+      (assert-error (header-chain-work (list h0) 'nonsense))
+      (assert-error
+        (validate-header-chain %fast-params (list h0) 'nonsense))
+      (assert-error (header-chain-valid? %fast-params (list h0) 'nonsense))))
+
+  (test "rejects trailing arguments after the rules argument"
+    (let ((h0 (mine-header '() 0 #x207fffff)))
+      (assert-error (block-header-valid-after? %fast-params
+                                               '()
+                                               h0
+                                               bitcoin-header-rules
+                                               bitcoin-header-rules))
+      (assert-error (header-chain-work (list h0)
+                                       bitcoin-header-rules
+                                       'garbage))
+      (assert-error (validate-header-chain %fast-params
+                                           (list h0)
+                                           bitcoin-header-rules
+                                           'garbage))
+      (assert-error (header-chain-valid? %fast-params
+                                         (list h0)
+                                         bitcoin-header-rules
+                                         'garbage)))))
 
 (test-group "block connection"
   (test "calculates block subsidy halvings"

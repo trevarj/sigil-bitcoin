@@ -32,6 +32,8 @@
   (module-ref %node-module 'chain-config-extension))
 (define chain-config-mining-metadata*
   (module-ref %node-module 'chain-config-mining-metadata))
+(define chain-config-header-rules*
+  (module-ref %node-module 'chain-config-header-rules))
 (define bitcoin-mainnet-chain* (module-ref %node-module 'bitcoin-mainnet-chain))
 (define bitcoin-testnet-chain* (module-ref %node-module 'bitcoin-testnet-chain))
 (define bitcoin-testnet4-chain* (module-ref %node-module 'bitcoin-testnet4-chain))
@@ -100,6 +102,8 @@
   (module-ref %node-module 'node-status-snapshot-chain))
 (define node-status-snapshot-best-height*
   (module-ref %node-module 'node-status-snapshot-best-height))
+(define node-status-snapshot-best-work*
+  (module-ref %node-module 'node-status-snapshot-best-work))
 (define node-status-snapshot-best-header-time*
   (module-ref %node-module 'node-status-snapshot-best-header-time))
 (define node-status-snapshot-header-sync-lag*
@@ -186,6 +190,71 @@
 (define headers-for-sync-attempt*
   (module-ref %node-module 'headers-for-sync-attempt))
 
+;; Rules for a chain that does not rank by proof-of-work. The comparator is
+;; deliberately inverted so a changed tip selection is observable: the chain
+;; with the least accumulated work wins.
+(define %shortest-chain-rules
+  (header-rules accept?: (header-rules-accept? bitcoin-header-rules)
+                chain-work: (header-rules-chain-work bitcoin-header-rules)
+                better-chain?: (lambda (candidate incumbent)
+                                 (< (chain-candidate-work candidate)
+                                    (chain-candidate-work incumbent)))))
+
+;; Rules that accept every header, standing in for a chain whose acceptance
+;; test is something other than hash proof-of-work.
+(define %accept-any-header-rules
+  (header-rules accept?: (lambda (params previous-headers header) #t)
+                chain-work: (header-rules-chain-work bitcoin-header-rules)
+                better-chain?: (header-rules-better-chain?
+                                 bitcoin-header-rules)))
+
+;; A fake chain whose ranking key is not in the header at all: it is the size
+;; of the first coinbase input script, and smaller is better. Nothing about it
+;; is Bitcoin, and nothing about it comes from another project; it exists here
+;; to show the seam can express a body-derived key plus a tip-replacement rule.
+(define (%body-key b)
+  (bytevector-length
+    (txin-script-sig (car (transaction-inputs (car (block-transactions b)))))))
+
+;; Before the body arrives the key is unknown, so the chain rates the header
+;; optimistically. That pulls the body in; the real key then settles the rank.
+(define (%body-ranked-work header b previous-work)
+  (+ previous-work (if b (%body-key b) 0)))
+
+(define (%body-ranked-better? candidate incumbent)
+  (cond
+    ;; A height a later block already builds on is settled. A better sibling
+    ;; arriving afterwards must not reorganise it, however good its key.
+    ((chain-candidate-extended? candidate) #f)
+    ;; Any unsettled candidate beats a settled height, which is how selection
+    ;; leaves genesis and follows the chain forward.
+    ((chain-candidate-extended? incumbent) #t)
+    ((< (chain-candidate-work candidate) (chain-candidate-work incumbent)) #t)
+    ((> (chain-candidate-work candidate) (chain-candidate-work incumbent)) #f)
+    ;; Equal keys break on the lower hash, so the choice does not depend on
+    ;; which block was seen first.
+    (else
+     (< (bytevector-u8-ref (chain-candidate-hash candidate) 31)
+        (bytevector-u8-ref (chain-candidate-hash incumbent) 31)))))
+
+(define %body-ranked-rules
+  (header-rules accept?: (header-rules-accept? bitcoin-header-rules)
+                chain-work: %body-ranked-work
+                better-chain?: %body-ranked-better?))
+
+;; The same rule with the settled-height guard removed, so a test can show the
+;; guard is what protects an extended height rather than some other accident.
+(define %unguarded-body-ranked-rules
+  (header-rules accept?: (header-rules-accept? bitcoin-header-rules)
+                chain-work: %body-ranked-work
+                better-chain?: (lambda (candidate incumbent)
+                                 (or (chain-candidate-extended? incumbent)
+                                     (< (chain-candidate-work candidate)
+                                        (chain-candidate-work incumbent))))))
+
+(define (rules-extensions rules)
+  (list (cons 'consensus (list (cons 'rules rules)))))
+
 (define (test-chain seed-peers extensions)
   (let ((genesis (chain-config-genesis-header* bitcoin-regtest-chain*)))
     (chain-config* name: "test-chain"
@@ -247,6 +316,15 @@
 
 (define (mine-next-after previous time)
   (mine-header (list previous) time #x207fffff))
+
+;; A header Bitcoin rejects: wrong bits for the chain and no proof-of-work.
+(define (unmined-next previous time)
+  (block-header version: 1
+                previous-block: (block-header-hash previous)
+                merkle-root: %zero32
+                time: time
+                bits: #x1d00ffff
+                nonce: 0))
 
 (define (make-coinbase-tx height value)
   (transaction
@@ -322,6 +400,27 @@
 (define (make-coinbase-block previous-headers height time)
   (mine-block previous-headers
               (list (make-coinbase-tx height (block-subsidy height)))
+              time))
+
+;; A coinbase whose input script is padded to `script-len` bytes, which stays
+;; inside Bitcoin's 2..100 byte coinbase bounds so the block still connects.
+(define (make-padded-coinbase-tx height value script-len)
+  (transaction
+    version: 1
+    inputs: (list
+      (txin previous-output: (outpoint txid: %zero32 index: #xffffffff)
+            script-sig: (make-bytevector script-len height)
+            sequence: #xffffffff
+            witness: '()))
+    outputs: (list
+      (txout value: value script-pubkey: #u8(#x51)))
+    lock-time: 0))
+
+(define (make-keyed-block previous-headers height time script-len)
+  (mine-block previous-headers
+              (list (make-padded-coinbase-tx height
+                                             (block-subsidy height)
+                                             script-len))
               time))
 
 (define (make-coinbase-chain genesis count start-time)
@@ -550,8 +649,37 @@
                     (chain-config-name* chain))
       (assert-equal 19444
                     (chain-config-default-port* chain))
-      (assert-true (> (length (chain-config-mining-metadata* chain))
-                      0))))
+      (assert-equal '((rule . external)
+                      (irc-channel . "#sigilcoin"))
+                    (chain-config-mining-metadata* chain))))
+
+  (test "declares sigilcoin header rules as externally owned"
+    (let ((chain (chain-config-by-name* "sigilcoin")))
+      (assert-equal '((rules . external))
+                    (chain-config-extension* chain 'consensus '()))
+      ;; The rules live in the SigilCoin project, so this repo cannot resolve
+      ;; them and must not silently fall back to Bitcoin proof-of-work.
+      (assert-error (chain-config-header-rules* chain))))
+
+  (test "resolves bitcoin header rules for chains without an override"
+    (assert-true (eq? bitcoin-header-rules
+                      (chain-config-header-rules* bitcoin-mainnet-chain*)))
+    (assert-true (eq? bitcoin-header-rules
+                      (chain-config-header-rules* bitcoin-regtest-chain*)))
+    (assert-true (eq? bitcoin-header-rules
+                      (chain-config-header-rules* (test-chain '() '()))))
+    (assert-equal '()
+                  (chain-config-extension* bitcoin-mainnet-chain*
+                                           'consensus
+                                           '())))
+
+  (test "resolves chain-supplied header rules"
+    (let ((chain (test-chain '() (rules-extensions %shortest-chain-rules))))
+      (assert-true (eq? %shortest-chain-rules
+                        (chain-config-header-rules* chain)))
+      (assert-error
+        (chain-config-header-rules*
+          (test-chain '() (rules-extensions 'not-a-rules-record))))))
 
   (test "keeps sigilcoin node runtime config chain-local"
     (let ((chain (chain-config-by-name* "sigilcoin")))
@@ -616,6 +744,137 @@
                       (node-status-snapshot-header-count* status))
         (assert-true (same-header? h2 (node-best-header* n)))
         (node-close* n))))
+
+  (test "keeps bitcoin tip selection for a chain without a rules override"
+    (let* ((dir (test-data-dir))
+           (chain (test-chain '() '()))
+           (n (node-open* chain dir))
+           (h0 (chain-config-genesis-header* chain))
+           (h1 (mine-next (list h0) 1296688602))
+           (h2 (mine-next (list h0 h1) 1296689202)))
+      (assert-equal 2 (node-ingest-headers* n (list h1 h2)))
+      (assert-equal 2
+                    (node-status-snapshot-best-height* (node-status* n)))
+      (assert-true (same-header? h2 (node-best-header* n)))
+      (node-close* n)))
+
+  (test "uses the chain fork-choice rule for tip selection"
+    (let* ((dir (test-data-dir))
+           (chain (test-chain '() (rules-extensions %shortest-chain-rules)))
+           (n (node-open* chain dir))
+           (h0 (chain-config-genesis-header* chain))
+           (h1 (mine-next (list h0) 1296688602))
+           (h2 (mine-next (list h0 h1) 1296689202)))
+      (assert-equal 2 (node-ingest-headers* n (list h1 h2)))
+      (let ((status (node-status* n)))
+        ;; All three headers are stored, but the inverted comparator ranks
+        ;; genesis above the longer chain Bitcoin would pick.
+        (assert-equal 3
+                      (node-status-snapshot-header-count* status))
+        (assert-equal 0
+                      (node-status-snapshot-best-height* status))
+        (assert-true (same-header? h0 (node-best-header* n))))
+      (node-close* n)))
+
+  (test "ranks by a body-derived key that settles when the block validates"
+    (let* ((dir (test-data-dir))
+           (chain (test-chain '() (rules-extensions %body-ranked-rules)))
+           (n (node-open* chain dir))
+           (h0 (chain-config-genesis-header* chain))
+           (long-block (make-keyed-block (list h0) 1 1296688602 40))
+           (long-header (block-header-field long-block))
+           (short-block (make-keyed-block (list h0) 1 1296689202 4))
+           (short-header (block-header-field short-block)))
+      ;; Only one block exists at height 1, so it takes the tip and its key
+      ;; settles when its body validates.
+      (assert-equal 1 (node-ingest-headers* n (list long-header)))
+      (node-store-block* n long-block)
+      (assert-equal 1 (node-validate-blocks* n))
+      (assert-true (same-header? long-header (node-best-header* n)))
+      (assert-equal 40 (node-status-snapshot-best-work* (node-status* n)))
+      ;; A sibling arrives header-first. Its key is not in the header, so the
+      ;; rank is the provisional one until its body is validated.
+      (assert-equal 1 (node-ingest-headers* n (list short-header)))
+      (assert-true (same-header? short-header (node-best-header* n)))
+      (assert-equal 0 (node-status-snapshot-best-work* (node-status* n)))
+      (node-store-block* n short-block)
+      (assert-equal 1 (node-validate-blocks* n))
+      ;; The settled key beats the incumbent's, so the shorter body keeps the
+      ;; tip. Bitcoin's rule could not have expressed this: both headers carry
+      ;; the same work.
+      (assert-true (same-header? short-header (node-best-header* n)))
+      (assert-equal 4 (node-status-snapshot-best-work* (node-status* n)))
+      (assert-equal 1 (node-status-snapshot-best-height* (node-status* n)))
+      (node-close* n)))
+
+  (test "refuses to replace a tip height a later block already extends"
+    (let* ((chain (test-chain '() (rules-extensions %body-ranked-rules)))
+           (unguarded-chain (test-chain
+                              '()
+                              (rules-extensions
+                                %unguarded-body-ranked-rules)))
+           (h0 (chain-config-genesis-header* chain))
+           (long-block (make-keyed-block (list h0) 1 1296688602 40))
+           (long-header (block-header-field long-block))
+           (child-block (make-keyed-block (list h0 long-header)
+                                          2
+                                          1296689202
+                                          40))
+           (child-header (block-header-field child-block))
+           ;; A strictly better sibling of the settled height, arriving late.
+           (short-block (make-keyed-block (list h0) 1 1296689802 4))
+           (short-header (block-header-field short-block))
+           (n (node-open* chain (test-data-dir)))
+           (unguarded (node-open* unguarded-chain (test-data-dir))))
+      (assert-equal 2 (node-ingest-headers* n (list long-header child-header)))
+      (store-blocks n (list long-block child-block))
+      (assert-equal 2 (node-validate-blocks* n))
+      (assert-true (same-header? child-header (node-best-header* n)))
+      ;; Height 1 is extended by the height 2 block, so the better sibling is
+      ;; stored but must not become the tip.
+      (assert-equal 1 (node-ingest-headers* n (list short-header)))
+      (node-store-block* n short-block)
+      (assert-equal 0 (node-validate-blocks* n))
+      (assert-true (same-header? child-header (node-best-header* n)))
+      (assert-equal 2 (node-status-snapshot-best-height* (node-status* n)))
+      (assert-equal 4 (node-status-snapshot-header-count* (node-status* n)))
+      ;; Without the settled-height guard the same key does take the tip, so
+      ;; it is the candidate's extension state that refuses the reorg.
+      (assert-equal 2 (node-ingest-headers* unguarded
+                                            (list long-header child-header)))
+      (store-blocks unguarded (list long-block child-block))
+      (assert-equal 2 (node-validate-blocks* unguarded))
+      (assert-true (same-header? child-header (node-best-header* unguarded)))
+      (assert-equal 1 (node-ingest-headers* unguarded (list short-header)))
+      (assert-true (same-header? short-header (node-best-header* unguarded)))
+      (node-close* n)
+      (node-close* unguarded)))
+
+  (test "uses the chain header acceptance rule when ingesting"
+    (let* ((dir (test-data-dir))
+           (default-chain (test-chain '() '()))
+           (custom-chain (test-chain '()
+                                     (rules-extensions
+                                       %accept-any-header-rules)))
+           (h0 (chain-config-genesis-header* default-chain))
+           (bad (unmined-next h0 1296688602))
+           (default-node (node-open* default-chain (test-data-dir)))
+           (custom-node (node-open* custom-chain dir)))
+      (assert-false (block-header-valid-after?
+                      bitcoin-regtest-consensus-params
+                      (list h0)
+                      bad))
+      (assert-error (node-ingest-headers* default-node (list bad)))
+      (assert-equal 0
+                    (node-status-snapshot-best-height*
+                      (node-status* default-node)))
+      (assert-equal 1 (node-ingest-headers* custom-node (list bad)))
+      (assert-equal 1
+                    (node-status-snapshot-best-height*
+                      (node-status* custom-node)))
+      (assert-true (same-header? bad (node-best-header* custom-node)))
+      (node-close* default-node)
+      (node-close* custom-node)))
 
   (test "persists headers across opens"
     (let* ((dir (test-data-dir))
