@@ -5,38 +5,31 @@
 (package
   name: "sigil-bitcoin-miniscript"
   version: "0.1.0"
-  sigil: "^0.17"
+  sigil: "0.20"
   description: "Bitcoin Miniscript AST, parser, type checker, and script compiler"
   url: "https://codeberg.org/sigil/sigil-bitcoin"
   license: "BSD-3-Clause"
 
   dependencies: (list
-    (from-path dir: "../sigil-bitcoin-utils"
-               package: "sigil-bitcoin-utils")
-    (from-path dir: "../sigil-bitcoin-primitives"
-               package: "sigil-bitcoin-primitives")
-    (from-path dir: "../sigil-bitcoin-encoding"
-               package: "sigil-bitcoin-encoding")
-    (from-path dir: "../sigil-bitcoin-keys"
-               package: "sigil-bitcoin-keys")
-    (from-path dir: "../sigil-bitcoin-script"
-               package: "sigil-bitcoin-script")
-    (from-path dir: "../sigil-bitcoin-tx"
-               package: "sigil-bitcoin-tx")
-    (from-path dir: "../sigil-secp256k1"
-               package: "sigil-secp256k1")
+    (from-workspace name: "sigil-bitcoin-utils")
+    (from-workspace name: "sigil-bitcoin-primitives")
+    (from-workspace name: "sigil-bitcoin-encoding")
+    (from-workspace name: "sigil-bitcoin-keys")
+    (from-workspace name: "sigil-bitcoin-script")
+    (from-workspace name: "sigil-bitcoin-tx")
+    (from-workspace name: "sigil-secp256k1")
     (from-git url: "codeberg:sigil/sigil-crypto" version: "^0.16.1"))
 
   dev-dependencies: (list
     (from-git url: "codeberg:sigil/sigil"
-              package: "sigil-stdlib" version: "^0.17")
+              package: "sigil-stdlib" version: "^0.20")
     (from-git url: "codeberg:sigil/sigil-ansi" version: "^0.16.0")
     (from-git url: "codeberg:sigil/sigil-json" version: "^0.16.0")
     (from-git url: "codeberg:sigil/sigil-version" version: "^0.16.0")
     (from-git url: "codeberg:sigil/sigil"
-              package: "sigil-test" version: "^0.17")
+              package: "sigil-test" version: "^0.20")
     (from-git url: "codeberg:sigil/sigil"
-              package: "sigil-test-runner" version: "^0.17"))
+              package: "sigil-test-runner" version: "^0.20"))
 
   tasks: (list
     (task
