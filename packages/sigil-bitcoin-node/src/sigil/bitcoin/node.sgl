@@ -352,7 +352,11 @@
     (define sigilcoin-chain
       (chain-config name: "sigilcoin"
                     network-id: "sigilcoin-main"
-                    magic: #u8(#xfa #xbf #xb5 #xda)
+                    ;; SigilCoin's own magic, mirrored from its chain config.
+                    ;; It must never be a Bitcoin magic: this placeholder
+                    ;; previously reused regtest's, which made the two
+                    ;; networks' frames indistinguishable.
+                    magic: #u8(#x8f #xd1 #xc0 #xa5)
                     default-port: 19444
                     seed-peers: '(("seed.sigilcoin.local" . 19444))
                     protocol-version: 70015
