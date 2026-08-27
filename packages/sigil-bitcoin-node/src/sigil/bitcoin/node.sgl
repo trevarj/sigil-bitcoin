@@ -24,14 +24,15 @@
     chain-config-genesis-hash chain-config-consensus-params
     chain-config-extensions
     chain-config-extension chain-config-mining-metadata
-    chain-config-header-rules
+    chain-config-header-rules chain-config-block-rules
     bitcoin-mainnet-chain bitcoin-testnet-chain bitcoin-testnet4-chain
     bitcoin-signet-chain bitcoin-regtest-chain
     chain-config-by-name
     node node?
-    node-chain node-data-dir node-db-path node-db
+    node-config node-chain node-data-dir node-db-path node-db
     node-status node-status-snapshot?
-    node-status-snapshot-chain node-status-snapshot-best-hash
+    node-status-snapshot-chain-name node-status-snapshot-chain
+    node-status-snapshot-best-hash
     node-status-snapshot-best-height node-status-snapshot-best-work
     node-status-snapshot-best-header-time
     node-status-snapshot-header-sync-lag
@@ -177,22 +178,33 @@
 
     ;;; Open node handle containing chain metadata and an SQLite connection.
     ;;;
+    ;;; The chain config field is named `config`, so the constructor keyword
+    ;;; is `config:` and the generated accessor is `node-config`. The field
+    ;;; may not be called `chain`: `(sigil core)` exports a `chain` threading
+    ;;; macro, and a consumer that macro-expands this library before
+    ;;; `define-struct` runs would rewrite the field spec into its predicate.
+    ;;; `node-chain` remains available as an alias of `node-config`.
+    ;;;
     ;;; ```scheme
     ;;; (define n (node-open bitcoin-regtest-chain "/tmp/sigil-node"))
     ;;; ```
     (define-struct node
-      (chain chain-config?)
+      (config chain-config?)
       (data-dir string?)
       (db-path string?)
       (db any?))
 
     ;;; Snapshot of persisted node header state.
     ;;;
+    ;;; The chain name field is `chain-name` for the same reason `node` uses
+    ;;; `config`, so the constructor keyword is `chain-name:`.
+    ;;; `node-status-snapshot-chain` remains available as an alias.
+    ;;;
     ;;; ```scheme
     ;;; (node-status-snapshot-best-height (node-status n))
     ;;; ```
     (define-struct node-status-snapshot
-      (chain string?)
+      (chain-name string?)
       (best-hash string?)
       (best-height integer?)
       (best-work integer?)
@@ -366,11 +378,14 @@
                     genesis-hash: (block-header-hash %sigilcoin-genesis-header)
                     consensus-params: bitcoin-regtest-consensus-params
                     ;; SigilCoin replaces hash proof-of-work with its own
-                    ;; header and fork-choice rule. The rule itself lives in
-                    ;; the SigilCoin project, so this entry only declares the
-                    ;; delegation; a runnable config attaches a `header-rules`
-                    ;; record under `(consensus (rules . ...))`.
-                    extensions: '((consensus . ((rules . external)))
+                    ;; header and fork-choice rule, and its own emission and
+                    ;; coinbase layout. Both rules live in the SigilCoin
+                    ;; project, so these entries only declare the delegation;
+                    ;; a runnable config attaches a `header-rules` record
+                    ;; under `(consensus (rules . ...))` and a `block-rules`
+                    ;; record under `(consensus (block-rules . ...))`.
+                    extensions: '((consensus . ((rules . external)
+                                                (block-rules . external)))
                                   (mining . ((rule . external)
                                              (irc-channel . "#sigilcoin"))))))
 
@@ -437,7 +452,55 @@
                (error "chain-config-header-rules: expected header rules")))))
 
     (define (node-header-rules n)
-      (chain-config-header-rules (node-chain n)))
+      (chain-config-header-rules (node-config n)))
+
+    ;;; Return the block-body validation rules for a chain.
+    ;;;
+    ;;; A chain attaches its own rules as
+    ;;; `(consensus (block-rules . <block-rules>))` in `extensions`. A chain
+    ;;; that attaches nothing uses Bitcoin's rules, so every Bitcoin chain
+    ;;; config keeps today's emission and coinbase bounds. The symbol
+    ;;; `external` declares that the rules belong to another project, which
+    ;;; must build a chain config carrying them before a node can validate
+    ;;; blocks.
+    ;;;
+    ;;; ```scheme
+    ;;; (block-rules? (chain-config-block-rules bitcoin-mainnet-chain))
+    ;;; ```
+    (define (chain-config-block-rules chain)
+      (: chain-config? -> block-rules?)
+      (let ((rules (extension-ref (chain-config-extension chain 'consensus '())
+                                  'block-rules
+                                  bitcoin-block-rules)))
+        (cond ((block-rules? rules) rules)
+              ((eq? rules 'external)
+               (error (string-append
+                        "chain-config-block-rules: chain "
+                        (chain-config-name chain)
+                        " delegates its block rules; supply a chain config"
+                        " carrying a block-rules record")))
+              (else
+               (error "chain-config-block-rules: expected block rules")))))
+
+    ;;; Return a node's chain config.
+    ;;;
+    ;;; Alias of the generated `node-config` accessor, kept because the field
+    ;;; could not stay named `chain` without colliding with the `chain`
+    ;;; threading macro `(sigil core)` exports.
+    ;;;
+    ;;; ```scheme
+    ;;; (chain-config-name (node-chain n))
+    ;;; ```
+    (define node-chain node-config)
+
+    ;;; Return the chain name recorded in a node status snapshot.
+    ;;;
+    ;;; Alias of the generated `node-status-snapshot-chain-name` accessor.
+    ;;;
+    ;;; ```scheme
+    ;;; (node-status-snapshot-chain (node-status n))
+    ;;; ```
+    (define node-status-snapshot-chain node-status-snapshot-chain-name)
 
     ;;; Return a built-in chain config by canonical or short name.
     ;;;
@@ -1395,7 +1458,7 @@
           (error "node-open: could not open SQLite database"))
         (db-create-schema db)
         (db-initialize-chain db chain)
-        (node chain: chain data-dir: data-dir db-path: db-path db: db)))
+        (node config: chain data-dir: data-dir db-path: db-path db: db)))
 
     ;;; Close a node database handle.
     ;;;
@@ -1417,7 +1480,7 @@
       (let ((row (db-best-header-row (node-db n) (node-header-rules n))))
         (if row
             (header-row->header row)
-            (chain-config-genesis-header (node-chain n)))))
+            (chain-config-genesis-header (node-config n)))))
 
     ;;; Return a snapshot of persisted header-sync state.
     ;;;
@@ -1430,7 +1493,7 @@
              (row (db-best-header-row db (node-header-rules n)))
              (rows (if row (db-chain-rows-to-row db row) '())))
         (node-status-snapshot
-          chain: (chain-config-name (node-chain n))
+          chain-name: (chain-config-name (node-config n))
           best-hash: (if row (row-ref row "hash") "")
           best-height: (if row (header-row-height row) 0)
           best-work: (if row (header-row-work row) 0)
@@ -1524,7 +1587,7 @@
                           #f
                           (header-row-work prev-row))))
               (unless (block-header-valid-after?
-                        (chain-config-consensus-params (node-chain n))
+                        (chain-config-consensus-params (node-config n))
                         previous
                         header
                         rules)
@@ -1929,7 +1992,7 @@
     (define (node-peer->p2p-address n peer)
       (let* ((address (node-peer-address peer))
              (octets (ipv4-octets address))
-             (services (chain-config-services (node-chain n))))
+             (services (chain-config-services (node-config n))))
         (cond (octets
                (p2p-address time: 0
                             services: services
@@ -1978,7 +2041,7 @@
       (when (<= max-addresses 0)
         (error "node-bootstrap-discovered-peers: max-addresses must be positive"))
       (db-set-metadata (node-db n) "bootstrap-last-result" "running")
-      (let loop ((seeds (take-up-to (chain-config-seed-peers (node-chain n))
+      (let loop ((seeds (take-up-to (chain-config-seed-peers (node-config n))
                                     max-seeds))
                  (added 0)
                  (failed? #f))
@@ -2139,7 +2202,7 @@
           (db-peer-row->peer (node-peer-row n address port)))))
 
     (define (make-node-session n start-height)
-      (let* ((chain (node-chain n))
+      (let* ((chain (node-config n))
              (addr (network-address services: (chain-config-services chain)
                                     ip: %ipv6-loopback
                                     port: (chain-config-default-port chain))))
@@ -2155,7 +2218,7 @@
           #t)))
 
     (define (write-getheaders n write-envelope)
-      (let ((chain (node-chain n)))
+      (let ((chain (node-config n)))
         (write-envelope
           (p2p-envelope
             magic: (chain-config-magic chain)
@@ -2168,7 +2231,7 @@
 
     (define (write-getaddr n write-envelope)
       (write-envelope
-        (p2p-envelope magic: (chain-config-magic (node-chain n))
+        (p2p-envelope magic: (chain-config-magic (node-config n))
                       command: "getaddr"
                       payload: (getaddr-message))))
 
@@ -2376,7 +2439,7 @@
                      p2p-max-headers-per-message))
              (headers (map header-row->header rows)))
         (write-envelope
-          (p2p-envelope magic: (chain-config-magic (node-chain n))
+          (p2p-envelope magic: (chain-config-magic (node-config n))
                         command: "headers"
                         payload: (headers-message-serialize headers)))
         (length headers)))
@@ -2396,7 +2459,7 @@
                          n
                          p2p-max-addresses-per-message)))
         (write-envelope
-          (p2p-envelope magic: (chain-config-magic (node-chain n))
+          (p2p-envelope magic: (chain-config-magic (node-config n))
                         command: "addrv2"
                         payload: (addrv2-message addresses)))
         (length addresses)))
@@ -2630,7 +2693,7 @@
             (begin
               (mark-requested-transaction-inventory db requestable peer-name)
               (write-envelope
-                (p2p-envelope magic: (chain-config-magic (node-chain n))
+                (p2p-envelope magic: (chain-config-magic (node-config n))
                               command: "getdata"
                               payload: (getdata-message requestable)))
               (length requestable)))))
@@ -2712,7 +2775,7 @@
               (db-set-sync-stage (node-db n) "block-request")
               (mark-requested-rows (node-db n) rows peer-name)
               (write-envelope
-                (p2p-envelope magic: (chain-config-magic (node-chain n))
+                (p2p-envelope magic: (chain-config-magic (node-config n))
                               command: "getdata"
                               payload: (getdata-message items)))
               (db-set-sync-stage (node-db n) "block-download")
@@ -2933,19 +2996,20 @@
                               (block-header-serialize
                                 (header-row->header row)))
                 (error "node-validate-blocks: block header mismatch"))
-              (let ((next-utxos
-                      (if (eq? 'structural
-                                (chain-validation-profile (node-chain n)))
-                          (connect-block/structural
-                            (chain-config-consensus-params (node-chain n))
-                            height
-                            utxos
-                            b)
-                          (connect-block
-                            (chain-config-consensus-params (node-chain n))
-                            height
-                            utxos
-                            b))))
+              ;; Body validation is chain-driven: the rules record carries the
+              ;; connector, emission schedule and coinbase scriptSig bounds, so
+              ;; a non-Bitcoin chain is never measured against Bitcoin's.
+              (let* ((chain (node-config n))
+                     (rules (chain-config-block-rules chain))
+                     (next-utxos
+                       ((block-rules-connect rules)
+                        rules
+                        (chain-config-consensus-params chain)
+                        height
+                        utxos
+                        b
+                        (not (eq? 'structural
+                                  (chain-validation-profile chain))))))
                 (settle-header-work n row b)
                 (apply-block-utxo-transition db b height hash-text)
                 (db-set-block-status db

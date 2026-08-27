@@ -68,7 +68,7 @@
 (define (print-probe-status label status)
   (println "~a chain=~a peers=~a headers=~a best-height=~a best-header-time=~a header-sync-lag=~a blocks=~a validated=~a stage=~a failed-stage=~a sync-error=~a last-peer-error=~a"
            label
-           (node-status-snapshot-chain status)
+           (node-status-snapshot-chain-name status)
            (node-status-snapshot-peer-count status)
            (node-status-snapshot-header-count status)
            (node-status-snapshot-best-height status)

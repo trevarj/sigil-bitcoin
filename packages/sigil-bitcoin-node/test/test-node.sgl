@@ -34,6 +34,10 @@
   (module-ref %node-module 'chain-config-mining-metadata))
 (define chain-config-header-rules*
   (module-ref %node-module 'chain-config-header-rules))
+(define chain-config-block-rules*
+  (module-ref %node-module 'chain-config-block-rules))
+(define node-config* (module-ref %node-module 'node-config))
+(define node-chain* (module-ref %node-module 'node-chain))
 (define bitcoin-mainnet-chain* (module-ref %node-module 'bitcoin-mainnet-chain))
 (define bitcoin-testnet-chain* (module-ref %node-module 'bitcoin-testnet-chain))
 (define bitcoin-testnet4-chain* (module-ref %node-module 'bitcoin-testnet4-chain))
@@ -100,6 +104,8 @@
   (module-ref %node-module 'node-mempool-entry-last-error))
 (define node-status-snapshot-chain*
   (module-ref %node-module 'node-status-snapshot-chain))
+(define node-status-snapshot-chain-name*
+  (module-ref %node-module 'node-status-snapshot-chain-name))
 (define node-status-snapshot-best-height*
   (module-ref %node-module 'node-status-snapshot-best-height))
 (define node-status-snapshot-best-work*
@@ -254,6 +260,21 @@
 
 (define (rules-extensions rules)
   (list (cons 'consensus (list (cons 'rules rules)))))
+
+(define (consensus-extensions entries)
+  (list (cons 'consensus entries)))
+
+;; A fake non-Bitcoin block profile. Emission is flat and larger than
+;; Bitcoin's subsidy at the same height, and the coinbase input script runs
+;; well past Bitcoin's 100-byte cap. It reuses Bitcoin's connector, which is
+;; what a chain that changes only emission and coinbase layout needs.
+(define %fake-subsidy-value 10000000000)
+(define %fake-coinbase-script-len 240)
+
+(define %fake-block-rules
+  (block-rules connect: (block-rules-connect bitcoin-block-rules)
+               subsidy: (lambda (height) %fake-subsidy-value)
+               coinbase-script-bounds: (cons 2 512)))
 
 (define (test-chain seed-peers extensions)
   (let ((genesis (chain-config-genesis-header* bitcoin-regtest-chain*)))
@@ -421,6 +442,13 @@
               (list (make-padded-coinbase-tx height
                                              (block-subsidy height)
                                              script-len))
+              time))
+
+;; A block whose coinbase claims `value` and pads its input script to
+;; `script-len`, so a test can leave Bitcoin's body bounds in either direction.
+(define (make-profile-block previous-headers height time script-len value)
+  (mine-block previous-headers
+              (list (make-padded-coinbase-tx height value script-len))
               time))
 
 (define (make-coinbase-chain genesis count start-time)
@@ -653,13 +681,42 @@
                       (irc-channel . "#sigilcoin"))
                     (chain-config-mining-metadata* chain))))
 
-  (test "declares sigilcoin header rules as externally owned"
+  (test "declares sigilcoin header and block rules as externally owned"
     (let ((chain (chain-config-by-name* "sigilcoin")))
-      (assert-equal '((rules . external))
+      (assert-equal '((rules . external) (block-rules . external))
                     (chain-config-extension* chain 'consensus '()))
       ;; The rules live in the SigilCoin project, so this repo cannot resolve
-      ;; them and must not silently fall back to Bitcoin proof-of-work.
-      (assert-error (chain-config-header-rules* chain))))
+      ;; them and must not silently fall back to Bitcoin proof-of-work or to
+      ;; Bitcoin's emission and coinbase bounds.
+      (assert-error (chain-config-header-rules* chain))
+      (assert-error (chain-config-block-rules* chain))))
+
+  (test "resolves bitcoin block rules for chains without an override"
+    (assert-true (eq? bitcoin-block-rules
+                      (chain-config-block-rules* bitcoin-mainnet-chain*)))
+    (assert-true (eq? bitcoin-block-rules
+                      (chain-config-block-rules* bitcoin-regtest-chain*)))
+    (assert-true (eq? bitcoin-block-rules
+                      (chain-config-block-rules* (test-chain '() '()))))
+    ;; A chain that only replaces header rules still gets Bitcoin bodies.
+    (assert-true (eq? bitcoin-block-rules
+                      (chain-config-block-rules*
+                        (test-chain '()
+                                    (rules-extensions
+                                      %shortest-chain-rules))))))
+
+  (test "resolves chain-supplied block rules"
+    (let ((chain (test-chain
+                   '()
+                   (consensus-extensions
+                     (list (cons 'block-rules %fake-block-rules))))))
+      (assert-true (eq? %fake-block-rules
+                        (chain-config-block-rules* chain)))
+      (assert-error
+        (chain-config-block-rules*
+          (test-chain '()
+                      (consensus-extensions
+                        (list (cons 'block-rules 'not-a-rules-record))))))))
 
   (test "resolves bitcoin header rules for chains without an override"
     (assert-true (eq? bitcoin-header-rules
@@ -722,6 +779,22 @@
       (assert-true
         (same-header? (chain-config-genesis-header* bitcoin-regtest-chain*)
                       (node-best-header* n)))
+      (node-close* n)))
+
+  (test "exposes the renamed chain fields under their old names"
+    (let* ((dir (test-data-dir))
+           (n (node-open* bitcoin-regtest-chain* dir))
+           (status (node-status* n)))
+      ;; Neither field could stay named `chain`: `(sigil core)` exports a
+      ;; `chain` threading macro, and a consumer that expands this library
+      ;; before `define-struct` runs rewrites the field spec to its predicate.
+      ;; The old accessor names survive as aliases.
+      (assert-true (eq? bitcoin-regtest-chain* (node-config* n)))
+      (assert-true (eq? (node-config* n) (node-chain* n)))
+      (assert-equal "bitcoin-regtest"
+                    (node-status-snapshot-chain-name* status))
+      (assert-equal (node-status-snapshot-chain-name* status)
+                    (node-status-snapshot-chain* status))
       (node-close* n)))
 
   (test "ingests linked valid headers"
@@ -805,6 +878,71 @@
       (assert-true (same-header? short-header (node-best-header* n)))
       (assert-equal 4 (node-status-snapshot-best-work* (node-status* n)))
       (assert-equal 1 (node-status-snapshot-best-height* (node-status* n)))
+      (node-close* n)))
+
+  (test "validates a non-bitcoin block profile end to end"
+    (let* ((chain (test-chain
+                    '()
+                    (consensus-extensions
+                      (list (cons 'rules %body-ranked-rules)
+                            (cons 'block-rules %fake-block-rules)))))
+           ;; The same chain minus the block-rules override, so the only
+           ;; difference between the two nodes is the body seam.
+           (control-chain (test-chain '()
+                                      (rules-extensions %body-ranked-rules)))
+           (n (node-open* chain (test-data-dir)))
+           (control (node-open* control-chain (test-data-dir)))
+           (h0 (chain-config-genesis-header* chain))
+           (b (make-profile-block (list h0)
+                                  1
+                                  1296688602
+                                  %fake-coinbase-script-len
+                                  %fake-subsidy-value))
+           (header (block-header-field b)))
+      ;; Bitcoin's body rules reject this block twice over.
+      (assert-true (> %fake-coinbase-script-len
+                      (cdr bitcoin-coinbase-script-bounds)))
+      (assert-true (> %fake-subsidy-value (block-subsidy 1)))
+      (assert-equal 1 (node-ingest-headers* control (list header)))
+      (node-store-block* control b)
+      (assert-equal 0 (node-validate-blocks* control))
+      (assert-equal 0 (node-status-snapshot-validated-block-count*
+                        (node-status* control)))
+      ;; The chain's own rules accept it, and the body-derived header work
+      ;; settles through the existing mechanism once the body validates.
+      (assert-equal 1 (node-ingest-headers* n (list header)))
+      (assert-equal 0 (node-status-snapshot-best-work* (node-status* n)))
+      (node-store-block* n b)
+      (assert-equal 1 (node-validate-blocks* n))
+      (assert-true (same-header? header (node-best-header* n)))
+      (assert-equal 1 (node-status-snapshot-best-height* (node-status* n)))
+      (assert-equal 1 (node-status-snapshot-validated-block-count*
+                        (node-status* n)))
+      (assert-equal %fake-coinbase-script-len
+                    (node-status-snapshot-best-work* (node-status* n)))
+      (node-close* n)
+      (node-close* control)))
+
+  (test "applies the chain's own subsidy ceiling when validating bodies"
+    (let* ((chain (test-chain
+                    '()
+                    (consensus-extensions
+                      (list (cons 'block-rules %fake-block-rules)))))
+           (n (node-open* chain (test-data-dir)))
+           (h0 (chain-config-genesis-header* chain))
+           (b (make-profile-block (list h0)
+                                  1
+                                  1296688602
+                                  %fake-coinbase-script-len
+                                  (+ 1 %fake-subsidy-value)))
+           (header (block-header-field b)))
+      ;; Replacing the emission schedule is not a bypass: one satoshi over
+      ;; the chain's own subsidy still fails.
+      (assert-equal 1 (node-ingest-headers* n (list header)))
+      (node-store-block* n b)
+      (assert-equal 0 (node-validate-blocks* n))
+      (assert-equal 0 (node-status-snapshot-validated-block-count*
+                        (node-status* n)))
       (node-close* n)))
 
   (test "refuses to replace a tip height a later block already extends"

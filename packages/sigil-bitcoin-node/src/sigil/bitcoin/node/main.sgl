@@ -143,7 +143,7 @@
             #f)))
 
     (define (print-status status)
-      (println "chain: ~a" (node-status-snapshot-chain status))
+      (println "chain: ~a" (node-status-snapshot-chain-name status))
       (println "best-height: ~a" (node-status-snapshot-best-height status))
       (println "best-hash: ~a" (node-status-snapshot-best-hash status))
       (println "best-work: ~a" (node-status-snapshot-best-work status))
@@ -312,7 +312,7 @@
                          (error "peers add: missing HOST:PORT"))
                        (let* ((peer (parse-peer (car rest)
                                                 (chain-config-default-port
-                                                  (node-chain n))))
+                                                  (node-config n))))
                               (saved (node-add-peer n (car peer) (cdr peer))))
                          (print-peer saved)))
                       ((string=? subcommand "bootstrap")
@@ -338,7 +338,7 @@
                          (error "peers remove: missing HOST:PORT"))
                        (let ((peer (parse-peer (car rest)
                                                (chain-config-default-port
-                                                 (node-chain n)))))
+                                                 (node-config n)))))
                          (node-remove-peer n (car peer) (cdr peer))
                          (println "removed ~a"
                                   (peer-endpoint-text (car peer)
@@ -348,7 +348,7 @@
                          (error "peers test: missing HOST:PORT"))
                        (let* ((peer (parse-peer (car rest)
                                                 (chain-config-default-port
-                                                  (node-chain n))))
+                                                  (node-config n))))
                               (timeouts (peer-timeouts rest))
                               (proxy (socks5-endpoint rest))
                               (tested (node-test-peer n
@@ -537,7 +537,7 @@
             (error (string-append command ": peer sync failed"))
             (let* ((peer (parse-peer
                            (car texts)
-                           (chain-config-default-port (node-chain n))))
+                           (chain-config-default-port (node-config n))))
                    (status (node-sync-configured-peer
                              n
                              (car peer)
@@ -556,7 +556,7 @@
             (error (string-append command ": block sync failed"))
             (let* ((peer (parse-peer
                            (car texts)
-                           (chain-config-default-port (node-chain n))))
+                           (chain-config-default-port (node-config n))))
                    (status (node-fetch-blocks-configured-peer
                              n
                              (car peer)
@@ -716,7 +716,7 @@
         (lambda (text)
           (let ((peer (parse-peer
                         text
-                        (chain-config-default-port (node-chain n)))))
+                        (chain-config-default-port (node-config n)))))
             (node-add-peer n (car peer) (cdr peer))))
         peer-texts))
 
@@ -1115,7 +1115,7 @@
                          args
                          "--port"
                          (number->string
-                           (chain-config-default-port (node-chain n)))))
+                           (chain-config-default-port (node-config n)))))
                  (backlog (status-number args "--backlog" "8"))
                  (max-connections
                    (status-number args "--max-connections" "1"))

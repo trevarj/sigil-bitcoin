@@ -118,6 +118,20 @@
       (txout value: value script-pubkey: #u8(#x51)))
     lock-time: 0))
 
+;; A coinbase whose input script is padded to `script-len` bytes, used to show
+;; that the coinbase bound is read from the active block rules.
+(define (make-padded-coinbase-tx value script-len)
+  (transaction
+    version: 1
+    inputs: (list
+      (txin previous-output: (outpoint txid: %zero32 index: #xffffffff)
+            script-sig: (make-bytevector script-len #x04)
+            sequence: #xffffffff
+            witness: '()))
+    outputs: (list
+      (txout value: value script-pubkey: #u8(#x51)))
+    lock-time: 0))
+
 (define (make-bip34-coinbase-tx value height)
   (transaction
     version: 1
@@ -1167,6 +1181,145 @@
            (b (make-test-block (list coinbase spend-a spend-b) 2)))
       (assert-error
         (connect-block bitcoin-regtest-consensus-params 100 initial b)))))
+
+;; A fake non-Bitcoin profile: emission is flat and larger than Bitcoin's
+;; subsidy at the same height, and the coinbase input carries far more than
+;; Bitcoin's 100-byte cap. It reuses Bitcoin's connector, which is the case a
+;; chain that changes only emission and coinbase layout needs.
+(define %fake-subsidy-value 10000000000)
+(define %fake-coinbase-script-len 240)
+
+(define %fake-block-rules
+  (block-rules connect: (block-rules-connect bitcoin-block-rules)
+               subsidy: (lambda (height) %fake-subsidy-value)
+               coinbase-script-bounds: (cons 2 512)))
+
+(test-group "block rules"
+  (test "defaults to bitcoin emission and coinbase bounds"
+    (assert-true (block-rules? bitcoin-block-rules))
+    (assert-equal '(2 . 100)
+                  (block-rules-coinbase-script-bounds bitcoin-block-rules))
+    (assert-equal '(2 . 100) bitcoin-coinbase-script-bounds)
+    (assert-equal (block-subsidy 0)
+                  ((block-rules-subsidy bitcoin-block-rules) 0))
+    (assert-equal (block-subsidy 210000)
+                  ((block-rules-subsidy bitcoin-block-rules) 210000)))
+
+  (test "passing bitcoin block rules matches omitting them"
+    (let* ((coinbase (make-coinbase-tx (block-subsidy 0)))
+           (b (make-test-block (list coinbase) 1))
+           (implicit (connect-block bitcoin-regtest-consensus-params 0 '() b))
+           (explicit (connect-block bitcoin-regtest-consensus-params
+                                    0
+                                    '()
+                                    b
+                                    bitcoin-block-rules)))
+      (assert-equal (utxo-entry-height
+                      (utxo-set-lookup
+                        implicit
+                        (outpoint txid: (transaction-txid coinbase) index: 0)))
+                    (utxo-entry-height
+                      (utxo-set-lookup
+                        explicit
+                        (outpoint txid: (transaction-txid coinbase)
+                                  index: 0))))))
+
+  (test "rejects a rules argument that is not a block-rules record"
+    (let* ((coinbase (make-coinbase-tx (block-subsidy 0)))
+           (b (make-test-block (list coinbase) 1)))
+      (assert-error
+        (connect-block bitcoin-regtest-consensus-params 0 '() b 'nonsense))
+      (assert-error
+        (connect-block/structural bitcoin-regtest-consensus-params
+                                  0
+                                  '()
+                                  b
+                                  'nonsense))
+      (assert-error (connect-block bitcoin-regtest-consensus-params
+                                   0
+                                   '()
+                                   b
+                                   bitcoin-block-rules
+                                   'garbage))))
+
+  (test "connects a block bitcoin would reject on subsidy and coinbase size"
+    (let* ((coinbase (make-padded-coinbase-tx %fake-subsidy-value
+                                              %fake-coinbase-script-len))
+           (b (make-test-block (list coinbase) 1))
+           (op (outpoint txid: (transaction-txid coinbase) index: 0)))
+      ;; Bitcoin rejects this block twice over: the scriptSig is 240 bytes and
+      ;; the claim is twice the height-1 subsidy.
+      (assert-true (> %fake-coinbase-script-len
+                      (cdr bitcoin-coinbase-script-bounds)))
+      (assert-true (> %fake-subsidy-value (block-subsidy 1)))
+      (assert-error (connect-block bitcoin-regtest-consensus-params 1 '() b))
+      (let ((utxos (connect-block bitcoin-regtest-consensus-params
+                                  1
+                                  '()
+                                  b
+                                  %fake-block-rules)))
+        (assert-true (utxo-entry-coinbase? (utxo-set-lookup utxos op)))
+        (assert-equal %fake-subsidy-value
+                      (txout-value
+                        (utxo-entry-output (utxo-set-lookup utxos op)))))))
+
+  (test "enforces the chain's own subsidy and coinbase bounds"
+    (let ((over-subsidy
+            (make-test-block
+              (list (make-padded-coinbase-tx (+ 1 %fake-subsidy-value)
+                                             %fake-coinbase-script-len))
+              1))
+          (over-script
+            (make-test-block
+              (list (make-padded-coinbase-tx %fake-subsidy-value 513))
+              1)))
+      ;; The replacement rules are limits, not a bypass.
+      (assert-error (connect-block bitcoin-regtest-consensus-params
+                                   1
+                                   '()
+                                   over-subsidy
+                                   %fake-block-rules))
+      (assert-error (connect-block bitcoin-regtest-consensus-params
+                                   1
+                                   '()
+                                   over-script
+                                   %fake-block-rules))))
+
+  (test "routes structural connection through the chain's rules too"
+    (let* ((coinbase (make-padded-coinbase-tx %fake-subsidy-value
+                                              %fake-coinbase-script-len))
+           (b (make-test-block (list coinbase) 1)))
+      (assert-error
+        (connect-block/structural bitcoin-regtest-consensus-params 1 '() b))
+      (let ((utxos (connect-block/structural bitcoin-regtest-consensus-params
+                                             1
+                                             '()
+                                             b
+                                             %fake-block-rules)))
+        (assert-true
+          (utxo-entry-coinbase?
+            (utxo-set-lookup
+              utxos
+              (outpoint txid: (transaction-txid coinbase) index: 0)))))))
+
+  (test "lets a chain replace the connector outright"
+    (let* ((calls '())
+           (rules (block-rules
+                    connect: (lambda (rules params height utxos b verify?)
+                               (set! calls (cons height calls))
+                               'replaced)
+                    subsidy: (lambda (height) 0)
+                    coinbase-script-bounds: (cons 0 0)))
+           (b (make-test-block (list (make-coinbase-tx 0)) 1)))
+      ;; Nothing about the block is inspected, which is what a chain whose
+      ;; body is not a Bitcoin block needs.
+      (assert-equal 'replaced
+                    (connect-block bitcoin-regtest-consensus-params
+                                   7
+                                   '()
+                                   b
+                                   rules))
+      (assert-equal '(7) calls))))
 
 (test-group "blocks"
   (test "serializes and parses synthetic block"

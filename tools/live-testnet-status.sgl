@@ -17,7 +17,7 @@
 (define status (node-status n))
 
 (println "status chain=~a peers=~a headers=~a best-height=~a best-header-time=~a header-sync-lag=~a blocks=~a validated=~a stage=~a failed-stage=~a sync-error=~a last-peer-error=~a"
-         (node-status-snapshot-chain status)
+         (node-status-snapshot-chain-name status)
          (node-status-snapshot-peer-count status)
          (node-status-snapshot-header-count status)
          (node-status-snapshot-best-height status)

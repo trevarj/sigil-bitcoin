@@ -58,6 +58,11 @@
     header-rules-accept? header-rules-chain-work
     header-rules-better-chain?
     bitcoin-header-rules
+    block-rules block-rules?
+    block-rules-connect block-rules-subsidy
+    block-rules-coinbase-script-bounds
+    bitcoin-block-rules
+    bitcoin-coinbase-script-bounds
     block-header-valid-after?
     validate-header-chain
     header-chain-valid?
@@ -553,6 +558,39 @@
                     chain-work: bitcoin-chain-work
                     better-chain?: bitcoin-better-chain?))
 
+    ;;; Pluggable block-body validation rules.
+    ;;;
+    ;;; `connect` is called as
+    ;;; `(connect rules params height utxos block verify-scripts?)`. It
+    ;;; returns the updated UTXO set and raises on an invalid block. It is
+    ;;; handed the rules record it was reached through, so the default
+    ;;; connector reads `subsidy` and `coinbase-script-bounds` from the
+    ;;; chain's own record rather than from Bitcoin's constants.
+    ;;;
+    ;;; `subsidy` is called as `(subsidy height)` and returns the newly
+    ;;; issued value, in the chain's smallest unit, that a coinbase may claim
+    ;;; on top of the fees it collects.
+    ;;;
+    ;;; `coinbase-script-bounds` is an inclusive `(min . max)` pair of
+    ;;; coinbase scriptSig byte lengths. Bitcoin uses `(2 . 100)`; a chain
+    ;;; that commits data in its coinbase input raises the upper bound.
+    ;;;
+    ;;; A chain that only changes emission or coinbase size passes
+    ;;; `(block-rules-connect bitcoin-block-rules)` as its own `connect` and
+    ;;; keeps every other Bitcoin body rule. A chain whose block body is not a
+    ;;; Bitcoin block at all supplies its own procedure. This library never
+    ;;; interprets what a rule means; it only calls it.
+    ;;;
+    ;;; ```scheme
+    ;;; (block-rules connect: (block-rules-connect bitcoin-block-rules)
+    ;;;              subsidy: (lambda (height) 100000000)
+    ;;;              coinbase-script-bounds: (cons 2 512))
+    ;;; ```
+    (define-struct block-rules
+      (connect procedure?)
+      (subsidy procedure?)
+      (coinbase-script-bounds pair?))
+
     (define (rules-argument who maybe-rules)
       (cond ((null? maybe-rules)
              bitcoin-header-rules)
@@ -562,6 +600,16 @@
              (car maybe-rules))
             (else
              (error (string-append who ": expected header rules")))))
+
+    (define (block-rules-argument who maybe-rules)
+      (cond ((null? maybe-rules)
+             bitcoin-block-rules)
+            ((not (null? (cdr maybe-rules)))
+             (error (string-append who ": too many arguments")))
+            ((block-rules? (car maybe-rules))
+             (car maybe-rules))
+            (else
+             (error (string-append who ": expected block rules")))))
 
     ;;; Validate a header against the existing ordered header chain.
     ;;;
@@ -675,12 +723,25 @@
            (coinbase-outpoint? (txin-previous-output
                                  (car (transaction-inputs tx))))))
 
-    (define (validate-coinbase tx)
+    ;;; Bitcoin's inclusive `(min . max)` coinbase scriptSig byte bounds.
+    ;;;
+    ;;; ```scheme
+    ;;; (cdr bitcoin-coinbase-script-bounds) ; => 100
+    ;;; ```
+    (define bitcoin-coinbase-script-bounds '(2 . 100))
+
+    (define (validate-coinbase tx bounds)
       (unless (coinbase-transaction? tx)
         (error "coinbase: expected coinbase transaction"))
+      (unless (and (pair? bounds)
+                   (integer? (car bounds))
+                   (integer? (cdr bounds))
+                   (>= (car bounds) 0)
+                   (>= (cdr bounds) (car bounds)))
+        (error "coinbase: expected (min . max) scriptSig bounds"))
       (let* ((script (txin-script-sig (car (transaction-inputs tx))))
              (script-len (bytevector-length script)))
-        (when (or (< script-len 2) (> script-len 100))
+        (when (or (< script-len (car bounds)) (> script-len (cdr bounds)))
           (error "coinbase: scriptSig length outside consensus bounds")))
       (when (null? (transaction-outputs tx))
         (error "coinbase: expected at least one output"))
@@ -1291,8 +1352,13 @@
     ;;; are driven by `consensus-params`.
     ;;; The connector also enforces structural block transaction rules, UTXO
     ;;; availability, value conservation, coinbase maturity, subsidy, and fees.
-    (define (connect-block-core params height utxos b verify-scripts?)
-      (: consensus-params? integer? list? block? -> list?)
+    ;;;
+    ;;; Emission and coinbase scriptSig bounds come from `rules`, so this is
+    ;;; also the default `connect` for a non-Bitcoin chain that keeps every
+    ;;; other body rule. It is called through `block-rules-connect`, which is
+    ;;; why `rules` comes first.
+    (define (connect-block-core rules params height utxos b verify-scripts?)
+      (: block-rules? consensus-params? integer? list? block? any? -> list?)
       (validate-consensus-params params)
       (require-uint "connect-block height" height %u32-max)
       (validate-block b)
@@ -1303,14 +1369,14 @@
              (coinbase (car txs))
              (block-time (block-header-time (block-header-field b)))
              (indexed-utxos (utxo-set-ensure-indexed utxos)))
-        (validate-coinbase coinbase)
+        (validate-coinbase coinbase (block-rules-coinbase-script-bounds rules))
         (validate-bip34-coinbase-height params height coinbase)
         (validate-final-transaction coinbase height block-time)
         (let loop ((remaining (cdr txs))
                    (next-utxos indexed-utxos)
                    (fees 0))
           (if (null? remaining)
-              (let* ((allowed (+ (block-subsidy height) fees))
+              (let* ((allowed (+ ((block-rules-subsidy rules) height) fees))
                      (claimed (sum-money "connect-block coinbase value"
                                          (transaction-outputs coinbase))))
                 (when (> claimed allowed)
@@ -1327,17 +1393,48 @@
                       (car connected)
                       (+ fees (cadr connected))))))))
 
+    ;;; Bitcoin's block-body validation rules.
+    ;;;
+    ;;; This is the default everywhere `rules` is optional, so omitting the
+    ;;; argument is exactly Bitcoin behavior.
+    ;;;
+    ;;; ```scheme
+    ;;; ((block-rules-subsidy bitcoin-block-rules) 0) ; => 5000000000
+    ;;; ```
+    (define bitcoin-block-rules
+      (block-rules connect: connect-block-core
+                   subsidy: block-subsidy
+                   coinbase-script-bounds: bitcoin-coinbase-script-bounds))
+
     ;;; Connect a block using structural and UTXO validation but without
     ;;; executing standard script signature checks. This is useful for sync
     ;;; profiles that need to catch up before the runtime can afford full
     ;;; script validation on every historical input.
-    (define (connect-block/structural params height utxos b)
-      (: consensus-params? integer? list? block? -> list?)
-      (connect-block-core params height utxos b #f))
+    ;;;
+    ;;; The optional `rules` argument replaces the block-body rules; omitting
+    ;;; it applies Bitcoin's emission and coinbase bounds.
+    ;;;
+    ;;; ```scheme
+    ;;; (connect-block/structural params 1 utxos b)
+    ;;; ```
+    (define (connect-block/structural params height utxos b . maybe-rules)
+      (: consensus-params? integer? list? block? block-rules? ... -> list?)
+      (let ((rules (block-rules-argument "connect-block/structural"
+                                         maybe-rules)))
+        ((block-rules-connect rules) rules params height utxos b #f)))
 
-    (define (connect-block params height utxos b)
-      (: consensus-params? integer? list? block? -> list?)
-      (connect-block-core params height utxos b #t))
+    ;;; Connect a block with full validation, executing standard input scripts.
+    ;;;
+    ;;; The optional `rules` argument replaces the block-body rules; omitting
+    ;;; it applies Bitcoin's emission and coinbase bounds.
+    ;;;
+    ;;; ```scheme
+    ;;; (connect-block params 1 utxos b)
+    ;;; ```
+    (define (connect-block params height utxos b . maybe-rules)
+      (: consensus-params? integer? list? block? block-rules? ... -> list?)
+      (let ((rules (block-rules-argument "connect-block" maybe-rules)))
+        ((block-rules-connect rules) rules params height utxos b #t)))
 
     ;;; Serialize a block in Bitcoin wire order.
     (define (block-serialize b)
