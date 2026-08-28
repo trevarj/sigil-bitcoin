@@ -469,6 +469,17 @@
     (node-store-block* n (car blocks))
     (store-blocks n (cdr blocks))))
 
+;; One bounded block-request round against a peer that goes quiet: the node
+;; writes the `getdata`, records the attempt against every row it asked for
+;; and returns without ever reading a reply. That recorded attempt is the
+;; count the give-up path reads.
+(define (request-blocks-from-silent-peer n)
+  (node-download-blocks* n
+                         (lambda () (error "the peer never answered"))
+                         (lambda (envelope) #t)
+                         0
+                         8))
+
 (define (prepare-mature-utxo-node n)
   (let* ((h0 (chain-config-genesis-header* bitcoin-regtest-chain*))
          (blocks (make-coinbase-chain h0 101 1296688602)))
@@ -987,6 +998,106 @@
       (assert-true (same-header? short-header (node-best-header* unguarded)))
       (node-close* n)
       (node-close* unguarded)))
+
+  (test "refuses to roll the active chain back onto a header with no body"
+    ;; A header is only a promise of a block. On a chain whose ranking key is
+    ;; not proof-of-work, making that promise is free, so a peer can invent a
+    ;; sibling of the tip that outranks the validated chain and back it with
+    ;; nothing. Which chain to DOWNLOAD must still follow it — that is what
+    ;; makes a genuinely better sibling fetchable — but which chain is ACTIVE
+    ;; must not.
+    (let* ((chain (test-chain '() (rules-extensions %body-ranked-rules)))
+           (n (node-open* chain (test-data-dir)))
+           (h0 (chain-config-genesis-header* chain))
+           (b1 (make-keyed-block (list h0) 1 1296688602 40))
+           (h1 (block-header-field b1))
+           (b2 (make-keyed-block (list h0 h1) 2 1296689202 40))
+           (h2 (block-header-field b2))
+           ;; A sibling of the tip height with a better key. Its body is built
+           ;; here only so a later step can store it; the node is never given
+           ;; it in this first phase.
+           (ghost (make-keyed-block (list h0 h1) 2 1296689802 4))
+           (ghost-header (block-header-field ghost)))
+      (assert-equal 2 (node-ingest-headers* n (list h1 h2)))
+      (store-blocks n (list b1 b2))
+      (assert-equal 2 (node-validate-blocks* n))
+      (assert-equal 2 (node-status-snapshot-validated-block-count*
+                        (node-status* n)))
+      (assert-equal 2 (node-status-snapshot-best-block-height*
+                        (node-status* n)))
+      ;; The bodyless header does take the best-header slot, and must.
+      (assert-equal 1 (node-ingest-headers* n (list ghost-header)))
+      (assert-true (same-header? ghost-header (node-best-header* n)))
+      ;; That is all it takes. Nothing validated is discarded for it.
+      (assert-equal 0 (node-validate-blocks* n))
+      (assert-equal 2 (node-status-snapshot-validated-block-count*
+                        (node-status* n)))
+      (assert-equal 2 (node-status-snapshot-best-block-height*
+                        (node-status* n)))
+      (assert-equal (hex-encode (block-header-hash h2))
+                    (node-status-snapshot-best-block-hash* (node-status* n)))
+      ;; Reopening rebuilds the active-chain metadata, which must not be a
+      ;; second route to the same rollback.
+      (assert-equal 0 (node-validate-blocks* n))
+      (assert-equal 2 (node-status-snapshot-validated-block-count*
+                        (node-status* n)))
+      ;; The body is what earns the reorganisation, and it still earns it:
+      ;; storing it moves the active chain onto the better sibling.
+      (node-store-block* n ghost)
+      (assert-equal 1 (node-validate-blocks* n))
+      (assert-true (same-header? ghost-header (node-best-header* n)))
+      (assert-equal (hex-encode (block-header-hash ghost-header))
+                    (node-status-snapshot-best-block-hash* (node-status* n)))
+      (assert-equal 2 (node-status-snapshot-validated-block-count*
+                        (node-status* n)))
+      (node-close* n)))
+
+  (test "gives up on a best header whose body never arrives"
+    ;; Refusing the rollback keeps state safe but not live: while the
+    ;; unbacked header holds the best-header slot, block download follows it
+    ;; and never asks for the chain that can actually be validated. The
+    ;; header's tenure in that slot is therefore bounded by how many times
+    ;; its body has been asked for.
+    (let* ((chain (test-chain '() (rules-extensions %body-ranked-rules)))
+           (n (node-open* chain (test-data-dir)))
+           (h0 (chain-config-genesis-header* chain))
+           (b1 (make-keyed-block (list h0) 1 1296688602 40))
+           (h1 (block-header-field b1))
+           (b2 (make-keyed-block (list h0 h1) 2 1296689202 40))
+           (h2 (block-header-field b2))
+           (ghost (make-keyed-block (list h0 h1) 2 1296689802 4))
+           (ghost-header (block-header-field ghost)))
+      (assert-equal 2 (node-ingest-headers* n (list h1 h2)))
+      (store-blocks n (list b1 b2))
+      (assert-equal 2 (node-validate-blocks* n))
+      (assert-equal 1 (node-ingest-headers* n (list ghost-header)))
+      (assert-true (same-header? ghost-header (node-best-header* n)))
+      ;; One silent peer is not a verdict: the tenure is bounded, not instant.
+      (request-blocks-from-silent-peer n)
+      (assert-true (same-header? ghost-header (node-best-header* n)))
+      (let loop ((attempts 1))
+        (cond ((not (same-header? ghost-header (node-best-header* n)))
+               (assert-true (> attempts 1)))
+              ((> attempts 32)
+               (error "unbacked header never released the best-header slot"))
+              (else
+               (request-blocks-from-silent-peer n)
+               (loop (+ attempts 1)))))
+      ;; The slot goes back to the chain the node can validate.
+      (assert-true (same-header? h2 (node-best-header* n)))
+      (assert-equal 2 (node-status-snapshot-best-height* (node-status* n)))
+      ;; Deprioritised, never condemned. Marking the branch invalid would let
+      ;; anyone retire a competitor by withholding its blocks, so the header
+      ;; stays stored and stays valid.
+      (assert-equal 4 (node-status-snapshot-header-count* (node-status* n)))
+      ;; And a body that turns up late still wins: the give-up is read from
+      ;; the blocks table on every ranking pass, so storing the block ends it.
+      (node-store-block* n ghost)
+      (assert-true (same-header? ghost-header (node-best-header* n)))
+      (assert-equal 1 (node-validate-blocks* n))
+      (assert-equal (hex-encode (block-header-hash ghost-header))
+                    (node-status-snapshot-best-block-hash* (node-status* n)))
+      (node-close* n)))
 
   (test "uses the chain header acceptance rule when ingesting"
     (let* ((dir (test-data-dir))

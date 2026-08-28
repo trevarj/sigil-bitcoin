@@ -121,6 +121,18 @@
     ;; until consensus params grow a chain-specific maturity field.
     (define %node-coinbase-maturity 100)
     (define %block-request-stale-seconds 120)
+    ;; How many times a body may be asked for, and never delivered, before the
+    ;; header that claims it stops holding the best-header slot. A header is
+    ;; only a promise of a block; on a chain whose headers are cheap, an
+    ;; unbacked one would otherwise point block download at a branch that can
+    ;; never be validated and starve the chain that can.
+    (define %block-request-give-up-count 8)
+    ;; ...and how long that give-up lasts. It is a cooldown, not a verdict:
+    ;; the branch is never marked invalid, one more attempt is made after each
+    ;; window, and a body that turns up late outranks again the moment it is
+    ;; stored. That is what keeps the give-up from being a way to retire an
+    ;; honest chain by withholding its blocks.
+    (define %block-give-up-seconds 600)
     (define %transaction-request-stale-seconds 120)
     (define %validation-attempt-blocks 128)
     (define %ipv6-loopback
@@ -746,14 +758,18 @@
 
     (define (db-reconcile-active-chain-tip db rules genesis-hash-text)
       ;; Older databases predate active-chain metadata. Rebuild it from the
-      ;; validated prefix on the current best-header chain at open time.
+      ;; validated prefix on the current best-header chain at open time —
+      ;; subject to the same rule `node-validate-blocks` follows, so reopening
+      ;; a node is not a second way to walk the active chain backwards onto a
+      ;; branch whose body has not arrived.
       (let* ((best (db-best-header-row db rules))
              (rows (if best (db-chain-rows-to-row db best) '()))
-             (height (validated-on-best-chain-height db rows))
-             (row (row-at-height rows height)))
-        (if row
-            (db-set-active-chain-tip db (row-ref row "hash") height)
-            (db-set-active-chain-tip db genesis-hash-text 0))))
+             (height (validated-on-best-chain-height db rows)))
+        (when (active-chain-may-follow? db rows height)
+          (let ((row (row-at-height rows height)))
+            (if row
+                (db-set-active-chain-tip db (row-ref row "hash") height)
+                (db-set-active-chain-tip db genesis-hash-text 0))))))
 
     (define (db-peer-count db)
       (let ((row (sqlite-query-row db "SELECT COUNT(*) AS count FROM peers")))
@@ -816,28 +832,84 @@
                        body-known?: (header-row-body-known? row)
                        extended?: (< (header-row-height row) max-height)))
 
+    ;; Bodies the node asked for `%block-request-give-up-count` times without
+    ;; ever receiving one, and whose cooldown has not yet run out.
+    (define (db-given-up-block-hashes db)
+      (map (lambda (row) (row-ref row "hash"))
+           (sqlite-query
+             db
+             "SELECT hash FROM blocks WHERE block_hex IS NULL AND request_count >= ? AND requested_at > ?"
+             %block-request-give-up-count
+             (- (current-unix-second) %block-give-up-seconds))))
+
+    ;; Headers that cannot back a chain right now: the ones whose own body was
+    ;; given up on, plus everything built on them, because a descendant of a
+    ;; block the node does not have cannot be validated either.
+    ;;
+    ;; Nothing here is marked invalid. The set is recomputed from the blocks
+    ;; table on every call, so storing the body drops the branch out of it at
+    ;; once and the cooldown expiring puts it back in contention.
+    ;;
+    ;; ponytail: linear `member` over the given-up list, so this is O(headers
+    ;; * given-up) on a pass that is already O(headers). A hash set if a real
+    ;; header table ever makes it measurable.
+    (define (db-unbacked-header-hashes db)
+      (let ((given-up (db-given-up-block-hashes db)))
+        (if (null? given-up)
+            '()
+            ;; Height order guarantees a parent is seen before its children,
+            ;; so one forward pass closes the set over descendants.
+            (let loop ((xs (sqlite-query
+                             db
+                             "SELECT hash, prev_hash FROM headers WHERE valid = 1 ORDER BY height ASC"))
+                       (unbacked given-up))
+              (cond ((null? xs) unbacked)
+                    ((and (not (member (row-ref (car xs) "hash") unbacked))
+                          (member (row-ref (car xs) "prev_hash") unbacked))
+                     (loop (cdr xs) (cons (row-ref (car xs) "hash") unbacked)))
+                    (else (loop (cdr xs) unbacked)))))))
+
+    (define (row-unbacked? unbacked row)
+      (and (pair? unbacked)
+           (if (member (row-ref row "hash") unbacked) #t #f)))
+
     ;; Fork choice is whatever the chain's rules say. Bitcoin's rule ranks by
     ;; accumulated work then height, which is the behavior this loop had before
     ;; the rule became pluggable. Each row is converted to a candidate once,
     ;; because the conversion decodes the hash a rule may never read.
-    (define (best-row rules rows)
+    ;;
+    ;; `unbacked` is not part of the chain's rule and is never shown to it. It
+    ;; is the library's own liveness bound: a header whose body the node gave
+    ;; up fetching ranks below every header that still might be backed,
+    ;; whatever the rule thinks of it. With nothing given up the list is empty
+    ;; and the loop is exactly the rule's own order.
+    (define (best-row rules rows unbacked)
       (let ((better-chain? (header-rules-better-chain? rules))
             (max-height (max-header-row-height rows)))
-        (let loop ((xs rows) (best #f) (best-candidate #f))
+        (let loop ((xs rows) (best #f) (best-candidate #f) (best-unbacked? #f))
           (cond ((null? xs) best)
                 ((not best)
                  (loop (cdr xs)
                        (car xs)
-                       (header-row->chain-candidate (car xs) max-height)))
+                       (header-row->chain-candidate (car xs) max-height)
+                       (row-unbacked? unbacked (car xs))))
                 (else
                  (let ((candidate (header-row->chain-candidate (car xs)
-                                                               max-height)))
-                   (if (better-chain? candidate best-candidate)
-                       (loop (cdr xs) (car xs) candidate)
-                       (loop (cdr xs) best best-candidate))))))))
+                                                               max-height))
+                       (candidate-unbacked? (row-unbacked? unbacked (car xs))))
+                   (if (if (eq? candidate-unbacked? best-unbacked?)
+                           (better-chain? candidate best-candidate)
+                           (not candidate-unbacked?))
+                       (loop (cdr xs) (car xs) candidate candidate-unbacked?)
+                       (loop (cdr xs)
+                             best
+                             best-candidate
+                             best-unbacked?))))))))
 
     (define (db-best-header-row db rules)
-      (best-row rules (db-all-header-rows db)))
+      (best-row rules
+                (db-all-header-rows db)
+                (db-unbacked-header-hashes db)))
 
     (define (db-header-row-by-height db height)
       (sqlite-query-row
@@ -987,12 +1059,17 @@
               peer-key
               now))))
 
+    ;; The three staleness paths below all make an outstanding request
+    ;; retryable immediately. A body already given up on is excluded from all
+    ;; of them: its cooldown is measured from `requested_at`, so resetting
+    ;; that would cancel the give-up on the next download pass.
     (define (db-mark-block-request-stale db hash-text peer-key)
       (sqlite-run
         db
-        "UPDATE blocks SET requested_at = 1 WHERE hash = ? AND status = 'requested' AND requested_by = ? AND block_hex IS NULL"
+        "UPDATE blocks SET requested_at = 1 WHERE hash = ? AND status = 'requested' AND requested_by = ? AND block_hex IS NULL AND request_count < ?"
         hash-text
-        peer-key))
+        peer-key
+        %block-request-give-up-count))
 
     (define (db-mark-blocking-requested-blocks-stale db)
       ;; A downloaded tail behind a requested gap means validation cannot move
@@ -1000,7 +1077,8 @@
       ;; current tail, but make the blocking prefix immediately requestable.
       (sqlite-run
         db
-        "UPDATE blocks SET requested_at = 1 WHERE status = 'requested' AND block_hex IS NULL AND height <= COALESCE((SELECT MAX(height) FROM blocks WHERE block_hex IS NOT NULL), -1)"))
+        "UPDATE blocks SET requested_at = 1 WHERE status = 'requested' AND block_hex IS NULL AND request_count < ? AND height <= COALESCE((SELECT MAX(height) FROM blocks WHERE block_hex IS NOT NULL), -1)"
+        %block-request-give-up-count))
 
     (define (db-mark-requested-blocks-stale db)
       ;; When every candidate peer fails to make block progress, make the
@@ -1008,7 +1086,8 @@
       ;; waiting out the wall-clock stale window.
       (sqlite-run
         db
-        "UPDATE blocks SET requested_at = 1 WHERE status = 'requested' AND block_hex IS NULL"))
+        "UPDATE blocks SET requested_at = 1 WHERE status = 'requested' AND block_hex IS NULL AND request_count < ?"
+        %block-request-give-up-count))
 
     (define (db-mark-block-failed db hash-text height peer-key reason)
       (let ((now (current-unix-second)))
@@ -3022,17 +3101,9 @@
                 (mark-mempool-block-effects db b hash-text)
                 next-utxos)))))
 
-    ;;; Return true when the next best-chain block is downloaded and ready.
-    ;;;
-    ;;; ```scheme
-    ;;; (node-validation-ready? n)
-    ;;; ```
-    (define (node-validation-ready? n)
-      (: node? -> boolean?)
-      (let* ((db (node-db n))
-             (rows (best-chain-rows n))
-             (resume-height (validated-on-best-chain-height db rows))
-             (next-rows (rows-after-height rows resume-height)))
+    ;; Whether the block that follows `height` on `rows` is already downloaded.
+    (define (next-block-body-in-hand? db rows height)
+      (let ((next-rows (rows-after-height rows height)))
         (if (null? next-rows)
             #f
             (let* ((row (car next-rows))
@@ -3042,6 +3113,43 @@
                                 (row-ref row "hash"))))
               (and block-row
                    (if (row-ref block-row "block_hex") #t #f))))))
+
+    ;; "Which chain should I download?" and "which chain have I validated?"
+    ;; are two questions, and only the first one is answerable from headers.
+    ;;
+    ;; Header ranking has to stay body-blind, or headers-first sync is
+    ;; circular: a better sibling would never be fetched, so it could never be
+    ;; validated, so it could never win. That is why `db-best-header-row` does
+    ;; not consult `body-known?`.
+    ;;
+    ;; The ACTIVE chain is the other question, and it has no such excuse. It
+    ;; may follow the header chain forward freely, but it may only be rolled
+    ;; BACK onto a branch whose next body the node actually holds. Without
+    ;; that, a chain whose headers cost nothing hands anyone a remote halt:
+    ;; one bodyless sibling header at the tip height outranks the honest tip,
+    ;; validated blocks and their UTXOs are discarded for it, and then nothing
+    ;; can be validated because the body it promised never existed.
+    ;;
+    ;; Bitcoin is unaffected: a header that outranks the active tip there
+    ;; carries more proof-of-work than the chain being displaced, so this is a
+    ;; bound on what a free header can do, not on what a paid one can.
+    (define (active-chain-may-follow? db rows height)
+      (or (>= height (db-best-block-height db))
+          (next-block-body-in-hand? db rows height)))
+
+    ;;; Return true when the next best-chain block is downloaded and ready.
+    ;;;
+    ;;; ```scheme
+    ;;; (node-validation-ready? n)
+    ;;; ```
+    (define (node-validation-ready? n)
+      (: node? -> boolean?)
+      (let* ((db (node-db n))
+             (rows (best-chain-rows n)))
+        (next-block-body-in-hand?
+          db
+          rows
+          (validated-on-best-chain-height db rows))))
 
     ;;; Validate downloaded blocks in height order and mark accepted blocks.
     ;;;
@@ -3055,37 +3163,49 @@
              (db (node-db n))
              (rows (best-chain-rows n))
              (resume-height (validated-on-best-chain-height db rows)))
-        (db-rollback-active-chain-to-height db resume-height)
-        (let ((resume-row (row-at-height rows resume-height)))
-          (when resume-row
-            (db-set-active-chain-tip db
-                                     (row-ref resume-row "hash")
-                                     resume-height)))
-        (let loop ((remaining (rows-after-height rows resume-height))
-                   (utxos (db-active-utxos db))
-                   (validated 0))
-          (if (or (null? remaining)
-                  (and limit (>= validated limit)))
-              (begin
-                (db-set-sync-stage (node-db n) "idle")
-                validated)
-              (guard (err
-                      (else
-                       (let* ((row (car remaining))
-                              (hash-text (row-ref row "hash"))
-                              (height (header-row-height row))
-                              (reason (exception-message-or
-                                        err
-                                        "block validation failed")))
-                         (db-mark-header-branch-invalid db hash-text reason)
-                         (db-set-sync-failure db "validation" reason)
-                         validated)))
-                (let ((next-utxos (validate-block-row n (car remaining) utxos)))
-                  (if next-utxos
-                      (loop (cdr remaining) next-utxos (+ validated 1))
-                      (begin
-                        (db-set-sync-stage (node-db n) "idle")
-                        validated))))))))
+        (if (not (active-chain-may-follow? db rows resume-height))
+            ;; The best header chain leads somewhere this node cannot follow
+            ;; yet. Downloading still targets it; the validated chain stays
+            ;; exactly where it is rather than being torn down for a promise.
+            (begin
+              (db-set-sync-stage db "idle")
+              0)
+            (begin
+              (db-rollback-active-chain-to-height db resume-height)
+              (let ((resume-row (row-at-height rows resume-height)))
+                (when resume-row
+                  (db-set-active-chain-tip db
+                                           (row-ref resume-row "hash")
+                                           resume-height)))
+              (let loop ((remaining (rows-after-height rows resume-height))
+                         (utxos (db-active-utxos db))
+                         (validated 0))
+                (if (or (null? remaining)
+                        (and limit (>= validated limit)))
+                    (begin
+                      (db-set-sync-stage (node-db n) "idle")
+                      validated)
+                    (guard (err
+                            (else
+                             (let* ((row (car remaining))
+                                    (hash-text (row-ref row "hash"))
+                                    (height (header-row-height row))
+                                    (reason (exception-message-or
+                                              err
+                                              "block validation failed")))
+                               (db-mark-header-branch-invalid db
+                                                              hash-text
+                                                              reason)
+                               (db-set-sync-failure db "validation" reason)
+                               validated)))
+                      (let ((next-utxos (validate-block-row n
+                                                            (car remaining)
+                                                            utxos)))
+                        (if next-utxos
+                            (loop (cdr remaining) next-utxos (+ validated 1))
+                            (begin
+                              (db-set-sync-stage (node-db n) "idle")
+                              validated))))))))))
 
     (define (node-sync-headers-for-peer n read-envelope write-envelope max-steps peer-name)
       (let* ((start (node-status-snapshot-best-height (node-status n)))
