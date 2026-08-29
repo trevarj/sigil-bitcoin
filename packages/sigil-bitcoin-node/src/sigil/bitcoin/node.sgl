@@ -135,6 +135,23 @@
     (define %block-give-up-seconds 600)
     (define %transaction-request-stale-seconds 120)
     (define %validation-attempt-blocks 128)
+    ;; How many inventory vectors one inbound `getdata` is answered from, and
+    ;; the ceiling this node's own requests are clamped to. The wire format
+    ;; allows 50000, which no honest peer needs: this node asks for 16 bodies
+    ;; per batch by default, and Bitcoin Core's own block-download window is
+    ;; 1024. A larger request is legal on the wire, so it is truncated to this
+    ;; prefix rather than treated as an attack: only the prefix is parsed,
+    ;; answered and named in `notfound`, and the peer asks again for the rest.
+    (define %getdata-max-items 128)
+    ;; Serialized width of one inventory vector: 4-byte type plus 32-byte hash.
+    (define %inventory-vector-bytes 36)
+    ;; ...and how many body bytes one `getdata` may be answered with. The
+    ;; budget has to clear the largest block the chain can produce or that
+    ;; block could never be served: 4 MiB covers Bitcoin's 4,000,000-byte
+    ;; maximum serialized block, and is 512 SigilCoin blocks. Items past the
+    ;; budget are answered `notfound`, so the peer asks again or asks
+    ;; elsewhere instead of the node streaming an unbounded reply.
+    (define %getdata-max-response-bytes (* 4 1024 1024))
     (define %ipv6-loopback
       #u8(#x00 #x00 #x00 #x00 #x00 #x00 #x00 #x00
           #x00 #x00 #x00 #x00 #x00 #x00 #x00 #x01))
@@ -2355,11 +2372,13 @@
       (string-append address ":" (number->string port)))
 
     (define (pending-block-rows n peer-name max-blocks)
+      ;; Never ask for more bodies in one `getdata` than a peer running this
+      ;; code will answer, however large a batch the caller configured.
       (db-best-chain-requestable-block-rows
         (node-db n)
         (node-header-rules n)
         peer-name
-        max-blocks))
+        (min max-blocks %getdata-max-items)))
 
     (define (block-row->inventory row)
       (inventory-vector type: inv-block
@@ -2523,6 +2542,136 @@
                         payload: (headers-message-serialize headers)))
         (length headers)))
 
+    (define (block-inventory? item)
+      ;; The stored body is the exact serialization this node accepted, so the
+      ;; plain and witness block types are answered from the same row. No
+      ;; witness stripping is attempted for `inv-block`: a chain whose bodies
+      ;; carry witnesses would need that here, and a legacy peer asking a
+      ;; segwit node for a segwit block is not a case this node creates.
+      (let ((type (inventory-vector-type item)))
+        (or (= type inv-block)
+            (= type inv-witness-block))))
+
+    ;; Serve only what the node holds. A hash it has never seen, a header whose
+    ;; body is still missing or merely requested, and a body it has marked
+    ;; invalid are all unservable, and are reported as `notfound` rather than
+    ;; raised: a peer is allowed to ask for anything. The size is read without
+    ;; the body so an item that will not be sent never costs a body read.
+    (define (servable-block-size db item)
+      (and (block-inventory? item)
+           (let ((row (sqlite-query-row
+                        db
+                        "SELECT length(block_hex) AS hex_length FROM blocks WHERE hash = ? AND status <> 'invalid' AND block_hex IS NOT NULL"
+                        (hex-encode (inventory-vector-hash item)))))
+             (and row
+                  (let ((hex-length (row-ref row "hex_length")))
+                    (and (integer? hex-length)
+                         (quotient hex-length 2)))))))
+
+    (define (servable-block-hex db item)
+      (let ((row (sqlite-query-row
+                   db
+                   "SELECT block_hex FROM blocks WHERE hash = ? AND status <> 'invalid' AND block_hex IS NOT NULL"
+                   (hex-encode (inventory-vector-hash item)))))
+        (and row (row-ref row "block_hex"))))
+
+    (define (dedupe-inventory items)
+      ;; 128 copies of one hash are one lookup and one body, not 128.
+      ;; ponytail: O(n^2) membership scan, bounded by %getdata-max-items.
+      (let loop ((xs items) (out '()))
+        (if (null? xs)
+            (reverse out)
+            (loop (cdr xs)
+                  (if (inventory-vector-member? (car xs) out)
+                      out
+                      (cons (car xs) out))))))
+
+    (define (compact-size-width tag)
+      (cond ((< tag #xfd) 1)
+            ((= tag #xfd) 3)
+            ((= tag #xfe) 5)
+            (else 9)))
+
+    (define (getdata-request-items request)
+      ;; Bound the work an inbound `getdata` buys before allocating any of it.
+      ;; The declared count is read from the compact-size prefix and checked
+      ;; against the payload length, so a non-canonical, truncated or
+      ;; self-inconsistent payload is malformed and still raises. Only the
+      ;; first `%getdata-max-items` vectors are then parsed: a larger count is
+      ;; legal on the wire, and killing a connection over it would disconnect
+      ;; peers running this same code.
+      (let* ((payload (p2p-envelope-payload request))
+             (tag (read-byte payload 0 "getdata"))
+             (width (compact-size-width tag))
+             (count (cond ((< tag #xfd) tag)
+                          ((= tag #xfd) (read-u16-le payload 1 "getdata"))
+                          ((= tag #xfe) (read-u32-le payload 1 "getdata"))
+                          (else (read-u64-le payload 1 "getdata")))))
+        (unless (= width (bytevector-length (compact-size-encode count)))
+          (error "getdata: non-canonical inventory count"))
+        (when (> count p2p-max-inventory-per-message)
+          (error "getdata: too many inventory vectors"))
+        (unless (= (bytevector-length payload)
+                   (+ width (* %inventory-vector-bytes count)))
+          (error "getdata: inventory count does not match payload"))
+        (let ((wanted (min count %getdata-max-items)))
+          (dedupe-inventory
+            (inventory-message-parse
+              (bytevector-append
+                (compact-size-encode wanted)
+                (bytevector-copy payload
+                                 width
+                                 (+ width
+                                    (* %inventory-vector-bytes wanted)))))))))
+
+    (define (write-block-data-response n request write-envelope)
+      ;; Answer an inbound `getdata` the way Bitcoin Core does: one `block`
+      ;; message per served body, then one `notfound` naming everything that
+      ;; was refused — unknown hashes, missing or invalid bodies, inventory
+      ;; types this node does not serve, and every item from the first one
+      ;; that overruns the byte budget onwards.
+      (let ((items (getdata-request-items request))
+            (db (node-db n))
+            (magic (chain-config-magic (node-config n))))
+        (let loop ((xs items)
+                   (budget %getdata-max-response-bytes)
+                   (served 0)
+                   (missing '()))
+          (if (null? xs)
+              (begin
+                (unless (null? missing)
+                  (write-envelope
+                    (p2p-envelope magic: magic
+                                  command: "notfound"
+                                  payload: (notfound-message
+                                             (reverse missing)))))
+                served)
+              (let* ((item (car xs))
+                     (size (servable-block-size db item)))
+                (cond
+                  ((not size)
+                   (loop (cdr xs) budget served (cons item missing)))
+                  ((> size budget)
+                   ;; Budget spent: refuse this item and the whole tail
+                   ;; without reading another row.
+                   (loop '() 0 served (append (reverse xs) missing)))
+                  (else
+                   (let ((hex (servable-block-hex db item)))
+                     (if hex
+                         (begin
+                           (write-envelope
+                             (p2p-envelope magic: magic
+                                           command: "block"
+                                           payload: (hex-decode hex)))
+                           (loop (cdr xs)
+                                 (- budget size)
+                                 (+ served 1)
+                                 missing))
+                         (loop (cdr xs)
+                               budget
+                               served
+                               (cons item missing)))))))))))
+
     (define (advertisable-peer-addresses n max-addresses)
       (let loop ((peers (node-peers n))
                  (out '()))
@@ -2548,6 +2697,9 @@
         (cond ((string=? command "getheaders")
                (write-headers-response n envelope write-envelope)
                session)
+              ((string=? command "getdata")
+               (write-block-data-response n envelope write-envelope)
+               session)
               ((string=? command "getaddr")
                (unless (= 0 (bytevector-length (p2p-envelope-payload envelope)))
                  (error "getaddr: expected empty payload"))
@@ -2570,6 +2722,10 @@
                  (p2p-session-apply-envelope session envelope))))))
 
     ;;; Serve one inbound peer over an already accepted transport.
+    ;;;
+    ;;; The peer is answered `getheaders` with headers, `getaddr` with known
+    ;;; addresses, and `getdata` with stored block bodies; block items this
+    ;;; node cannot serve come back as `notfound`.
     ;;;
     ;;; The transport callbacks match outbound sync transports:
     ;;; `read-envelope`, `write-envelope`, and `close-proc`. Work is bounded by
@@ -2761,11 +2917,13 @@
       (when (<= max-tx 0)
         (error "node-request-transactions: max-tx must be positive"))
       (let* ((db (node-db n))
+             ;; Callers pass the wire limit (50000) as `max-tx`; clamp it so
+             ;; this node never emits a `getdata` past what it would serve.
              (requestable (requestable-transaction-inventory
                             db
                             items
                             peer-name
-                            max-tx)))
+                            (min max-tx %getdata-max-items))))
         (mark-transaction-announcements db items peer-name)
         (if (null? requestable)
             0

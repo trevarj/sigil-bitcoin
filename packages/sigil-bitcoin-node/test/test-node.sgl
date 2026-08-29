@@ -2,6 +2,7 @@
         (sigil fs)
         (sigil io)
         (sigil string)
+        (sigil time)
         (sigil sqlite)
         (sigil bitcoin encoding)
         (sigil bitcoin consensus)
@@ -516,6 +517,69 @@
     (if (<= remaining 0)
         out
         (loop (- remaining 1) (cons item out)))))
+
+;; Block inventory for hashes no node ever stored, one distinct hash per item.
+(define (unknown-block-items count)
+  (let loop ((i 0) (out '()))
+    (if (>= i count)
+        (reverse out)
+        (loop (+ i 1)
+              (cons (inventory-vector type: inv-block
+                                      hash: (make-bytevector 32 (modulo i 256)))
+                    out)))))
+
+;; A getdata payload naming `count` copies of one item, built as bytes so a
+;; test can declare far more items than it is worth allocating structs for.
+(define (repeated-getdata-payload item count)
+  (let* ((one (let ((payload (getdata-message (list item))))
+                (bytevector-copy payload 1 (bytevector-length payload))))
+         (out (make-bytevector (* 36 count) 0)))
+    (let loop ((i 0))
+      (if (>= i count)
+          (bytevector-append (compact-size-encode count) out)
+          (begin
+            (bytevector-copy! out (* 36 i) one)
+            (loop (+ i 1)))))))
+
+(define (writes-with command writes)
+  (filter (lambda (envelope)
+            (string=? command (p2p-envelope-command envelope)))
+          writes))
+
+(define (notfound-items writes)
+  (let ((responses (writes-with "notfound" writes)))
+    (if (null? responses)
+        '()
+        (inventory-message-parse (p2p-envelope-payload (car responses))))))
+
+;; Serve one inbound peer that sends `payload` as a getdata and then pings,
+;; and return the envelopes this node wrote back.
+(define (getdata-response-writes n address payload)
+  (let ((writes '()))
+    (node-serve-inbound-transport*
+      n
+      address
+      18444
+      (one-envelope-reader
+        (list (remote-version-envelope bitcoin-regtest-chain*)
+              (p2p-envelope
+                magic: (chain-config-magic* bitcoin-regtest-chain*)
+                command: "verack"
+                payload: (verack-message))
+              (p2p-envelope
+                magic: (chain-config-magic* bitcoin-regtest-chain*)
+                command: "getdata"
+                payload: payload)
+              (p2p-envelope
+                magic: (chain-config-magic* bitcoin-regtest-chain*)
+                command: "ping"
+                payload: (ping-message #x2424242424242424))))
+      (lambda (envelope)
+        (set! writes (append writes (list envelope))))
+      (lambda () #t)
+      2
+      8)
+    writes))
 
 (define (one-envelope-reader envelopes)
   (let ((remaining envelopes))
@@ -3065,6 +3129,353 @@
                         (p2p-envelope-payload header-response))))
         (assert-equal 0 (length headers)))
       (node-close* n)))
+
+  (test "serves stored block bodies for inbound getdata"
+    (let* ((dir (test-data-dir))
+           (n (node-open* bitcoin-regtest-chain* dir))
+           (h0 (chain-config-genesis-header* bitcoin-regtest-chain*))
+           (b1 (make-coinbase-block (list h0) 1 1296688602))
+           (h1 (block-header-field b1))
+           (b2 (make-coinbase-block (list h0 h1) 2 1296689202))
+           (h2 (block-header-field b2))
+           (writes '()))
+      (node-ingest-headers* n (list h1 h2))
+      (node-store-block* n b1)
+      (node-store-block* n b2)
+      (node-serve-inbound-transport*
+        n
+        "198.51.100.20"
+        18444
+        (one-envelope-reader
+          (list (remote-version-envelope bitcoin-regtest-chain*)
+                (p2p-envelope
+                  magic: (chain-config-magic* bitcoin-regtest-chain*)
+                  command: "verack"
+                  payload: (verack-message))
+                (p2p-envelope
+                  magic: (chain-config-magic* bitcoin-regtest-chain*)
+                  command: "getdata"
+                  payload: (getdata-message
+                             (list (inventory-vector
+                                     type: inv-block
+                                     hash: (block-header-hash h1))
+                                   (inventory-vector
+                                     type: inv-witness-block
+                                     hash: (block-header-hash h2)))))
+                (p2p-envelope
+                  magic: (chain-config-magic* bitcoin-regtest-chain*)
+                  command: "ping"
+                  payload: (ping-message #x2020202020202020))))
+        (lambda (envelope)
+          (set! writes (append writes (list envelope))))
+        (lambda () #t)
+        2
+        8)
+      (let ((bodies (filter
+                      (lambda (envelope)
+                        (string=? "block" (p2p-envelope-command envelope)))
+                      writes)))
+        (assert-equal 2 (length bodies))
+        ;; The peer gets back exactly the bytes this node stored.
+        (assert-equal (block-message b1)
+                      (p2p-envelope-payload (car bodies)))
+        (assert-equal (block-message b2)
+                      (p2p-envelope-payload (cadr bodies)))
+        (assert-true (same-header? h1
+                                   (block-header-field
+                                     (block-message-parse
+                                       (p2p-envelope-payload (car bodies)))))))
+      (assert-equal 0
+                    (length (filter
+                              (lambda (envelope)
+                                (string=? "notfound"
+                                          (p2p-envelope-command envelope)))
+                              writes)))
+      (node-close* n)))
+
+  (test "answers inbound getdata with notfound for bodies it will not serve"
+    (let* ((dir (test-data-dir))
+           (n (node-open* bitcoin-regtest-chain* dir))
+           (h0 (chain-config-genesis-header* bitcoin-regtest-chain*))
+           ;; A header whose body was never downloaded.
+           (pending-b1 (make-coinbase-block (list h0) 1 1296688602))
+           (pending-h1 (block-header-field pending-b1))
+           ;; A body this node holds but has condemned.
+           (bad-b1 (mine-block (list h0)
+                               (list (make-coinbase-tx
+                                       1
+                                       (+ 1 (block-subsidy 1))))
+                               1296698602))
+           (bad-h1 (block-header-field bad-b1))
+           (unknown-hash (make-bytevector 32 #x7a))
+           (tx (make-coinbase-tx 9 5000000000))
+           (writes '()))
+      ;; Condemn the bad body first: validation only walks the best chain, so
+      ;; the header without a body is added afterwards.
+      (node-ingest-headers* n (list bad-h1))
+      (node-store-block* n bad-b1)
+      (assert-equal 0 (node-validate-blocks* n))
+      (node-ingest-headers* n (list pending-h1))
+      (let ((bad-row (sqlite-query-row
+                       (node-db* n)
+                       "SELECT status, block_hex FROM blocks WHERE hash = ?"
+                       (hex-encode (block-header-hash bad-h1)))))
+        (assert-equal "invalid" (test-row-ref bad-row "status"))
+        ;; The node still holds those bytes; it refuses them on status.
+        (assert-true (string? (test-row-ref bad-row "block_hex"))))
+      (node-serve-inbound-transport*
+        n
+        "198.51.100.21"
+        18444
+        (one-envelope-reader
+          (list (remote-version-envelope bitcoin-regtest-chain*)
+                (p2p-envelope
+                  magic: (chain-config-magic* bitcoin-regtest-chain*)
+                  command: "verack"
+                  payload: (verack-message))
+                (p2p-envelope
+                  magic: (chain-config-magic* bitcoin-regtest-chain*)
+                  command: "getdata"
+                  payload: (getdata-message
+                             (list (inventory-vector
+                                     type: inv-block
+                                     hash: unknown-hash)
+                                   (inventory-vector
+                                     type: inv-block
+                                     hash: (block-header-hash pending-h1))
+                                   (inventory-vector
+                                     type: inv-block
+                                     hash: (block-header-hash bad-h1))
+                                   ;; An inventory type this node never serves.
+                                   (inventory-vector
+                                     type: inv-tx
+                                     hash: (transaction-txid tx)))))
+                (p2p-envelope
+                  magic: (chain-config-magic* bitcoin-regtest-chain*)
+                  command: "ping"
+                  payload: (ping-message #x2121212121212121))))
+        (lambda (envelope)
+          (set! writes (append writes (list envelope))))
+        (lambda () #t)
+        2
+        8)
+      (assert-equal 0
+                    (length (filter
+                              (lambda (envelope)
+                                (string=? "block"
+                                          (p2p-envelope-command envelope)))
+                              writes)))
+      (let* ((response (car (filter
+                              (lambda (envelope)
+                                (string=? "notfound"
+                                          (p2p-envelope-command envelope)))
+                              writes)))
+             (items (inventory-message-parse
+                      (p2p-envelope-payload response))))
+        (assert-equal 4 (length items))
+        (assert-true (inventory-hash-member? unknown-hash items))
+        (assert-true (inventory-hash-member? (block-header-hash pending-h1)
+                                             items))
+        (assert-true (inventory-hash-member? (block-header-hash bad-h1) items))
+        (assert-true (inventory-hash-member? (transaction-txid tx) items)))
+      (node-close* n)))
+
+  (test "caps the body bytes one inbound getdata can buy"
+    (let* ((dir (test-data-dir))
+           (n (node-open* bitcoin-regtest-chain* dir))
+           (h0 (chain-config-genesis-header* bitcoin-regtest-chain*))
+           ;; Three siblings of about 1.5 MiB each: two fit the 4 MiB response
+           ;; budget and the third does not.
+           (big1 (make-keyed-block (list h0) 1 1296688602 1500000))
+           (big2 (make-keyed-block (list h0) 1 1296689202 1500000))
+           (big3 (make-keyed-block (list h0) 1 1296689802 1500000))
+           (blocks (list big1 big2 big3))
+           (block-items (map (lambda (b)
+                               (inventory-vector
+                                 type: inv-block
+                                 hash: (block-header-hash
+                                         (block-header-field b))))
+                             blocks))
+           ;; 128 items: the three siblings, then 125 more copies of the
+           ;; over-budget third.
+           (over-budget-payload
+             (getdata-message
+               (append block-items
+                       (repeat-item (caddr block-items) 125))))
+           ;; The same request whose tail is hashes this node has never seen.
+           ;; Neither tail is servable, so the over-budget one must not cost
+           ;; more: bodies that will not be sent are never read.
+           (unknown-payload
+             (getdata-message
+               (append (list (car block-items) (cadr block-items))
+                       (unknown-block-items 126)))))
+      (node-ingest-headers* n (map block-header-field blocks))
+      (store-blocks n blocks)
+      (let* ((unknown-start (current-jiffy))
+             (unknown-writes (getdata-response-writes n
+                                                     "198.51.100.22"
+                                                     unknown-payload))
+             (unknown-cost (- (current-jiffy) unknown-start))
+             (over-budget-start (current-jiffy))
+             (over-budget-writes (getdata-response-writes n
+                                                          "198.51.100.25"
+                                                          over-budget-payload))
+             (over-budget-cost (- (current-jiffy) over-budget-start)))
+        (assert-equal 2 (length (writes-with "block" over-budget-writes)))
+        (let ((items (notfound-items over-budget-writes)))
+          ;; One `notfound` item, not 126: the duplicates collapse and the
+          ;; loop stops at the first body that overruns the budget.
+          (assert-equal 1 (length items))
+          (assert-equal (block-header-hash (block-header-field big3))
+                        (inventory-vector-hash (car items))))
+        (assert-equal 2 (length (writes-with "block" unknown-writes)))
+        (assert-equal 126 (length (notfound-items unknown-writes)))
+        ;; Work done, not just output: 125 refused 1.5 MiB bodies cost no more
+        ;; than 126 hashes that never touch a body at all.
+        (assert-true (<= over-budget-cost
+                         (* 2 (if (> unknown-cost 1) unknown-cost 1)))))
+      (node-close* n)))
+
+  (test "answers an oversized inbound getdata instead of dropping the peer"
+    ;; `run-listen` guards its whole accept loop, so a raise here would take
+    ;; the listener down with the peer. A count above the per-request cap is
+    ;; legal on the wire — this node's own peers batch requests — so the
+    ;; prefix is served and the rest of the parsed batch is refused.
+    (let* ((dir (test-data-dir))
+           (n (node-open* bitcoin-regtest-chain* dir))
+           (h0 (chain-config-genesis-header* bitcoin-regtest-chain*))
+           (b1 (make-coinbase-block (list h0) 1 1296688602))
+           (h1 (block-header-field b1)))
+      (node-ingest-headers* n (list h1))
+      (node-store-block* n b1)
+      (let ((writes (getdata-response-writes
+                      n
+                      "198.51.100.23"
+                      (getdata-message
+                        (cons (inventory-vector type: inv-block
+                                                hash: (block-header-hash h1))
+                              (unknown-block-items 200))))))
+        (assert-equal 1 (length (writes-with "block" writes)))
+        ;; 128 items are answered: one body, 127 refusals. The tail past the
+        ;; cap is left for the peer to ask again for.
+        (assert-equal 127 (length (notfound-items writes)))
+        ;; The connection survives: the ping after the getdata is still
+        ;; answered, and the node finishes the peer cleanly.
+        (assert-equal 1 (length (writes-with "pong" writes)))
+        (assert-equal "idle"
+                      (node-status-snapshot-sync-stage* (node-status* n))))
+      (node-close* n)))
+
+  (test "serves a duplicated inbound getdata item once"
+    (let* ((dir (test-data-dir))
+           (n (node-open* bitcoin-regtest-chain* dir))
+           (h0 (chain-config-genesis-header* bitcoin-regtest-chain*))
+           (b1 (make-coinbase-block (list h0) 1 1296688602))
+           (h1 (block-header-field b1)))
+      (node-ingest-headers* n (list h1))
+      (node-store-block* n b1)
+      (let ((writes (getdata-response-writes
+                      n
+                      "198.51.100.26"
+                      (getdata-message
+                        (repeat-item (inventory-vector
+                                       type: inv-block
+                                       hash: (block-header-hash h1))
+                                     128)))))
+        (assert-equal 1 (length (writes-with "block" writes)))
+        (assert-equal 0 (length (writes-with "notfound" writes))))
+      (node-close* n)))
+
+  (test "bounds the work a huge inbound getdata item count can buy"
+    (let* ((dir (test-data-dir))
+           (n (node-open* bitcoin-regtest-chain* dir))
+           (h0 (chain-config-genesis-header* bitcoin-regtest-chain*))
+           (b1 (make-coinbase-block (list h0) 1 1296688602))
+           (h1 (block-header-field b1))
+           (item (inventory-vector type: inv-block
+                                   hash: (block-header-hash h1)))
+           ;; A wire-legal 1.8 MB payload naming 50000 items, and the same
+           ;; request cut to the per-request cap.
+           (huge-payload (repeated-getdata-payload item 50000))
+           (capped-payload (repeated-getdata-payload item 128)))
+      (node-ingest-headers* n (list h1))
+      (node-store-block* n b1)
+      (let* ((capped-start (current-jiffy))
+             (capped-writes (getdata-response-writes n
+                                                    "198.51.100.27"
+                                                    capped-payload))
+             (capped-cost (- (current-jiffy) capped-start))
+             (huge-start (current-jiffy))
+             (huge-writes (getdata-response-writes n
+                                                   "198.51.100.28"
+                                                   huge-payload))
+             (huge-cost (- (current-jiffy) huge-start)))
+        (assert-equal 1 (length (writes-with "block" capped-writes)))
+        (assert-equal 1 (length (writes-with "block" huge-writes)))
+        (assert-equal 0 (length (writes-with "notfound" huge-writes)))
+        ;; Only the first 128 vectors are ever parsed, so 50000 named items
+        ;; cost about what 128 do.
+        (assert-true (<= huge-cost
+                         (* 2 (if (> capped-cost 1) capped-cost 1)))))
+      (node-close* n)))
+
+  (test "rejects a malformed inbound getdata"
+    (define (serve-getdata address payload)
+      (let* ((dir (test-data-dir))
+             (n (node-open* bitcoin-regtest-chain* dir))
+             (h0 (chain-config-genesis-header* bitcoin-regtest-chain*))
+             (b1 (make-coinbase-block (list h0) 1 1296688602)))
+        (node-ingest-headers* n (list (block-header-field b1)))
+        (node-store-block* n b1)
+        (guard (err (else (node-close* n) (raise err)))
+          (node-serve-inbound-transport*
+            n
+            address
+            18444
+            (one-envelope-reader
+              (list (remote-version-envelope bitcoin-regtest-chain*)
+                    (p2p-envelope
+                      magic: (chain-config-magic* bitcoin-regtest-chain*)
+                      command: "verack"
+                      payload: (verack-message))
+                    (p2p-envelope
+                      magic: (chain-config-magic* bitcoin-regtest-chain*)
+                      command: "getdata"
+                      payload: payload)
+                    (p2p-envelope
+                      magic: (chain-config-magic* bitcoin-regtest-chain*)
+                      command: "ping"
+                      payload: (ping-message #x2323232323232323))))
+            (lambda (envelope) #t)
+            (lambda () #t)
+            2
+            8))
+        (node-close* n)))
+    (let ((one-item (getdata-message
+                      (list (inventory-vector
+                              type: inv-block
+                              hash: (make-bytevector 32 #x11))))))
+      ;; A count of one with no inventory vector behind it.
+      (assert-error (serve-getdata "198.51.100.24" #u8(#x01)))
+      ;; One vector too few for the declared count.
+      (assert-error
+        (serve-getdata "198.51.100.29"
+                       (bytevector-append #u8(#x02)
+                                          (bytevector-copy one-item 1))))
+      ;; Trailing bytes past the declared count.
+      (assert-error
+        (serve-getdata "198.51.100.30"
+                       (bytevector-append one-item #u8(#x00))))
+      ;; A count encoded wider than it needs to be.
+      (assert-error
+        (serve-getdata "198.51.100.31"
+                       (bytevector-append #u8(#xfd #x01 #x00)
+                                          (bytevector-copy one-item 1))))
+      ;; A count past what the wire format allows at all.
+      (assert-error
+        (serve-getdata "198.51.100.32"
+                       (bytevector-append (compact-size-encode 50001)
+                                          (bytevector-copy one-item 1))))))
 
   (test "recovers from mid-download peer disconnect"
     (let* ((dir (test-data-dir))
