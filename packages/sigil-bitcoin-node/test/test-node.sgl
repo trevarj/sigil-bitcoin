@@ -277,6 +277,21 @@
                subsidy: (lambda (height) %fake-subsidy-value)
                coinbase-script-bounds: (cons 2 512)))
 
+(define %parent-blocks-seen '())
+
+(define (%parent-aware-connect rules params height utxos b verify-scripts?
+                               parent-block)
+  (set! %parent-blocks-seen
+        (cons (and parent-block (block-serialize parent-block))
+              %parent-blocks-seen))
+  ((block-rules-connect bitcoin-block-rules)
+   rules params height utxos b verify-scripts? parent-block))
+
+(define %parent-aware-block-rules
+  (block-rules connect: %parent-aware-connect
+               subsidy: block-subsidy
+               coinbase-script-bounds: bitcoin-coinbase-script-bounds))
+
 (define (test-chain seed-peers extensions)
   (let ((genesis (chain-config-genesis-header* bitcoin-regtest-chain*)))
     (chain-config* name: "test-chain"
@@ -997,6 +1012,80 @@
                     (node-status-snapshot-best-work* (node-status* n)))
       (node-close* n)
       (node-close* control)))
+
+  (test "loads byte-exact validated parent bodies after reopen"
+    (let* ((dir (test-data-dir))
+           (chain
+             (test-chain
+               '()
+               (consensus-extensions
+                 (list (cons 'block-rules %parent-aware-block-rules)))))
+           (h0 (chain-config-genesis-header* chain))
+           (blocks (make-coinbase-chain h0 2 1296688602))
+           (parent (car blocks))
+           (child (cadr blocks)))
+      (let ((first (node-open* chain dir)))
+        (node-ingest-headers* first (map block-header-field blocks))
+        ;; Child body alone is not ready because its parent body is absent.
+        (node-store-block* first child)
+        (set! %parent-blocks-seen '())
+        (assert-equal 0 (node-validate-blocks* first))
+        (assert-equal '() %parent-blocks-seen)
+        ;; Downloaded but unvalidated parent goes first; bounded validation
+        ;; cannot skip it and validate child. Genesis parent context is `#f`.
+        (node-store-block* first parent)
+        (assert-equal 1 (node-validate-blocks* first 1))
+        (assert-equal '(#f) %parent-blocks-seen)
+        (node-close* first))
+      ;; Reopen proves parent comes from SQLite, not an in-process cache. The
+      ;; parsed parent reserializes to the exact bytes originally stored.
+      (let ((second (node-open* chain dir)))
+        (set! %parent-blocks-seen '())
+        (assert-equal 1 (node-validate-blocks* second))
+        (assert-equal (list (block-serialize parent)) %parent-blocks-seen)
+        (node-close* second))))
+
+  (test "rejects a validated parent row carrying another block"
+    (let* ((chain
+             (test-chain
+               '()
+               (consensus-extensions
+                 (list (cons 'block-rules %parent-aware-block-rules)))))
+           (n (node-open* chain (test-data-dir)))
+           (h0 (chain-config-genesis-header* chain))
+           (blocks (make-coinbase-chain h0 2 1296688602))
+           (parent (car blocks))
+           (child (cadr blocks))
+           (other-parent (make-coinbase-block (list h0) 1 1296698602))
+           (parent-hash
+             (hex-encode (block-header-hash (block-header-field parent))))
+           (child-hash
+             (hex-encode (block-header-hash (block-header-field child)))))
+      (node-ingest-headers* n (map block-header-field blocks))
+      (store-blocks n blocks)
+      (assert-equal 1 (node-validate-blocks* n 1))
+      ;; Keep the validated row keyed as parent A, but replace its durable body
+      ;; with a different valid block B. Child validation must reject B before
+      ;; the chain connector can observe it.
+      (sqlite-run
+        (node-db* n)
+        "UPDATE blocks SET block_hex = ? WHERE hash = ?"
+        (hex-encode (block-serialize other-parent))
+        parent-hash)
+      (set! %parent-blocks-seen '())
+      (assert-equal 0 (node-validate-blocks* n))
+      (assert-equal '() %parent-blocks-seen)
+      (let ((child-row
+              (sqlite-query-row
+                (node-db* n)
+                "SELECT status, validated, last_error FROM blocks WHERE hash = ?"
+                child-hash)))
+        (assert-equal "invalid" (test-row-ref child-row "status"))
+        (assert-equal 0 (test-row-ref child-row "validated"))
+        (assert-equal
+          "node-validate-blocks: validated parent block hash mismatch"
+          (test-row-ref child-row "last_error")))
+      (node-close* n)))
 
   (test "applies the chain's own subsidy ceiling when validating bodies"
     (let* ((chain (test-chain

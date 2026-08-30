@@ -561,7 +561,9 @@
     ;;; Pluggable block-body validation rules.
     ;;;
     ;;; `connect` is called as
-    ;;; `(connect rules params height utxos block verify-scripts?)`. It
+    ;;; `(connect rules params height utxos block verify-scripts? parent-block)`.
+    ;;; `parent-block` is the validated parent body when one is available and
+    ;;; `#f` for genesis-parent or standalone calls without parent context. `connect`
     ;;; returns the updated UTXO set and raises on an invalid block. It is
     ;;; handed the rules record it was reached through, so the default
     ;;; connector reads `subsidy` and `coinbase-script-bounds` from the
@@ -1357,8 +1359,9 @@
     ;;; also the default `connect` for a non-Bitcoin chain that keeps every
     ;;; other body rule. It is called through `block-rules-connect`, which is
     ;;; why `rules` comes first.
-    (define (connect-block-core rules params height utxos b verify-scripts?)
-      (: block-rules? consensus-params? integer? list? block? any? -> list?)
+    (define (connect-block-core rules params height utxos b verify-scripts?
+                                parent-block)
+      (: block-rules? consensus-params? integer? list? block? any? any? -> list?)
       (validate-consensus-params params)
       (require-uint "connect-block height" height %u32-max)
       (validate-block b)
@@ -1421,7 +1424,7 @@
       (: consensus-params? integer? list? block? block-rules? ... -> list?)
       (let ((rules (block-rules-argument "connect-block/structural"
                                          maybe-rules)))
-        ((block-rules-connect rules) rules params height utxos b #f)))
+        ((block-rules-connect rules) rules params height utxos b #f #f)))
 
     ;;; Connect a block with full validation, executing standard input scripts.
     ;;;
@@ -1434,7 +1437,7 @@
     (define (connect-block params height utxos b . maybe-rules)
       (: consensus-params? integer? list? block? block-rules? ... -> list?)
       (let ((rules (block-rules-argument "connect-block" maybe-rules)))
-        ((block-rules-connect rules) rules params height utxos b #t)))
+        ((block-rules-connect rules) rules params height utxos b #t #f)))
 
     ;;; Serialize a block in Bitcoin wire order.
     (define (block-serialize b)

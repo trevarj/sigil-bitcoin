@@ -3221,6 +3221,22 @@
            b
            previous-work))))
 
+    ;; Resolve parent bodies by the current header's persisted previous hash,
+    ;; never from process-local state or a height-only lookup across forks.
+    (define (validated-parent-block db row)
+      (let* ((parent-hash (row-ref row "prev_hash"))
+             (parent-row (db-block-row db parent-hash)))
+        (and parent-row
+             (= 1 (row-ref parent-row "validated"))
+             (row-ref parent-row "block_hex")
+             (let ((parent-block (downloaded-block-row->block parent-row)))
+               (unless (equal? (block-header-hash
+                                 (block-header-field parent-block))
+                               (hex-decode parent-hash))
+                 (error
+                   "node-validate-blocks: validated parent block hash mismatch"))
+               parent-block))))
+
     (define (validate-block-row n row utxos)
       (let* ((db (node-db n))
              (height (header-row-height row))
@@ -3228,36 +3244,44 @@
              (block-row (db-block-row-by-height-and-hash db height hash-text)))
         (if (or (not block-row) (not (row-ref block-row "block_hex")))
             #f
-            (let ((b (downloaded-block-row->block block-row)))
-              (unless (equal? (block-header-serialize (block-header-field b))
-                              (block-header-serialize
-                                (header-row->header row)))
-                (error "node-validate-blocks: block header mismatch"))
-              ;; Body validation is chain-driven: the rules record carries the
-              ;; connector, emission schedule and coinbase scriptSig bounds, so
-              ;; a non-Bitcoin chain is never measured against Bitcoin's.
-              (let* ((chain (node-config n))
-                     (rules (chain-config-block-rules chain))
-                     (next-utxos
-                       ((block-rules-connect rules)
-                        rules
-                        (chain-config-consensus-params chain)
-                        height
-                        utxos
-                        b
-                        (not (eq? 'structural
-                                  (chain-validation-profile chain))))))
-                (settle-header-work n row b)
-                (apply-block-utxo-transition db b height hash-text)
-                (db-set-block-status db
-                                     hash-text
-                                     height
-                                     "valid"
-                                     (row-ref block-row "block_hex")
-                                     #t)
-                (db-set-active-chain-tip db hash-text height)
-                (mark-mempool-block-effects db b hash-text)
-                next-utxos)))))
+            (let* ((chain (node-config n))
+                   (rules (chain-config-block-rules chain))
+                   ;; Genesis is the trusted anchor and has no persisted body;
+                   ;; its first child receives `#f` as parent context.
+                   (parent-block (and (> height 1)
+                                      (validated-parent-block db row))))
+              (if (and (> height 1) (not parent-block))
+                  #f
+                  (let ((b (downloaded-block-row->block block-row)))
+                    (unless (equal? (block-header-serialize (block-header-field b))
+                                    (block-header-serialize
+                                      (header-row->header row)))
+                      (error "node-validate-blocks: block header mismatch"))
+                    ;; Body validation is chain-driven: the rules record carries
+                    ;; the connector, emission schedule and coinbase scriptSig
+                    ;; bounds, so a non-Bitcoin chain is never measured against
+                    ;; Bitcoin's.
+                    (let ((next-utxos
+                            ((block-rules-connect rules)
+                             rules
+                             (chain-config-consensus-params chain)
+                             height
+                             utxos
+                             b
+                             (not (eq? 'structural
+                                       (chain-validation-profile chain)))
+                             parent-block)))
+                      (settle-header-work n row b)
+                      (apply-block-utxo-transition db b height hash-text)
+                      (db-set-block-status db
+                                           hash-text
+                                           height
+                                           "valid"
+                                           (row-ref block-row "block_hex")
+                                           #t)
+                      (db-set-active-chain-tip db hash-text height)
+                      (mark-mempool-block-effects db b hash-text)
+                      next-utxos)))))))
 
     ;; Whether the block that follows `height` on `rows` is already downloaded.
     (define (next-block-body-in-hand? db rows height)

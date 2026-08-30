@@ -1305,8 +1305,8 @@
   (test "lets a chain replace the connector outright"
     (let* ((calls '())
            (rules (block-rules
-                    connect: (lambda (rules params height utxos b verify?)
-                               (set! calls (cons height calls))
+                    connect: (lambda (rules params height utxos b verify? parent)
+                               (set! calls (cons (list height parent) calls))
                                'replaced)
                     subsidy: (lambda (height) 0)
                     coinbase-script-bounds: (cons 0 0)))
@@ -1319,7 +1319,7 @@
                                    '()
                                    b
                                    rules))
-      (assert-equal '(7) calls))))
+      (assert-equal '((7 #f)) calls))))
 
 (test-group "blocks"
   (test "serializes and parses synthetic block"
