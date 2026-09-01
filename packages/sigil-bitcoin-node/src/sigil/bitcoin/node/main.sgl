@@ -14,6 +14,7 @@
           run-header-sync
           run-loop
           run-listen
+          serve-listener-client
           run-progress-snapshot
           run-progress-made?
           deadline-attempt-args
@@ -282,7 +283,7 @@
         (guard (err
                 (else
                  (node-close n)
-                 (error "with-node: command failed")))
+                 (raise err)))
           (let ((result (proc n)))
             (node-close n)
             result))))
@@ -1106,6 +1107,60 @@
       (and (> max-connections 0)
            (>= completed max-connections)))
 
+    (define (listener-protocol-error-message? message)
+      ;; Keep this list narrow: only errors produced while decoding or applying
+      ;; untrusted peer messages belong to one connection. Read/write callback
+      ;; contract violations use the same top-level prefix as transport errors,
+      ;; so those are matched exactly rather than by prefix: a reader/writer
+      ;; returning too many bytes is an internal bug and must stop the service.
+      (let ((exact '("p2p-read-envelope: unexpected end of stream"
+                     "p2p-read-envelope: empty read"
+                     "p2p-read-envelope: payload too large"
+                     "p2p-write-envelope: write failed"
+                     "p2p-write-envelope: short write")))
+        (or (member message exact)
+            (let loop ((prefixes '("p2p-envelope-parse:"
+                                   "p2p-socket-read-envelope-timeout:"
+                                   "p2p-session-handshake:"
+                                   "version-message-parse:"
+                                   "getheaders-message-parse:"
+                                   "addr-message-parse:"
+                                   "addrv2-message-parse:"
+                                   "inventory-message-parse:"
+                                   "transaction-parse:"
+                                   "compact-size-decode:"
+                                   "getdata:"
+                                   "getaddr:"
+                                   "verack:")))
+              (and (pair? prefixes)
+                   (or (string-prefix? (car prefixes) message)
+                       (loop (cdr prefixes))))))))
+
+    (define (listener-connection-local-error? err)
+      (let ((message (exception-message-or err "")))
+        (or (string=? message
+                      "p2p-envelope-require-magic: network magic mismatch")
+            (string=? message
+                      "p2p-envelope-require-magic: malformed network magic length")
+            (listener-protocol-error-message? message))))
+
+    ;;; Serve one accepted listener client with connection-local containment.
+    ;;;
+    ;;; Recognized peer protocol, magic, EOF, and timeout failures return LAST;
+    ;;; database and internal failures are re-raised unchanged.
+    ;;;
+    ;;; ```scheme
+    ;;; (serve-listener-client serve-peer previous-status)
+    ;;; ```
+    (define (serve-listener-client serve-client last)
+      (: procedure? any? -> any?)
+      (guard (peer-err
+              (else
+               (if (listener-connection-local-error? peer-err)
+                   last
+                   (raise peer-err))))
+        (serve-client)))
+
     (define (run-listen args)
       (: list? -> any?)
       (with-node args
@@ -1124,13 +1179,16 @@
                  (read-timeout (status-number args "--read-timeout" "5000"))
                  (max-steps (status-number args "--max-steps" "8"))
                  (max-tx (status-number args "--max-tx" "64"))
+                 ;; Keep the exported boundary as a first-class call so its
+                 ;; exception guard remains load-bearing in compiled builds.
+                 (serve-one serve-listener-client)
                  (listener (tcp-listen port backlog bind-address)))
             (unless listener
               (error "listen: failed to bind TCP listener"))
             (guard (err
                     (else
                      (socket-close listener)
-                     (error "listen: inbound server failed")))
+                     (raise err)))
               (println "listening: ~a:~a" bind-address port)
               (let loop ((completed 0) (last #f))
                 (if (connection-limit-reached? max-connections completed)
@@ -1141,16 +1199,26 @@
                     (if (socket-ready? listener accept-timeout)
                         (let ((client (tcp-accept listener)))
                           (if client
-                              (loop
-                                (+ completed 1)
-                                (node-serve-inbound-socket
-                                  n
-                                  "inbound"
-                                  (+ completed 1)
-                                  client
-                                  read-timeout
-                                  max-steps
-                                  max-tx))
+                              (let* ((next-completed (+ completed 1))
+                                     (next-last
+                                       (serve-one
+                                         (lambda ()
+                                           (dynamic-wind
+                                             (lambda () #t)
+                                             (lambda ()
+                                               (node-serve-inbound-socket
+                                                 n
+                                                 "inbound"
+                                                 next-completed
+                                                 client
+                                                 read-timeout
+                                                 max-steps
+                                                 max-tx))
+                                             (lambda ()
+                                               (guard (close-err (else #f))
+                                                 (socket-close client)))))
+                                         last)))
+                                (loop next-completed next-last))
                               (loop completed last)))
                         (begin
                           (socket-close listener)

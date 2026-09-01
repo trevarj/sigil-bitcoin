@@ -40,8 +40,8 @@
                                 nonce: 0)
     transactions: (list %coinbase-tx)))
 
-(define (make-session)
-  (p2p-session-create bitcoin-mainnet-magic
+(define (make-session-for-magic magic)
+  (p2p-session-create magic
                       70015
                       1
                       %addr
@@ -50,6 +50,14 @@
                       "/sigil-bitcoin:0.1.0/"
                       0
                       #t))
+
+(define (make-session)
+  (make-session-for-magic bitcoin-mainnet-magic))
+
+(define (all-distinct? items)
+  (or (null? items)
+      (and (not (member (car items) (cdr items)))
+           (all-distinct? (cdr items)))))
 
 (define (repeat-item item count)
   (let loop ((i 0) (items '()))
@@ -71,9 +79,9 @@
 (define (make-peer id score failures banned?)
   (p2p-peer-create id (make-ready-session) score failures banned?))
 
-(define (remote-version-envelope)
+(define (remote-version-envelope-for-magic magic)
   (p2p-envelope
-    magic: bitcoin-mainnet-magic
+    magic: magic
     command: "version"
     payload: (version-message-serialize
                (version-message
@@ -86,6 +94,14 @@
                  user-agent: "/peer:0.1.0/"
                  start-height: 0
                  relay?: #t))))
+
+(define (remote-version-envelope)
+  (remote-version-envelope-for-magic bitcoin-mainnet-magic))
+
+(define (raised-message thunk)
+  (guard (err (else (exception-message err)))
+    (thunk)
+    #f))
 
 (define (headers-envelope headers)
   (p2p-envelope magic: bitcoin-mainnet-magic
@@ -441,6 +457,95 @@
       (assert-equal "verack" (p2p-envelope-command (cadr outbound)))
       (assert-true (peer-state-version-received? (p2p-session-state responded)))
       (assert-true (peer-state-verack-sent? (p2p-session-state responded)))))
+
+  (test "rejects wrong magic during the version handshake"
+    (let ((session (make-session))
+          (written '()))
+      (let ((message
+              (raised-message
+                (lambda ()
+                  (p2p-session-handshake
+                    (lambda ()
+                      (remote-version-envelope-for-magic bitcoin-testnet-magic))
+                    (lambda (envelope)
+                      (set! written (append written (list envelope)))
+                      #t)
+                    session
+                    2)))))
+        (assert-equal "p2p-envelope-require-magic: network magic mismatch"
+                      message)
+        (assert-equal 1 (length written))
+        (assert-equal "version" (p2p-envelope-command (car written)))
+        (assert-false (peer-state-version-sent? (p2p-session-state session)))
+        (assert-false (peer-state-version-received? (p2p-session-state session)))
+        (assert-equal '() (p2p-session-outbound session)))))
+
+  (test "rejects wrong magic after a successful handshake without mutation"
+    (let* ((ready (make-ready-session))
+           (state (p2p-session-state ready))
+           (outbound (p2p-session-outbound ready))
+           (message
+             (raised-message
+               (lambda ()
+                 (p2p-session-apply-envelope
+                   ready
+                   (p2p-envelope magic: bitcoin-regtest-magic
+                                 command: "ping"
+                                 payload: (ping-message 99)))))))
+      (assert-equal "p2p-envelope-require-magic: network magic mismatch"
+                    message)
+      (assert-true (eq? state (p2p-session-state ready)))
+      (assert-equal outbound (p2p-session-outbound ready))
+      (assert-false (peer-state-last-ping state))))
+
+  (test "enforces all Bitcoin network magic values cross-matrix"
+    (let ((magics (list bitcoin-mainnet-magic
+                        bitcoin-testnet-magic
+                        bitcoin-testnet4-magic
+                        bitcoin-signet-magic
+                        bitcoin-regtest-magic)))
+      (assert-true (all-distinct? magics))
+      (for-each
+        (lambda (active)
+          (for-each
+            (lambda (received)
+              (let* ((session (make-session-for-magic active))
+                     (envelope (remote-version-envelope-for-magic received)))
+                (if (equal? active received)
+                    (let ((next (p2p-session-apply-envelope session envelope)))
+                      (assert-true
+                        (peer-state-version-received? (p2p-session-state next)))
+                      (assert-equal active
+                                    (p2p-envelope-magic
+                                      (car (p2p-session-outbound next)))))
+                    (begin
+                      (assert-equal
+                        "p2p-envelope-require-magic: network magic mismatch"
+                        (raised-message
+                          (lambda ()
+                            (p2p-session-apply-envelope session envelope))))
+                      (assert-false
+                        (peer-state-version-received?
+                          (p2p-session-state session)))
+                      (assert-equal '() (p2p-session-outbound session))))))
+            magics))
+        magics)))
+
+  (test "rejects malformed envelope magic length"
+    (let ((session (make-session)))
+      (assert-equal
+        "p2p-envelope-require-magic: malformed network magic length"
+        (raised-message
+          (lambda ()
+            (p2p-session-apply-envelope
+              session
+              (p2p-envelope magic: #u8(#xf9 #xbe #xb4)
+                            command: "version"
+                            payload: (p2p-envelope-payload
+                                       (remote-version-envelope)))))))
+      (assert-false
+        (peer-state-version-received? (p2p-session-state session)))
+      (assert-equal '() (p2p-session-outbound session))))
 
   (test "responds to ping with pong"
     (let* ((session (p2p-session-apply-envelope

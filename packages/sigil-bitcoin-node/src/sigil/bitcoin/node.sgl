@@ -2107,6 +2107,7 @@
               (else #f))))
 
     (define (ingest-peer-address-envelope n envelope)
+      (p2p-envelope-require-magic (chain-config-magic (node-config n)) envelope)
       (let ((command (p2p-envelope-command envelope))
             (payload (p2p-envelope-payload envelope)))
         (cond ((string=? command "addr")
@@ -2297,6 +2298,24 @@
           (node-peer-success n address port)
           (db-peer-row->peer (node-peer-row n address port)))))
 
+    (define (require-node-envelope-magic n envelope)
+      ;; Node dispatchers parse payloads directly, so they share the P2P guard.
+      (p2p-envelope-require-magic
+        (chain-config-magic (node-config n))
+        envelope))
+
+    (define (node-magic-checking-reader n read-envelope reject-proc accept-proc)
+      (: node? procedure? procedure? procedure? -> procedure?)
+      (lambda ()
+        (let ((envelope (read-envelope)))
+          (guard (err
+                  (else
+                   (reject-proc)
+                   (raise err)))
+            (require-node-envelope-magic n envelope))
+          (accept-proc)
+          envelope)))
+
     (define (make-node-session n start-height)
       (let* ((chain (node-config n))
              (addr (network-address services: (chain-config-services chain)
@@ -2345,6 +2364,7 @@
                 inserted
                 (error "node-sync-headers: header sync did not complete"))
             (let ((envelope (read-envelope)))
+              (require-node-envelope-magic n envelope)
               (if (string=? "headers" (p2p-envelope-command envelope))
                   (let* ((headers (headers-message-parse
                                     (p2p-envelope-payload envelope)))
@@ -2693,6 +2713,7 @@
         (length addresses)))
 
     (define (inbound-handle-envelope n session envelope peer-name write-envelope max-tx)
+      (require-node-envelope-magic n envelope)
       (let ((command (p2p-envelope-command envelope)))
         (cond ((string=? command "getheaders")
                (write-headers-response n envelope write-envelope)
@@ -2740,27 +2761,65 @@
         (error "node-serve-inbound-transport: max-steps must be positive"))
       (when (<= max-tx 0)
         (error "node-serve-inbound-transport: max-tx must be positive"))
-      (let ((peer-name (peer-key address port)))
-        (node-upsert-peer n address port "inbound" "")
-        (guard (err
-                (else
-                 (guard (close-err (else #f))
-                   (close-proc))
-                 (node-peer-failure-with-error
-                   n
-                   address
-                   port
-                   (stage-failure-reason "inbound failed" err))
-                 (db-set-sync-failure
-                   (node-db n)
-                   "inbound"
-                   (stage-failure-reason "inbound failed" err))
-                 (raise err)))
+      (let* ((peer-name (peer-key address port))
+             ;; Validate the first wire message before entering the metadata
+             ;; guard so the listener sees the original connection exception.
+             (first-envelope
+               ;; Reject before peer/session/sync metadata and before writing
+               ;; our handshake, but still retire the accepted transport. The
+               ;; close callback is the only side effect a foreign or
+               ;; malformed network frame may cause.
+               (guard (magic-err
+                       (else
+                        (guard (close-err (else #f)) (close-proc))
+                        (raise magic-err)))
+                 (let ((envelope (read-envelope)))
+                   (require-node-envelope-magic n envelope)
+                   envelope)))
+             (first-read-pending? #t)
+             (network-rejected? #f)
+             (network-accepted? #f)
+             (checked-read-envelope
+               (node-magic-checking-reader
+                 n
+                 (lambda ()
+                   (if first-read-pending?
+                       (begin
+                         (set! first-read-pending? #f)
+                         first-envelope)
+                       (read-envelope)))
+                 (lambda ()
+                   (set! network-rejected? #t)
+                   (guard (close-err (else #f))
+                     (close-proc)))
+                 (lambda ()
+                   ;; Do not touch shared sync metadata until this connection
+                   ;; has proved it belongs to the configured network.
+                   (unless network-accepted?
+                     (db-set-sync-stage (node-db n) "inbound-handshake")
+                     (set! network-accepted? #t))))))
+        (let ((result
+                (guard (err
+                        (network-rejected?
+                         (cons 'network-rejected err))
+                        (else
+                         (guard (close-err (else #f))
+                           (close-proc))
+                         (node-upsert-peer n address port "inbound" "")
+                         (node-peer-failure-with-error
+                           n
+                           address
+                           port
+                           (stage-failure-reason "inbound failed" err))
+                         (db-set-sync-failure
+                           (node-db n)
+                           "inbound"
+                           (stage-failure-reason "inbound failed" err))
+                         (raise err)))
           (let* ((start (node-status-snapshot-best-height (node-status n)))
                  (session (make-node-session n start)))
-            (db-set-sync-stage (node-db n) "inbound-handshake")
             (let ((ready (p2p-session-handshake
-                           read-envelope
+                           checked-read-envelope
                            write-envelope
                            session
                            max-steps)))
@@ -2774,14 +2833,23 @@
                       (db-clear-sync-failure (node-db n))
                       (node-peer-success n address port)
                       (node-status n))
-                    (loop (- remaining 1)
-                          (inbound-handle-envelope
-                            n
-                            current
-                            (read-envelope)
-                            peer-name
-                            write-envelope
-                            max-tx)))))))))
+                    (let ((envelope (checked-read-envelope)))
+                      ;; Validation happens before the peer row or dispatch.
+                      (node-upsert-peer n address port "inbound" "")
+                      (loop (- remaining 1)
+                            (inbound-handle-envelope
+                              n
+                              current
+                              envelope
+                              peer-name
+                              write-envelope
+                              max-tx))))))))))
+          ;; Re-raise outside the metadata guard so the listener can contain
+          ;; the original connection-local exception.
+          (if (and (pair? result)
+                   (eq? 'network-rejected (car result)))
+              (raise (cdr result))
+              result))))
 
     ;;; Serve one inbound peer over an accepted socket.
     ;;;
@@ -2945,6 +3013,7 @@
     ;;; ```
     (define (node-handle-transaction-relay n envelope peer-name write-envelope max-tx)
       (: node? p2p-envelope? string? procedure? integer? -> integer?)
+      (require-node-envelope-magic n envelope)
       (let ((command (p2p-envelope-command envelope))
             (payload (p2p-envelope-payload envelope)))
         (cond ((string=? command "addr")
@@ -3041,6 +3110,7 @@
                          stored)
                         (else
                          (let ((envelope (read-envelope)))
+                           (require-node-envelope-magic n envelope)
                            (cond ((string=? "block" (p2p-envelope-command envelope))
                                   (guard (err
                                           (else

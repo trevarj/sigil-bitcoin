@@ -1,6 +1,8 @@
 (import (sigil test)
         (sigil fs)
         (sigil io)
+        (sigil process)
+        (sigil socket)
         (sigil string)
         (sigil time)
         (sigil sqlite)
@@ -179,6 +181,8 @@
 (define run-header-sync* (module-ref %node-main-module 'run-header-sync))
 (define run-loop* (module-ref %node-main-module 'run-loop))
 (define run-listen* (module-ref %node-main-module 'run-listen))
+(define serve-listener-client*
+  (module-ref %node-main-module 'serve-listener-client))
 (define run-probe* (module-ref %node-main-module 'run-probe))
 (define fetch-blocks-node-once*
   (module-ref %node-main-module 'fetch-blocks-node-once))
@@ -312,6 +316,46 @@
     (unless dir
       (error "test-data-dir: failed to create temp directory"))
     dir))
+
+(define (first-existing-path paths)
+  (cond ((null? paths) #f)
+        ((file-exists? (car paths)) (realpath (car paths)))
+        (else (first-existing-path (cdr paths)))))
+
+(define (listener-test-sigil)
+  (or (first-existing-path
+        '("../sigil/build/dev/bin/sigil"
+          "../../../sigil/build/dev/bin/sigil"))
+      (error "listener test: Sigil development executable not found")))
+
+(define (listener-test-module-root)
+  (or (first-existing-path
+        '("build/dev/lib"
+          "packages/sigil-bitcoin-node/build/dev/lib"))
+      (error "listener test: compiled module root not found")))
+
+(define (listener-client-source port)
+  (let ((port-text (number->string port)))
+    (string-append
+      "(import (sigil core) (sigil time) (sigil socket) (sigil bitcoin p2p))\n"
+      "(define %addr (network-address services: 1 ip: #u8(#x00 #x00 #x00 #x00 #x00 #x00 #x00 #x00 #x00 #x00 #xff #xff #x7f #x00 #x00 #x01) port: 18444))\n"
+      "(define (version-envelope magic nonce)\n"
+      "  (p2p-envelope magic: magic command: \"version\"\n"
+      "    payload: (version-message-serialize\n"
+      "      (version-message version: 70015 services: 1 timestamp: 1\n"
+      "        addr-recv: %addr addr-from: %addr nonce: nonce\n"
+      "        user-agent: \"/listener-test/\" start-height: 0 relay?: #t))))\n"
+      "(sleep 0.2)\n"
+      "(let ((sock (p2p-socket-connect-timeout \"127.0.0.1\" " port-text " 2000)))\n"
+      "  (p2p-socket-write-envelope sock (version-envelope bitcoin-mainnet-magic 1))\n"
+      "  (socket-close sock))\n"
+      "(let ((sock (p2p-socket-connect-timeout \"127.0.0.1\" " port-text " 2000)))\n"
+      "  (p2p-socket-write-envelope sock (version-envelope bitcoin-regtest-magic 2))\n"
+      "  (p2p-socket-write-envelope sock (p2p-envelope magic: bitcoin-regtest-magic command: \"verack\" payload: (verack-message)))\n"
+      "  (p2p-socket-write-envelope sock (p2p-envelope magic: bitcoin-regtest-magic command: \"ping\" payload: (ping-message 7)))\n"
+      "  (p2p-socket-write-envelope sock (p2p-envelope magic: bitcoin-regtest-magic command: \"ping\" payload: (ping-message 8)))\n"
+      "  (sleep 1)\n"
+      "  (socket-close sock))\n")))
 
 (define (same-header? left right)
   (equal? (block-header-serialize left)
@@ -621,6 +665,17 @@
                    user-agent: "/peer:0.1.0/"
                    start-height: 0
                    relay?: #t)))))
+
+(define (remote-version-envelope-with-magic chain magic)
+  (let ((envelope (remote-version-envelope chain)))
+    (p2p-envelope magic: magic
+                  command: "version"
+                  payload: (p2p-envelope-payload envelope))))
+
+(define (raised-message thunk)
+  (guard (err (else (exception-message err)))
+    (thunk)
+    #f))
 
 (define (empty-sync-envelopes chain)
   (list (remote-version-envelope chain)
@@ -3008,6 +3063,224 @@
       (let ((entry (car (node-mempool* n))))
         (assert-equal "requested" (node-mempool-entry-status* entry)))
       (node-close* n)))
+
+  (test "rejects wrong magic during inbound version handshake without metadata"
+    (let* ((dir (test-data-dir))
+           (n (node-open* bitcoin-regtest-chain* dir))
+           (before (node-status* n))
+           (writes '())
+           (closed 0)
+           (message
+             (raised-message
+               (lambda ()
+                 (node-serve-inbound-transport*
+                   n
+                   "wrong-version.example"
+                   18444
+                   (one-envelope-reader
+                     (list
+                       (remote-version-envelope-with-magic
+                         bitcoin-regtest-chain*
+                         bitcoin-mainnet-magic)))
+                   (lambda (envelope)
+                     (set! writes (append writes (list envelope))))
+                   (lambda () (set! closed (+ closed 1)))
+                   2
+                   8)))))
+      (assert-equal "p2p-envelope-require-magic: network magic mismatch"
+                    message)
+      (assert-equal 1 closed)
+      ;; Magic is checked before this node writes its version handshake.
+      (assert-equal '() writes)
+      (assert-false
+        (find-peer-by-address (node-peers* n) "wrong-version.example"))
+      (let ((after (node-status* n)))
+        (assert-equal (node-status-snapshot-peer-count* before)
+                      (node-status-snapshot-peer-count* after))
+        (assert-equal (node-status-snapshot-sync-stage* before)
+                      (node-status-snapshot-sync-stage* after))
+        (assert-equal (node-status-snapshot-sync-failed-stage* before)
+                      (node-status-snapshot-sync-failed-stage* after))
+        (assert-equal (node-status-snapshot-sync-last-error* before)
+                      (node-status-snapshot-sync-last-error* after)))
+      (node-close* n)))
+
+  (test "rejects malformed inbound magic without metadata"
+    (let* ((n (node-open* bitcoin-regtest-chain* (test-data-dir)))
+           (before (node-status* n))
+           (closed 0)
+           (message
+             (raised-message
+               (lambda ()
+                 (node-serve-inbound-transport*
+                   n
+                   "malformed-magic.example"
+                   18444
+                   (one-envelope-reader
+                     (list
+                       (remote-version-envelope-with-magic
+                         bitcoin-regtest-chain*
+                         #u8(#xfa #xbf #xb5))))
+                   (lambda (envelope) #t)
+                   (lambda () (set! closed (+ closed 1)))
+                   2
+                   8)))))
+      (assert-equal
+        "p2p-envelope-require-magic: malformed network magic length"
+        message)
+      (assert-equal 1 closed)
+      (assert-false
+        (find-peer-by-address (node-peers* n) "malformed-magic.example"))
+      (let ((after (node-status* n)))
+        (assert-equal (node-status-snapshot-peer-count* before)
+                      (node-status-snapshot-peer-count* after))
+        (assert-equal (node-status-snapshot-sync-stage* before)
+                      (node-status-snapshot-sync-stage* after))
+        (assert-equal (node-status-snapshot-sync-failed-stage* before)
+                      (node-status-snapshot-sync-failed-stage* after))
+        (assert-equal (node-status-snapshot-sync-last-error* before)
+                      (node-status-snapshot-sync-last-error* after)))
+      (node-close* n)))
+
+  (test "rejects wrong magic after inbound handshake without dispatch"
+    (let* ((dir (test-data-dir))
+           (n (node-open* bitcoin-regtest-chain* dir))
+           (before
+             (node-add-peer* n "wrong-post-handshake.example" 18444))
+           (writes '())
+           (closed 0)
+           (message
+             (raised-message
+               (lambda ()
+                 (node-serve-inbound-transport*
+                   n
+                   "wrong-post-handshake.example"
+                   18444
+                   (one-envelope-reader
+                     (list
+                       (remote-version-envelope bitcoin-regtest-chain*)
+                       (p2p-envelope
+                         magic: (chain-config-magic* bitcoin-regtest-chain*)
+                         command: "verack"
+                         payload: (verack-message))
+                       (p2p-envelope magic: bitcoin-testnet-magic
+                                     command: "ping"
+                                     payload: (ping-message 99))))
+                   (lambda (envelope)
+                     (set! writes (append writes (list envelope))))
+                   (lambda () (set! closed (+ closed 1)))
+                   2
+                   8)))))
+      (assert-equal "p2p-envelope-require-magic: network magic mismatch"
+                    message)
+      (assert-equal 1 closed)
+      (assert-equal (list "version" "verack")
+                    (map p2p-envelope-command writes))
+      (let ((after
+              (find-peer-by-address
+                (node-peers* n)
+                "wrong-post-handshake.example")))
+        (assert-equal (node-peer-score* before) (node-peer-score* after))
+        (assert-equal (node-peer-failures* before)
+                      (node-peer-failures* after))
+        (assert-equal (node-peer-last-result* before)
+                      (node-peer-last-result* after))
+        (assert-equal (node-peer-source* before) (node-peer-source* after)))
+      (node-close* n)))
+
+  (test "direct relay dispatch cannot bypass network magic"
+    (let* ((dir (test-data-dir))
+           (n (node-open* bitcoin-regtest-chain* dir))
+           (writes '())
+           (item (inventory-vector type: inv-tx hash: %zero32))
+           (message
+             (raised-message
+               (lambda ()
+                 (node-handle-transaction-relay*
+                   n
+                   (p2p-envelope magic: bitcoin-mainnet-magic
+                                 command: "inv"
+                                 payload: (inv-message (list item)))
+                   "foreign.example:8333"
+                   (lambda (envelope)
+                     (set! writes (append writes (list envelope))))
+                   8)))))
+      (assert-equal "p2p-envelope-require-magic: network magic mismatch"
+                    message)
+      (assert-equal '() writes)
+      (assert-equal '() (node-mempool* n))
+      (node-close* n)))
+
+  (test "listener contains only recognized connection-local errors"
+    (for-each
+      (lambda (message)
+        (assert-equal
+          'listener-alive
+          (serve-listener-client* (lambda () (error message))
+                                  'listener-alive)))
+      '("p2p-envelope-require-magic: network magic mismatch"
+        "p2p-envelope-parse: invalid checksum"
+        "p2p-read-envelope: unexpected end of stream"
+        "p2p-write-envelope: short write"
+        "p2p-socket-read-envelope-timeout: read timed out"))
+    ;; Same prefix, different trust boundary: callback contract failures are
+    ;; node bugs, not hostile peer input, and must propagate.
+    (for-each
+      (lambda (message)
+        (assert-equal
+          message
+          (raised-message
+            (lambda ()
+              (serve-listener-client* (lambda () (error message))
+                                      'listener-alive)))))
+      '("p2p-read-envelope: reader returned too many bytes"
+        "p2p-write-envelope: writer returned too many bytes"
+        "sqlite-query: simulated internal database failure")))
+
+  (test "run-listen drops wrong magic then accepts a correct peer"
+    (let* ((dir (test-data-dir))
+           (probe (tcp-listen 0 1 "127.0.0.1"))
+           (port (cadr (socket-local-address probe)))
+           (helper (string-append dir "/listener-client.sgl")))
+      (socket-close probe)
+      (write-file-string helper (listener-client-source port))
+      (let ((client
+              (process-spawn
+                (listener-test-sigil)
+                "-L"
+                (listener-test-module-root)
+                "eval"
+                "-f"
+                helper)))
+        (unless client
+          (error "listener test: failed to spawn client"))
+        (let* ((result
+                 (run-listen*
+                   (list "--chain" "bitcoin-regtest"
+                         "--data-dir" dir
+                         "--bind" "127.0.0.1"
+                         "--port" (number->string port)
+                         "--backlog" "2"
+                         "--max-connections" "2"
+                         "--accept-timeout" "4000"
+                         "--read-timeout" "1000"
+                         "--max-steps" "2"
+                         "--max-tx" "8")))
+               (client-status (process-wait client)))
+          (assert-equal 0 client-status)
+          (assert-true (node-status-snapshot? result))
+          (assert-equal "idle" (node-status-snapshot-sync-stage* result))))
+      (let ((n (node-open* bitcoin-regtest-chain* dir)))
+        (let ((peers (node-peers* n)))
+          (assert-equal 1 (length peers))
+          (assert-equal "inbound" (node-peer-address* (car peers)))
+          (assert-equal 2 (node-peer-port* (car peers)))
+          (assert-equal "success" (node-peer-last-result* (car peers))))
+        (assert-equal "" (node-status-snapshot-sync-failed-stage*
+                           (node-status* n)))
+        (assert-equal "" (node-status-snapshot-sync-last-error*
+                           (node-status* n)))
+        (node-close* n))))
 
   (test "serves bounded inbound handshake headers and tx relay"
     (let* ((dir (test-data-dir))

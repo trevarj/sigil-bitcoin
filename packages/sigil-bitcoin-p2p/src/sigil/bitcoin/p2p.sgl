@@ -57,6 +57,7 @@
     p2p-checksum
     p2p-envelope-serialize
     p2p-envelope-parse
+    p2p-envelope-require-magic
     p2p-message
     version-message-serialize
     version-message-parse
@@ -343,6 +344,26 @@
         (u32-le (bytevector-length (p2p-envelope-payload envelope)))
         (p2p-checksum (p2p-envelope-payload envelope))
         (p2p-envelope-payload envelope)))
+
+    ;;; Require an envelope to carry the active network's four magic bytes.
+    ;;;
+    ;;; ```scheme
+    ;;; (p2p-envelope-require-magic bitcoin-mainnet-magic envelope)
+    ;;; ```
+    (define (p2p-envelope-require-magic expected-magic envelope)
+      (: bytevector? p2p-envelope? -> p2p-envelope?)
+      (require-bytevector-length
+        "p2p-envelope-require-magic: expected magic"
+        expected-magic
+        4)
+      (unless (p2p-envelope? envelope)
+        (error "p2p-envelope-require-magic: expected p2p-envelope"))
+      (let ((actual-magic (p2p-envelope-magic envelope)))
+        (unless (= 4 (bytevector-length actual-magic))
+          (error "p2p-envelope-require-magic: malformed network magic length"))
+        (unless (equal? expected-magic actual-magic)
+          (error "p2p-envelope-require-magic: network magic mismatch")))
+      envelope)
 
     (define (p2p-envelope-parse bytes)
       (: bytevector? -> p2p-envelope?)
@@ -1160,6 +1181,8 @@
 
     (define (p2p-session-apply-envelope session envelope)
       (: p2p-session? p2p-envelope? -> p2p-session?)
+      ;; Reject foreign networks before peer state or response queues change.
+      (p2p-envelope-require-magic (p2p-session-magic session) envelope)
       (let* ((old-state (p2p-session-state session))
              (new-state (peer-state-apply-envelope old-state envelope))
              (updated (p2p-session-copy session
