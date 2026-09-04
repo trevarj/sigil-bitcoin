@@ -2097,6 +2097,158 @@
                         (node-status* n))))
       (node-close* n)))
 
+  (test "revalidates restored mempool entries after fork reconnect"
+    (let* ((dir (test-data-dir))
+           (n (node-open* bitcoin-regtest-chain* dir))
+           (base-blocks (prepare-mature-utxo-node n))
+           (headers (headers-through base-blocks))
+           (common-a (car (block-transactions (car base-blocks))))
+           (common-b (car (block-transactions (cadr base-blocks))))
+           (shared-funding (make-spend-tx common-a 0 4999990000))
+           (old-only-funding (make-spend-tx common-b 0 4999990000))
+           (old-b102
+             (mine-block
+               headers
+               (list
+                 (make-coinbase-tx
+                   102
+                   (+ (block-subsidy 102) 20000))
+                 shared-funding
+                 old-only-funding)
+               1296749202))
+           (old-headers
+             (append headers (list (block-header-field old-b102))))
+           (restored-valid
+             (make-spend-tx shared-funding 0 4999980000))
+           (restored-missing
+             (make-spend-tx old-only-funding 0 4999980000))
+           (old-b103
+             (mine-block
+               old-headers
+               (list
+                 (make-coinbase-tx
+                   103
+                   (+ (block-subsidy 103) 20000))
+                 restored-valid
+                 restored-missing)
+               1296749802))
+           ;; Recreate only shared-funding late on the winning fork. Its child
+           ;; is missing through the rollback and first connected block but
+           ;; valid in the final state; old-only-funding never comes back.
+           (fork-b102
+             (make-coinbase-block headers 102 1296750202))
+           (fork-b103
+             (mine-block
+               (append headers (list (block-header-field fork-b102)))
+               (list
+                 (make-coinbase-tx
+                   103
+                   (+ (block-subsidy 103) 10000))
+                 shared-funding)
+               1296750802))
+           (fork-b104
+             (make-coinbase-block
+               (append headers
+                       (list (block-header-field fork-b102)
+                             (block-header-field fork-b103)))
+               104
+               1296751402)))
+      (node-ingest-headers* n (list (block-header-field old-b102)))
+      (node-store-block* n old-b102)
+      (assert-equal 1 (node-validate-blocks* n))
+      (assert-equal
+        "available"
+        (node-mempool-entry-status*
+          (node-store-transaction*
+            n restored-valid "relay.example:18444")))
+      (assert-equal
+        "available"
+        (node-mempool-entry-status*
+          (node-store-transaction*
+            n restored-missing "relay.example:18444")))
+      (node-ingest-headers* n (list (block-header-field old-b103)))
+      (node-store-block* n old-b103)
+      (assert-equal 1 (node-validate-blocks* n))
+      (node-ingest-headers*
+        n
+        (list (block-header-field fork-b102)
+              (block-header-field fork-b103)
+              (block-header-field fork-b104)))
+      (store-blocks n (list fork-b102 fork-b103 fork-b104))
+      (assert-equal 3 (node-validate-blocks* n))
+      (let* ((entries (node-mempool* n))
+             (valid
+               (find-mempool-entry-by-txid
+                 entries
+                 (hex-encode (transaction-txid restored-valid))))
+             (missing
+               (find-mempool-entry-by-txid
+                 entries
+                 (hex-encode (transaction-txid restored-missing)))))
+        (assert-equal "available" (node-mempool-entry-status* valid))
+        (assert-equal "" (node-mempool-entry-last-error* valid))
+        (assert-equal "rejected" (node-mempool-entry-status* missing))
+        (assert-equal "missing-input"
+                      (node-mempool-entry-last-error* missing))
+        (assert-equal 1
+                      (node-status-snapshot-mempool-count*
+                        (node-status* n))))
+      (node-close* n)))
+
+  (test "revalidates orphan descendants to a fixed point"
+    (let* ((dir (test-data-dir))
+           (n (node-open* bitcoin-regtest-chain* dir))
+           (h0 (chain-config-genesis-header* bitcoin-regtest-chain*))
+           (old-b1 (make-coinbase-block (list h0) 1 1296688602))
+           (fork-b1 (make-coinbase-block (list h0) 1 1296698602))
+           (fork-h1 (block-header-field fork-b1))
+           (fork-b2
+             (make-coinbase-block (list h0 fork-h1) 2 1296699202))
+           (parent (make-relay-tx 77 1000))
+           (child (make-spend-tx parent 0 900))
+           (parent-txid (hex-encode (transaction-txid parent)))
+           (child-txid (hex-encode (transaction-txid child)))
+           (db (node-db* n)))
+      (node-ingest-headers* n (list (block-header-field old-b1)))
+      (node-store-block* n old-b1)
+      (assert-equal 1 (node-validate-blocks* n))
+      ;; Child first is deliberate: pass one accepts it through the still
+      ;; available parent, then rejects that parent's own missing input.
+      (assert-true
+        (sqlite-run
+          db
+          "INSERT INTO mempool(txid, tx_hex, status, first_seen, updated_at, announced_by, requested_by, request_count, last_error) VALUES (?, ?, 'available', 1, 1, 'test', '', 0, '')"
+          child-txid
+          (hex-encode (transaction-serialize child))))
+      (assert-true
+        (sqlite-run
+          db
+          "INSERT INTO mempool(txid, tx_hex, status, first_seen, updated_at, announced_by, requested_by, request_count, last_error) VALUES (?, ?, 'available', 2, 2, 'test', '', 0, '')"
+          parent-txid
+          (hex-encode (transaction-serialize parent))))
+      (node-ingest-headers*
+        n
+        (list fork-h1 (block-header-field fork-b2)))
+      (store-blocks n (list fork-b1 fork-b2))
+      (assert-equal 2 (node-validate-blocks* n))
+      (let* ((entries (node-mempool* n))
+             (parent-entry
+               (find-mempool-entry-by-txid entries parent-txid))
+             (child-entry
+               (find-mempool-entry-by-txid entries child-txid)))
+        (assert-equal "rejected"
+                      (node-mempool-entry-status* parent-entry))
+        (assert-equal "missing-input"
+                      (node-mempool-entry-last-error* parent-entry))
+        (assert-equal "rejected"
+                      (node-mempool-entry-status* child-entry))
+        (assert-equal "missing-input"
+                      (node-mempool-entry-last-error* child-entry))
+        (assert-equal 0
+                      (node-status-snapshot-mempool-count*
+                        (node-status* n))))
+      (node-close* n)))
+
   (test "handles transaction relay envelopes"
     (let* ((dir (test-data-dir))
            (n (node-open* bitcoin-regtest-chain* dir))
@@ -3540,6 +3692,61 @@
         (assert-equal 0 (length headers)))
       (node-close* n)))
 
+  (test "inbound getheaders skips a stale same-height locator"
+    (let* ((dir (test-data-dir))
+           (n (node-open* bitcoin-regtest-chain* dir))
+           (h0 (chain-config-genesis-header* bitcoin-regtest-chain*))
+           (stale-h1 (mine-next (list h0) 1296688602))
+           (winning-h1 (mine-next (list h0) 1296698602))
+           (winning-h2
+             (mine-next (list h0 winning-h1) 1296699202))
+           (writes '()))
+      (node-ingest-headers* n (list stale-h1 winning-h1 winning-h2))
+      (node-serve-inbound-transport*
+        n
+        "198.51.100.10"
+        18444
+        (one-envelope-reader
+          (list
+            (remote-version-envelope bitcoin-regtest-chain*)
+            (p2p-envelope
+              magic: (chain-config-magic* bitcoin-regtest-chain*)
+              command: "verack"
+              payload: (verack-message))
+            (p2p-envelope
+              magic: (chain-config-magic* bitcoin-regtest-chain*)
+              command: "getheaders"
+              payload: (getheaders-message-serialize
+                         (getheaders-message
+                           version: 70015
+                           locator-hashes:
+                             (list (block-header-hash stale-h1)
+                                   (block-header-hash h0))
+                           stop-hash: %zero32)))
+            (p2p-envelope
+              magic: (chain-config-magic* bitcoin-regtest-chain*)
+              command: "ping"
+              payload: (ping-message #x2122232425262728))))
+        (lambda (envelope)
+          (set! writes (append writes (list envelope))))
+        (lambda () #t)
+        2
+        8)
+      (let* ((response
+               (car
+                 (filter
+                   (lambda (envelope)
+                     (string=? "headers" (p2p-envelope-command envelope)))
+                   writes)))
+             (returned
+               (headers-message-parse (p2p-envelope-payload response))))
+        (assert-equal 2 (length returned))
+        (assert-equal (block-header-hash winning-h1)
+                      (block-header-hash (car returned)))
+        (assert-equal (block-header-hash winning-h2)
+                      (block-header-hash (cadr returned))))
+      (node-close* n)))
+
   (test "serves stored block bodies for inbound getdata"
     (let* ((dir (test-data-dir))
            (n (node-open* bitcoin-regtest-chain* dir))
@@ -4107,7 +4314,8 @@
       (node-ingest-headers* n
                             (map block-header-field new-blocks))
       (for-each (lambda (b) (node-store-block* n b)) new-blocks)
-      (assert-equal 3 (node-validate-blocks* n))
+      (assert-true (node-validation-ready?* n))
+      (assert-equal 3 (node-validate-blocks* n 1))
       (let ((status (node-status* n)))
         (assert-equal 3 (node-status-snapshot-best-height* status))
         (assert-equal 3 (node-status-snapshot-best-block-height* status))
@@ -4117,6 +4325,163 @@
           (node-status-snapshot-best-block-hash* status))
         (assert-equal 3
                       (node-status-snapshot-validated-block-count* status)))
+      (node-close* n)))
+
+  (test "keeps the active chain across incomplete and invalid reconnects"
+    (let* ((dir (test-data-dir))
+           (n (node-open* bitcoin-regtest-chain* dir))
+           (h0 (chain-config-genesis-header* bitcoin-regtest-chain*))
+           (old-blocks (make-coinbase-chain h0 2 1296688602))
+           (old-b1 (car old-blocks))
+           (old-b2 (cadr old-blocks))
+           (new-b1 (make-keyed-block (list h0) 1 1296698602 3))
+           (new-h1 (block-header-field new-b1))
+           (bad-b2
+             (mine-block
+               (list h0 new-h1)
+               (list
+                 (make-coinbase-tx
+                   2
+                   (+ 1 (block-subsidy 2))))
+               1296699202))
+           (bad-h2 (block-header-field bad-b2))
+           (new-b3
+             (make-coinbase-block
+               (list h0 new-h1 bad-h2)
+               3
+               1296699802))
+           (old-b1-hash
+             (hex-encode (block-header-hash (block-header-field old-b1))))
+           (old-b2-hash
+             (hex-encode (block-header-hash (block-header-field old-b2))))
+           (new-b1-hash
+             (hex-encode (block-header-hash new-h1)))
+           (bad-b2-hash
+             (hex-encode (block-header-hash bad-h2))))
+      (node-ingest-headers* n (map block-header-field old-blocks))
+      (store-blocks n old-blocks)
+      (assert-equal 2 (node-validate-blocks* n))
+      (node-ingest-headers*
+        n
+        (list new-h1 bad-h2 (block-header-field new-b3)))
+      ;; A missing tail leaves the old chain intact instead of committing a
+      ;; partial winning fork.
+      (node-store-block* n new-b1)
+      (assert-false (node-validation-ready?* n))
+      (assert-equal 0 (node-validate-blocks* n))
+      (let ((status (node-status* n)))
+        (assert-equal 2
+                      (node-status-snapshot-best-block-height* status))
+        (assert-equal old-b2-hash
+                      (node-status-snapshot-best-block-hash* status))
+        (assert-equal "idle"
+                      (node-status-snapshot-sync-stage* status)))
+      (store-blocks n (list bad-b2 new-b3))
+      ;; Reorg validation ignores the caller's prefix limit, reaches bad-b2,
+      ;; and rolls the attempted new-b1 prefix back before invalidating it.
+      (assert-equal 0 (node-validate-blocks* n 1))
+      (let ((status (node-status* n)))
+        (assert-equal 2
+                      (node-status-snapshot-best-block-height* status))
+        (assert-equal old-b2-hash
+                      (node-status-snapshot-best-block-hash* status))
+        (assert-equal 2
+                      (node-status-snapshot-validated-block-count* status))
+        (assert-equal "failed"
+                      (node-status-snapshot-sync-stage* status)))
+      (let* ((db (node-db* n))
+             (old-b1-utxos
+               (sqlite-query-row
+                 db
+                 "SELECT COUNT(*) AS count FROM utxos WHERE created_by = ? AND active = 1"
+                 old-b1-hash))
+             (old-b2-utxos
+               (sqlite-query-row
+                 db
+                 "SELECT COUNT(*) AS count FROM utxos WHERE created_by = ? AND active = 1"
+                 old-b2-hash))
+             (new-b1-utxos
+               (sqlite-query-row
+                 db
+                 "SELECT COUNT(*) AS count FROM utxos WHERE created_by = ? AND active = 1"
+                 new-b1-hash))
+             (new-b1-row
+               (sqlite-query-row
+                 db
+                 "SELECT status, validated FROM blocks WHERE hash = ?"
+                 new-b1-hash))
+             (bad-b2-row
+               (sqlite-query-row
+                 db
+                 "SELECT status, validated FROM blocks WHERE hash = ?"
+                 bad-b2-hash)))
+        (assert-equal 1 (test-row-ref old-b1-utxos "count"))
+        (assert-equal 1 (test-row-ref old-b2-utxos "count"))
+        (assert-equal 0 (test-row-ref new-b1-utxos "count"))
+        (assert-equal "downloaded" (test-row-ref new-b1-row "status"))
+        (assert-equal 0 (test-row-ref new-b1-row "validated"))
+        (assert-equal "invalid" (test-row-ref bad-b2-row "status"))
+        (assert-equal 0 (test-row-ref bad-b2-row "validated")))
+      (node-close* n)))
+
+  (test "rolls back storage failure without invalidating the fork"
+    (let* ((dir (test-data-dir))
+           (n (node-open* bitcoin-regtest-chain* dir))
+           (db (node-db* n))
+           (h0 (chain-config-genesis-header* bitcoin-regtest-chain*))
+           (old-blocks (make-coinbase-chain h0 2 1296688602))
+           (old-b1 (car old-blocks))
+           (old-b2 (cadr old-blocks))
+           (fork-blocks (make-coinbase-chain h0 3 1296698602))
+           (fork-b1 (car fork-blocks))
+           (old-b1-hash
+             (hex-encode (block-header-hash (block-header-field old-b1))))
+           (old-b2-hash
+             (hex-encode (block-header-hash (block-header-field old-b2))))
+           (fork-b1-hash
+             (hex-encode (block-header-hash (block-header-field fork-b1)))))
+      (node-ingest-headers* n (map block-header-field old-blocks))
+      (store-blocks n old-blocks)
+      (assert-equal 2 (node-validate-blocks* n))
+      (node-ingest-headers* n (map block-header-field fork-blocks))
+      (store-blocks n fork-blocks)
+      (assert-true
+        (sqlite-exec
+          db
+          "CREATE TRIGGER fail_reconnect_utxo_insert BEFORE INSERT ON utxos BEGIN SELECT RAISE(FAIL, 'injected reconnect write failure'); END"))
+      (assert-error (node-validate-blocks* n))
+      (let* ((status (node-status* n))
+             (fork-header
+               (sqlite-query-row
+                 db
+                 "SELECT valid FROM headers WHERE hash = ?"
+                 fork-b1-hash))
+             (fork-block
+               (sqlite-query-row
+                 db
+                 "SELECT status, validated FROM blocks WHERE hash = ?"
+                 fork-b1-hash))
+             (old-utxos
+               (sqlite-query-row
+                 db
+                 "SELECT COUNT(*) AS count FROM utxos WHERE created_by = ? AND active = 1"
+                 old-b1-hash))
+             (fork-utxos
+               (sqlite-query-row
+                 db
+                 "SELECT COUNT(*) AS count FROM utxos WHERE created_by = ? AND active = 1"
+                 fork-b1-hash)))
+        (assert-equal 2
+                      (node-status-snapshot-best-block-height* status))
+        (assert-equal old-b2-hash
+                      (node-status-snapshot-best-block-hash* status))
+        (assert-equal 2
+                      (node-status-snapshot-validated-block-count* status))
+        (assert-equal 1 (test-row-ref fork-header "valid"))
+        (assert-equal "downloaded" (test-row-ref fork-block "status"))
+        (assert-equal 0 (test-row-ref fork-block "validated"))
+        (assert-equal 1 (test-row-ref old-utxos "count"))
+        (assert-equal 0 (test-row-ref fork-utxos "count")))
       (node-close* n)))
 
   (test "downloads missing blocks with getdata"
