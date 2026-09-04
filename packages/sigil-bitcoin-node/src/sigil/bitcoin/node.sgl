@@ -117,9 +117,7 @@
     (define %zero32 (make-bytevector 32 0))
     (define %service-node-network 1)
     (define %service-node-network-limited 1024)
-    ;; Bitcoin Core defines coinbase maturity as 100 blocks. Keep this local
-    ;; until consensus params grow a chain-specific maturity field.
-    (define %node-coinbase-maturity 100)
+
     (define %block-request-stale-seconds 120)
     ;; How many times a body may be asked for, and never delivered, before the
     ;; header that claims it stops holding the best-header slot. A header is
@@ -488,8 +486,8 @@
     ;;; A chain attaches its own rules as
     ;;; `(consensus (block-rules . <block-rules>))` in `extensions`. A chain
     ;;; that attaches nothing uses Bitcoin's rules, so every Bitcoin chain
-    ;;; config keeps today's emission and coinbase bounds. The symbol
-    ;;; `external` declares that the rules belong to another project, which
+    ;;; config keeps today's emission, maturity, and coinbase bounds. The
+    ;;; symbol `external` declares that the rules belong to another project,
     ;;; must build a chain config carrying them before a node can validate
     ;;; blocks.
     ;;;
@@ -2914,10 +2912,13 @@
                 (transaction-parse (hex-decode (row-ref row "tx_hex"))))
               (outpoint-index op)))))
 
-    (define (policy-prevout-value db op txid-text spend-height)
+    (define (policy-prevout-value db op txid-text spend-height
+                                  coinbase-maturity)
       (let ((row (db-active-utxo-row db op)))
         (cond (row
-               (if (row-immature-coinbase? row spend-height)
+               (if (row-immature-coinbase? row
+                                           spend-height
+                                           coinbase-maturity)
                    "immature-coinbase"
                    (row-ref row "value")))
               (else
@@ -2926,12 +2927,12 @@
                      (txout-value output)
                      "missing-input"))))))
 
-    (define (row-immature-coinbase? row spend-height)
+    (define (row-immature-coinbase? row spend-height coinbase-maturity)
       (and (= 1 (row-ref row "coinbase"))
            (< (- spend-height (row-ref row "height"))
-              %node-coinbase-maturity)))
+              coinbase-maturity)))
 
-    (define (transaction-input-policy-failure db tx)
+    (define (transaction-input-policy-failure db tx coinbase-maturity)
       (let ((txid-text (hex-encode (transaction-txid tx)))
             (spend-height (+ (db-best-block-height db) 1)))
         (let loop ((inputs (transaction-inputs tx))
@@ -2942,7 +2943,11 @@
                   "spends-more-than-inputs"
                   "")
               (let* ((op (txin-previous-output (car inputs)))
-                     (value (policy-prevout-value db op txid-text spend-height)))
+                     (value (policy-prevout-value db
+                                                 op
+                                                 txid-text
+                                                 spend-height
+                                                 coinbase-maturity)))
                 (cond ((seen-outpoint? op seen)
                        "duplicate-input")
                       ((string? value)
@@ -2968,12 +2973,18 @@
     ;;; ```
     (define (node-store-transaction n tx source)
       (: node? transaction? string? -> node-mempool-entry?)
-      (if (coinbase-transaction? tx)
-          (db-reject-transaction (node-db n) tx source "coinbase")
-          (let ((failure (transaction-input-policy-failure (node-db n) tx)))
-            (if (string=? failure "")
-                (db-store-transaction (node-db n) tx source)
-                (db-reject-transaction (node-db n) tx source failure)))))
+      (let ((db (node-db n)))
+        (if (coinbase-transaction? tx)
+            (db-reject-transaction db tx source "coinbase")
+            (let* ((coinbase-maturity
+                     (block-rules-coinbase-maturity
+                       (chain-config-block-rules (node-config n))))
+                   (failure
+                     (transaction-input-policy-failure
+                       db tx coinbase-maturity)))
+              (if (string=? failure "")
+                  (db-store-transaction db tx source)
+                  (db-reject-transaction db tx source failure))))))
 
     ;;; Request announced transaction inventory that is not already stored.
     ;;;
@@ -3328,9 +3339,9 @@
                                       (header-row->header row)))
                       (error "node-validate-blocks: block header mismatch"))
                     ;; Body validation is chain-driven: the rules record carries
-                    ;; the connector, emission schedule and coinbase scriptSig
-                    ;; bounds, so a non-Bitcoin chain is never measured against
-                    ;; Bitcoin's.
+                    ;; the connector, emission schedule, coinbase maturity, and
+                    ;; coinbase scriptSig bounds, so a non-Bitcoin chain is
+                    ;; never measured against Bitcoin's.
                     (let ((next-utxos
                             ((block-rules-connect rules)
                              rules

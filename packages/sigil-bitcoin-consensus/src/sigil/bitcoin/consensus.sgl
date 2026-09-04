@@ -60,7 +60,7 @@
     bitcoin-header-rules
     block-rules block-rules?
     block-rules-connect block-rules-subsidy
-    block-rules-coinbase-script-bounds
+    block-rules-coinbase-maturity block-rules-coinbase-script-bounds
     bitcoin-block-rules
     bitcoin-coinbase-script-bounds
     block-header-valid-after?
@@ -83,7 +83,7 @@
     ;;; Maximum Bitcoin money supply in satoshis.
     (define bitcoin-max-money 2100000000000000)
 
-    (define %coinbase-maturity 100)
+    (define %bitcoin-coinbase-maturity 100)
     (define %locktime-threshold 500000000)
     (define %sequence-final #xffffffff)
     (define %sequence-locktime-disable-flag #x80000000)
@@ -566,18 +566,20 @@
     ;;; `#f` for genesis-parent or standalone calls without parent context. `connect`
     ;;; returns the updated UTXO set and raises on an invalid block. It is
     ;;; handed the rules record it was reached through, so the default
-    ;;; connector reads `subsidy` and `coinbase-script-bounds` from the
-    ;;; chain's own record rather than from Bitcoin's constants.
+    ;;; connector reads `subsidy`, `coinbase-maturity`, and
+    ;;; `coinbase-script-bounds` from the chain's own record.
     ;;;
     ;;; `subsidy` is called as `(subsidy height)` and returns the newly
     ;;; issued value, in the chain's smallest unit, that a coinbase may claim
     ;;; on top of the fees it collects.
+    ;;; `coinbase-maturity` is the minimum number of blocks before a coinbase
+    ;;; output may be spent.
     ;;;
     ;;; `coinbase-script-bounds` is an inclusive `(min . max)` pair of
     ;;; coinbase scriptSig byte lengths. Bitcoin uses `(2 . 100)`; a chain
     ;;; that commits data in its coinbase input raises the upper bound.
     ;;;
-    ;;; A chain that only changes emission or coinbase size passes
+    ;;; A chain that only changes emission, maturity, or coinbase size passes
     ;;; `(block-rules-connect bitcoin-block-rules)` as its own `connect` and
     ;;; keeps every other Bitcoin body rule. A chain whose block body is not a
     ;;; Bitcoin block at all supplies its own procedure. This library never
@@ -586,11 +588,13 @@
     ;;; ```scheme
     ;;; (block-rules connect: (block-rules-connect bitcoin-block-rules)
     ;;;              subsidy: (lambda (height) 100000000)
+    ;;;              coinbase-maturity: 1
     ;;;              coinbase-script-bounds: (cons 2 512))
     ;;; ```
     (define-struct block-rules
       (connect procedure?)
       (subsidy procedure?)
+      (coinbase-maturity integer?)
       (coinbase-script-bounds pair?))
 
     (define (rules-argument who maybe-rules)
@@ -957,9 +961,9 @@
                             height: height
                             time: block-time))))))
 
-    (define (spendable-utxo-entry height op entry)
+    (define (spendable-utxo-entry height coinbase-maturity entry)
       (when (and (utxo-entry-coinbase? entry)
-                 (< (- height (utxo-entry-height entry)) %coinbase-maturity))
+                 (< (- height (utxo-entry-height entry)) coinbase-maturity))
         (error "connect-block: immature coinbase spend"))
       entry)
 
@@ -1307,7 +1311,7 @@
                           (error "connect-block: BIP68 height sequence lock not mature"))))))
               (loop (cdr inputs) (cdr entries)))))))
 
-    (define (spend-transaction-inputs utxos tx height)
+    (define (spend-transaction-inputs utxos tx height coinbase-maturity)
       (let loop ((inputs (transaction-inputs tx))
                  (next-utxos utxos)
                  (entries '())
@@ -1319,7 +1323,7 @@
                    (entry (utxo-set-lookup next-utxos op)))
               (unless entry
                 (error "connect-block: missing or already-spent input"))
-              (spendable-utxo-entry height op entry)
+              (spendable-utxo-entry height coinbase-maturity entry)
               (let ((new-input-value (+ input-value
                                         (txout-value (utxo-entry-output entry)))))
                 (require-money "connect-block input value" new-input-value)
@@ -1329,10 +1333,12 @@
                       (cons (utxo-entry-output entry) prevouts)
                       new-input-value))))))
 
-    (define (connect-regular-transaction params utxos tx height block-time verify-scripts?)
+    (define (connect-regular-transaction params utxos tx height block-time
+                                         coinbase-maturity verify-scripts?)
       (validate-regular-transaction tx)
       (validate-final-transaction tx height block-time)
-      (let* ((spent (spend-transaction-inputs utxos tx height))
+      (let* ((spent (spend-transaction-inputs utxos tx height
+                                              coinbase-maturity))
              (without-inputs (car spent))
              (prevouts (cadr spent))
              (input-value (caddr spent))
@@ -1355,10 +1361,10 @@
     ;;; The connector also enforces structural block transaction rules, UTXO
     ;;; availability, value conservation, coinbase maturity, subsidy, and fees.
     ;;;
-    ;;; Emission and coinbase scriptSig bounds come from `rules`, so this is
-    ;;; also the default `connect` for a non-Bitcoin chain that keeps every
-    ;;; other body rule. It is called through `block-rules-connect`, which is
-    ;;; why `rules` comes first.
+    ;;; Emission, coinbase maturity, and coinbase scriptSig bounds come from
+    ;;; `rules`, so this is also the default `connect` for a non-Bitcoin chain
+    ;;; that keeps every other body rule. It is called through
+    ;;; `block-rules-connect`, which is why `rules` comes first.
     (define (connect-block-core rules params height utxos b verify-scripts?
                                 parent-block)
       (: block-rules? consensus-params? integer? list? block? any? any? -> list?)
@@ -1371,6 +1377,7 @@
       (let* ((txs (block-transactions b))
              (coinbase (car txs))
              (block-time (block-header-time (block-header-field b)))
+             (coinbase-maturity (block-rules-coinbase-maturity rules))
              (indexed-utxos (utxo-set-ensure-indexed utxos)))
         (validate-coinbase coinbase (block-rules-coinbase-script-bounds rules))
         (validate-bip34-coinbase-height params height coinbase)
@@ -1391,6 +1398,7 @@
                                  (car remaining)
                                  height
                                  block-time
+                                 coinbase-maturity
                                  verify-scripts?)))
                 (loop (cdr remaining)
                       (car connected)
@@ -1407,6 +1415,7 @@
     (define bitcoin-block-rules
       (block-rules connect: connect-block-core
                    subsidy: block-subsidy
+                   coinbase-maturity: %bitcoin-coinbase-maturity
                    coinbase-script-bounds: bitcoin-coinbase-script-bounds))
 
     ;;; Connect a block using structural and UTXO validation but without
@@ -1415,7 +1424,7 @@
     ;;; script validation on every historical input.
     ;;;
     ;;; The optional `rules` argument replaces the block-body rules; omitting
-    ;;; it applies Bitcoin's emission and coinbase bounds.
+    ;;; it applies Bitcoin's emission, maturity, and coinbase bounds.
     ;;;
     ;;; ```scheme
     ;;; (connect-block/structural params 1 utxos b)
@@ -1429,7 +1438,7 @@
     ;;; Connect a block with full validation, executing standard input scripts.
     ;;;
     ;;; The optional `rules` argument replaces the block-body rules; omitting
-    ;;; it applies Bitcoin's emission and coinbase bounds.
+    ;;; it applies Bitcoin's emission, maturity, and coinbase bounds.
     ;;;
     ;;; ```scheme
     ;;; (connect-block params 1 utxos b)

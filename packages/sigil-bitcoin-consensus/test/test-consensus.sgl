@@ -1155,7 +1155,7 @@
       #t)
     #t)
 
-  (test "rejects immature coinbase spends"
+  (test "enforces Bitcoin coinbase maturity boundary"
     (let* ((funding (make-coinbase-tx 5000))
            (initial (connect-block
                       bitcoin-regtest-consensus-params
@@ -1163,10 +1163,15 @@
                       '()
                       (make-test-block (list funding) 1)))
            (spend (make-spend-tx funding 4000))
-           (coinbase (make-coinbase-tx (+ (block-subsidy 99) 1000)))
-           (b (make-test-block (list coinbase spend) 2)))
+           (coinbase (make-coinbase-tx (+ (block-subsidy 100) 1000)))
+           (b (make-test-block (list coinbase spend) 2))
+           (spend-op (outpoint txid: (transaction-txid spend) index: 0)))
       (assert-error
-        (connect-block bitcoin-regtest-consensus-params 99 initial b))))
+        (connect-block bitcoin-regtest-consensus-params 99 initial b))
+      (let ((updated
+              (connect-block bitcoin-regtest-consensus-params 100 initial b)))
+        (assert-true
+          (utxo-entry? (utxo-set-lookup updated spend-op))))))
 
   (test "rejects duplicate spends in one block"
     (let* ((funding (make-coinbase-tx 5000))
@@ -1182,21 +1187,24 @@
       (assert-error
         (connect-block bitcoin-regtest-consensus-params 100 initial b)))))
 
-;; A fake non-Bitcoin profile: emission is flat and larger than Bitcoin's
-;; subsidy at the same height, and the coinbase input carries far more than
-;; Bitcoin's 100-byte cap. It reuses Bitcoin's connector, which is the case a
-;; chain that changes only emission and coinbase layout needs.
+;; A fake non-Bitcoin profile: coinbase maturity is one block, emission is
+;; flat and larger than Bitcoin's subsidy at the same height, and the coinbase
+;; input carries far more than Bitcoin's 100-byte cap. It reuses Bitcoin's
+;; connector, as a chain changing only these block-body rules would.
 (define %fake-subsidy-value 10000000000)
 (define %fake-coinbase-script-len 240)
 
 (define %fake-block-rules
   (block-rules connect: (block-rules-connect bitcoin-block-rules)
                subsidy: (lambda (height) %fake-subsidy-value)
+               coinbase-maturity: 1
                coinbase-script-bounds: (cons 2 512)))
 
 (test-group "block rules"
-  (test "defaults to bitcoin emission and coinbase bounds"
+  (test "defaults to bitcoin emission, maturity, and coinbase bounds"
     (assert-true (block-rules? bitcoin-block-rules))
+    (assert-equal 100
+                  (block-rules-coinbase-maturity bitcoin-block-rules))
     (assert-equal '(2 . 100)
                   (block-rules-coinbase-script-bounds bitcoin-block-rules))
     (assert-equal '(2 . 100) bitcoin-coinbase-script-bounds)
@@ -1223,6 +1231,32 @@
                         explicit
                         (outpoint txid: (transaction-txid coinbase)
                                   index: 0))))))
+
+  (test "enforces the configured coinbase maturity boundary"
+    (let* ((funding (make-coinbase-tx 5000))
+           (initial (connect-block
+                      bitcoin-regtest-consensus-params
+                      0
+                      '()
+                      (make-test-block (list funding) 1)))
+           (spend (make-spend-tx funding 4000))
+           (coinbase (make-coinbase-tx (+ (block-subsidy 1) 1000)))
+           (b (make-test-block (list coinbase spend) 2))
+           (spend-op (outpoint txid: (transaction-txid spend) index: 0)))
+      (assert-error
+        (connect-block bitcoin-regtest-consensus-params
+                       0
+                       initial
+                       b
+                       %fake-block-rules))
+      (let ((updated
+              (connect-block bitcoin-regtest-consensus-params
+                             1
+                             initial
+                             b
+                             %fake-block-rules)))
+        (assert-true
+          (utxo-entry? (utxo-set-lookup updated spend-op))))))
 
   (test "rejects a rules argument that is not a block-rules record"
     (let* ((coinbase (make-coinbase-tx (block-subsidy 0)))
@@ -1309,6 +1343,7 @@
                                (set! calls (cons (list height parent) calls))
                                'replaced)
                     subsidy: (lambda (height) 0)
+                    coinbase-maturity: 1
                     coinbase-script-bounds: (cons 0 0)))
            (b (make-test-block (list (make-coinbase-tx 0)) 1)))
       ;; Nothing about the block is inspected, which is what a chain whose

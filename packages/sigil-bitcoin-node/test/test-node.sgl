@@ -279,6 +279,8 @@
 (define %fake-block-rules
   (block-rules connect: (block-rules-connect bitcoin-block-rules)
                subsidy: (lambda (height) %fake-subsidy-value)
+               coinbase-maturity:
+                 (block-rules-coinbase-maturity bitcoin-block-rules)
                coinbase-script-bounds: (cons 2 512)))
 
 (define %parent-blocks-seen '())
@@ -294,6 +296,8 @@
 (define %parent-aware-block-rules
   (block-rules connect: %parent-aware-connect
                subsidy: block-subsidy
+               coinbase-maturity:
+                 (block-rules-coinbase-maturity bitcoin-block-rules)
                coinbase-script-bounds: bitcoin-coinbase-script-bounds))
 
 (define (test-chain seed-peers extensions)
@@ -831,8 +835,8 @@
       (assert-equal '((rules . external) (block-rules . external))
                     (chain-config-extension* chain 'consensus '()))
       ;; The rules live in the SigilCoin project, so this repo cannot resolve
-      ;; them and must not silently fall back to Bitcoin proof-of-work or to
-      ;; Bitcoin's emission and coinbase bounds.
+      ;; them and must not silently fall back to Bitcoin proof-of-work,
+      ;; emission, maturity, or coinbase bounds.
       (assert-error (chain-config-header-rules* chain))
       (assert-error (chain-config-block-rules* chain))))
 
@@ -841,6 +845,9 @@
                       (chain-config-block-rules* bitcoin-mainnet-chain*)))
     (assert-true (eq? bitcoin-block-rules
                       (chain-config-block-rules* bitcoin-regtest-chain*)))
+    (assert-equal 100
+                  (block-rules-coinbase-maturity
+                    (chain-config-block-rules* bitcoin-regtest-chain*)))
     (assert-true (eq? bitcoin-block-rules
                       (chain-config-block-rules* (test-chain '() '()))))
     ;; A chain that only replaces header rules still gets Bitcoin bodies.
@@ -1860,6 +1867,47 @@
                       (node-mempool-entry-last-error* entry)))
       (assert-equal 0
                     (node-status-snapshot-mempool-count*
+                      (node-status* n)))
+      (node-close* n)))
+
+  (test "uses chain coinbase maturity for mempool and block admission"
+    (let* ((rules
+             (block-rules
+               connect: (block-rules-connect bitcoin-block-rules)
+               subsidy: (block-rules-subsidy bitcoin-block-rules)
+               coinbase-maturity: 1
+               coinbase-script-bounds:
+                 (block-rules-coinbase-script-bounds bitcoin-block-rules)))
+           (chain
+             (test-chain
+               '()
+               (consensus-extensions
+                 (list (cons 'block-rules rules)))))
+           (dir (test-data-dir))
+           (n (node-open* chain dir))
+           (h0 (chain-config-genesis-header* chain))
+           (b1 (make-coinbase-block (list h0) 1 1296688602))
+           (h1 (block-header-field b1))
+           (funding-tx (car (block-transactions b1)))
+           (spend (make-spend-tx funding-tx 0 4999990000))
+           (b2 (mine-block
+                 (list h0 h1)
+                 (list (make-coinbase-tx 2 (block-subsidy 2)) spend)
+                 1296689202)))
+      (assert-equal 1
+                    (block-rules-coinbase-maturity
+                      (chain-config-block-rules* chain)))
+      (node-ingest-headers* n (list h1))
+      (node-store-block* n b1)
+      (assert-equal 1 (node-validate-blocks* n))
+      (let ((entry
+              (node-store-transaction* n spend "relay.example:18444")))
+        (assert-equal "available" (node-mempool-entry-status* entry)))
+      (node-ingest-headers* n (list (block-header-field b2)))
+      (node-store-block* n b2)
+      (assert-equal 1 (node-validate-blocks* n))
+      (assert-equal 2
+                    (node-status-snapshot-best-block-height*
                       (node-status* n)))
       (node-close* n)))
 
