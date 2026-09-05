@@ -752,8 +752,9 @@
           hash-text)
         "header work update"))
 
+    ;; Preserve insertion order for rules whose equal-rank policy is first-seen.
     (define (db-all-header-rows db)
-      (sqlite-query db (header-select "WHERE valid = 1")))
+      (sqlite-query db (header-select "WHERE valid = 1 ORDER BY rowid ASC")))
 
     (define (db-header-count db)
       (let ((row (sqlite-query-row db "SELECT COUNT(*) AS count FROM headers WHERE valid = 1")))

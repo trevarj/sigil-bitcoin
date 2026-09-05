@@ -211,6 +211,15 @@
                                  (< (chain-candidate-work candidate)
                                     (chain-candidate-work incumbent)))))
 
+;; Equal-rank candidates retain the first header seen.
+(define %first-seen-rules
+  (header-rules accept?: (header-rules-accept? bitcoin-header-rules)
+                chain-work: (lambda (header b previous-work)
+                              (+ previous-work 1))
+                better-chain?: (lambda (candidate incumbent)
+                                 (> (chain-candidate-height candidate)
+                                    (chain-candidate-height incumbent)))))
+
 ;; Rules that accept every header, standing in for a chain whose acceptance
 ;; test is something other than hash proof-of-work.
 (define %accept-any-header-rules
@@ -1000,6 +1009,21 @@
                       (node-status-snapshot-best-height* status))
         (assert-true (same-header? h0 (node-best-header* n))))
       (node-close* n)))
+
+  (test "replays equal-rank headers in insertion order"
+    (let* ((dir (test-data-dir))
+           (chain (test-chain '() (rules-extensions %first-seen-rules)))
+           (n (node-open* chain dir))
+           (h0 (chain-config-genesis-header* chain))
+           (first (mine-next (list h0) 1296688602))
+           (second (mine-next (list h0) 1296689202)))
+      (assert-equal 1 (node-ingest-headers* n (list first)))
+      (assert-equal 1 (node-ingest-headers* n (list second)))
+      (assert-true (same-header? first (node-best-header* n)))
+      (node-close* n)
+      (let ((reopened (node-open* chain dir)))
+        (assert-true (same-header? first (node-best-header* reopened)))
+        (node-close* reopened))))
 
   (test "ranks by a body-derived key that settles when the block validates"
     (let* ((dir (test-data-dir))
