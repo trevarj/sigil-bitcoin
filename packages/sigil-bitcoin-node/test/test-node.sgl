@@ -141,6 +141,7 @@
   (module-ref %node-module 'node-status-snapshot-peer-success-count))
 (define node-status-snapshot-peer-failure-count*
   (module-ref %node-module 'node-status-snapshot-peer-failure-count))
+
 (define node-status-snapshot-peer-untried-count*
   (module-ref %node-module 'node-status-snapshot-peer-untried-count))
 (define node-status-snapshot-pending-block-count*
@@ -200,6 +201,8 @@
   (module-ref %node-main-module 'run-loop-attempt-args))
 (define headers-for-sync-attempt*
   (module-ref %node-module 'headers-for-sync-attempt))
+(define headers-contiguous?*
+  (module-ref %node-module 'headers-contiguous?))
 
 ;; Rules for a chain that does not rank by proof-of-work. The comparator is
 ;; deliberately inverted so a changed tip selection is observable: the chain
@@ -211,10 +214,10 @@
                                  (< (chain-candidate-work candidate)
                                     (chain-candidate-work incumbent)))))
 
-;; Equal-rank candidates retain the first header seen.
+;; Equal-rank headers retain first-seen order when no active tip ties them.
 (define %first-seen-rules
   (header-rules accept?: (header-rules-accept? bitcoin-header-rules)
-                chain-work: (lambda (header b previous-work)
+                chain-work: (lambda (header height b previous-work)
                               (+ previous-work 1))
                 better-chain?: (lambda (candidate incumbent)
                                  (> (chain-candidate-height candidate)
@@ -238,7 +241,7 @@
 
 ;; Before the body arrives the key is unknown, so the chain rates the header
 ;; optimistically. That pulls the body in; the real key then settles the rank.
-(define (%body-ranked-work header b previous-work)
+(define (%body-ranked-work header height b previous-work)
   (+ previous-work (if b (%body-key b) 0)))
 
 (define (%body-ranked-better? candidate incumbent)
@@ -261,6 +264,17 @@
   (header-rules accept?: (header-rules-accept? bitcoin-header-rules)
                 chain-work: %body-ranked-work
                 better-chain?: %body-ranked-better?))
+
+(define %additive-body-rules
+  (header-rules
+    accept?: (header-rules-accept? bitcoin-header-rules)
+    chain-work:
+      (lambda (header height b previous-work)
+        (+ previous-work (if (= height 0) 0 (if b (%body-key b) 1))))
+    better-chain?:
+      (lambda (candidate incumbent)
+        (> (chain-candidate-work candidate)
+           (chain-candidate-work incumbent)))))
 
 ;; The same rule with the settled-height guard removed, so a test can show the
 ;; guard is what protects an extended height rather than some other accident.
@@ -290,7 +304,9 @@
                subsidy: (lambda (height) %fake-subsidy-value)
                coinbase-maturity:
                  (block-rules-coinbase-maturity bitcoin-block-rules)
-               coinbase-script-bounds: (cons 2 512)))
+               coinbase-script-bounds: (cons 2 512)
+               commitment-valid?: block-merkle-root-valid?
+               storage-valid?: (lambda (block bytes) #t)))
 
 (define %parent-blocks-seen '())
 
@@ -307,7 +323,9 @@
                subsidy: block-subsidy
                coinbase-maturity:
                  (block-rules-coinbase-maturity bitcoin-block-rules)
-               coinbase-script-bounds: bitcoin-coinbase-script-bounds))
+               coinbase-script-bounds: bitcoin-coinbase-script-bounds
+               commitment-valid?: block-merkle-root-valid?
+               storage-valid?: (lambda (block bytes) #t)))
 
 (define (test-chain seed-peers extensions)
   (let ((genesis (chain-config-genesis-header* bitcoin-regtest-chain*)))
@@ -922,6 +940,179 @@
       (assert-equal metadata
                     (chain-config-mining-metadata* chain)))))
 
+(test-group "node checkpoints"
+  (test "rejects malformed checkpoint configuration"
+    (for-each
+      (lambda (checkpoints)
+        (assert-error
+          (node-open*
+            (test-chain '() (list (cons 'checkpoints checkpoints)))
+            (test-data-dir))))
+      (list #f
+            (list (cons -1 %zero32))
+            (list (cons 1.0 %zero32))
+            (list (cons 0 %zero32) (cons 0 %zero32))
+            (list (cons 2 %zero32) (cons 1 %zero32))
+            (list (cons 1 (make-bytevector 31 0)))
+            (list (cons 1 (hex-encode %zero32))))))
+
+  (test "accepts matching internal hashes and rejects crossing a checkpoint"
+    (let* ((h0 (chain-config-genesis-header* bitcoin-regtest-chain*))
+           (h1 (mine-next (list h0) 1296688602))
+           (h2 (mine-next (list h0 h1) 1296689202))
+           (h3 (mine-next (list h0 h1 h2) 1296689802))
+           (other1 (mine-next (list h0) 1296698602))
+           (other2 (mine-next (list h0 other1) 1296699202))
+           (chain
+             (test-chain
+               '()
+               (list (cons 'checkpoints
+                           (list (cons 0 (block-header-hash h0))
+                                 (cons 2 (block-header-hash h2))
+                                 (cons 4 %zero32))))))
+           (n (node-open* chain (test-data-dir))))
+      ;; A future checkpoint does not forbid a shorter chain or an earlier
+      ;; fork, but that fork cannot cross its fixed height.
+      (assert-equal 2 (node-ingest-headers* n (list h1 other1)))
+      (assert-equal 2 (node-ingest-headers* n (list h2 h3)))
+      (assert-equal 0 (node-ingest-headers* n (list h0 h2 h3)))
+      (assert-error (node-ingest-headers* n (list other2)))
+      (assert-true (same-header? h3 (node-best-header* n)))
+      (assert-equal 5 (node-status-snapshot-header-count* (node-status* n)))
+      (node-close* n)))
+
+  (test "invalidates cached conflicting headers descendants and bodies on reopen"
+    (let* ((dir (test-data-dir))
+           (chain (test-chain '() (rules-extensions %first-seen-rules)))
+           (h0 (chain-config-genesis-header* chain))
+           (blocks (make-coinbase-chain h0 2 1296688602))
+           (tip (block-header-field (cadr blocks)))
+           (other-blocks (make-coinbase-chain h0 3 1296698602))
+           (other-headers (map block-header-field other-blocks))
+           (other-tip (caddr other-headers))
+           (checkpoint-chain
+             (test-chain
+               '()
+               (cons (cons 'checkpoints
+                           (list (cons 2 (block-header-hash tip))))
+                     (rules-extensions %first-seen-rules))))
+           (n (node-open* chain dir)))
+      (node-ingest-headers* n (map block-header-field blocks))
+      (store-blocks n blocks)
+      (assert-equal 2 (node-validate-blocks* n))
+      (node-ingest-headers* n other-headers)
+      (store-blocks n other-blocks)
+      (assert-true (same-header? other-tip (node-best-header* n)))
+      (node-close* n)
+      (let ((reopened (node-open* checkpoint-chain dir)))
+        (assert-true (same-header? tip (node-best-header* reopened)))
+        (assert-equal 4 (node-status-snapshot-header-count*
+                         (node-status* reopened)))
+        (assert-error
+          (node-ingest-headers* reopened (list (cadr other-headers))))
+        (assert-error (node-ingest-headers* reopened (list other-tip)))
+        (assert-error
+          (node-ingest-headers*
+            reopened (list (mine-next-after other-tip 1296701002))))
+        (for-each
+          (lambda (header)
+            (let ((row
+                    (sqlite-query-row
+                      (node-db* reopened)
+                      "SELECT status FROM blocks WHERE hash = ?"
+                      (hex-encode (block-header-hash header)))))
+              (assert-equal "invalid" (test-row-ref row "status"))))
+          (cdr other-headers))
+        (assert-false (node-validation-ready?* reopened))
+        (assert-equal 0 (node-validate-blocks* reopened))
+        (assert-equal (hex-encode (block-header-hash tip))
+                      (node-status-snapshot-best-block-hash*
+                        (node-status* reopened)))
+        (node-close* reopened))
+      ;; Invalidation is durable, not a process-local candidate filter.
+      (let ((reopened (node-open* checkpoint-chain dir)))
+        (assert-true (same-header? tip (node-best-header* reopened)))
+        (assert-equal 0 (node-validate-blocks* reopened))
+        (node-close* reopened))))
+
+  (test "refuses an active checkpoint conflict without rewriting persisted state"
+    (let* ((dir (test-data-dir))
+           (chain (test-chain '() (rules-extensions %first-seen-rules)))
+           (h0 (chain-config-genesis-header* chain))
+           (blocks (make-coinbase-chain h0 2 1296688602))
+           (tip (block-header-field (cadr blocks)))
+           (other-blocks (make-coinbase-chain h0 3 1296698602))
+           (other-headers (map block-header-field other-blocks))
+           (checkpoint-chain
+             (test-chain
+               '()
+               (cons (cons 'checkpoints
+                           (list (cons 1
+                                       (block-header-hash
+                                         (car other-headers)))))
+                     (rules-extensions %first-seen-rules))))
+           (n (node-open* chain dir)))
+      (node-ingest-headers* n (map block-header-field blocks))
+      (store-blocks n blocks)
+      (assert-equal 2 (node-validate-blocks* n))
+      ;; The cached branch ranks higher and is fully downloaded. It must not
+      ;; disguise the incompatible active state during initialization.
+      (node-ingest-headers* n other-headers)
+      (store-blocks n other-blocks)
+      (node-close* n)
+      (assert-error (node-open* checkpoint-chain dir))
+      (let ((reopened (node-open* chain dir)))
+        (assert-equal (hex-encode (block-header-hash tip))
+                      (node-status-snapshot-best-block-hash*
+                        (node-status* reopened)))
+        (assert-equal 2 (node-status-snapshot-validated-block-count*
+                         (node-status* reopened)))
+        (assert-equal 6 (node-status-snapshot-header-count*
+                         (node-status* reopened)))
+        (assert-true
+          (same-header? (caddr other-headers) (node-best-header* reopened)))
+        (assert-equal 3 (node-validate-blocks* reopened))
+        (node-close* reopened))
+      (let ((reopened (node-open* checkpoint-chain dir)))
+        (assert-equal (hex-encode (block-header-hash (caddr other-headers)))
+                      (node-status-snapshot-best-block-hash*
+                        (node-status* reopened)))
+        (node-close* reopened))))
+
+  (test "rejects a genesis checkpoint mismatch atomically"
+    (let ((dir (test-data-dir)))
+      (assert-error
+        (node-open*
+          (test-chain '() (list (cons 'checkpoints (list (cons 0 %zero32)))))
+          dir))
+      (let ((n (node-open* (test-chain '() '()) dir)))
+        (assert-equal 1 (node-status-snapshot-header-count* (node-status* n)))
+        (assert-equal 0 (node-status-snapshot-best-block-height* (node-status* n)))
+        (node-close* n)))))
+
+(test-group "node schema migrations"
+  (test "backfills validated legacy headers as body-known"
+    (let* ((dir (test-data-dir))
+           (n (node-open* bitcoin-regtest-chain* dir))
+           (h0 (chain-config-genesis-header* bitcoin-regtest-chain*))
+           (b1 (make-coinbase-block (list h0) 1 1296688602))
+           (h1 (block-header-field b1))
+           (hash-text (hex-encode (block-header-hash h1))))
+      (node-ingest-headers* n (list h1))
+      (node-store-block* n b1)
+      (assert-equal 1 (node-validate-blocks* n))
+      (sqlite-exec (node-db* n)
+                   "ALTER TABLE headers DROP COLUMN body_known")
+      (node-close* n)
+      (let* ((reopened (node-open* bitcoin-regtest-chain* dir))
+             (row
+               (sqlite-query-row
+                 (node-db* reopened)
+                 "SELECT body_known FROM headers WHERE hash = ?"
+                 hash-text)))
+        (assert-equal 1 (test-row-ref row "body_known"))
+        (node-close* reopened)))))
+
 (test-group "node state"
   (test "initializes genesis header"
     (let* ((dir (test-data-dir))
@@ -941,6 +1132,18 @@
         (same-header? (chain-config-genesis-header* bitcoin-regtest-chain*)
                       (node-best-header* n)))
       (node-close* n)))
+
+  (test "refuses a database rooted at another genesis"
+    (let* ((dir (test-data-dir))
+           (n (node-open* bitcoin-regtest-chain* dir))
+           (db (node-db* n)))
+      ;; Simulate state created before the genesis fingerprint existed.
+      (sqlite-run db "DELETE FROM metadata WHERE key = ?" "genesis-hash")
+      (sqlite-run db
+                  "UPDATE headers SET hash = ? WHERE height = 0"
+                  (make-string 64 #\f))
+      (node-close* n)
+      (assert-error (node-open* bitcoin-regtest-chain* dir))))
 
   (test "exposes the renamed chain fields under their old names"
     (let* ((dir (test-data-dir))
@@ -1024,6 +1227,132 @@
       (let ((reopened (node-open* chain dir)))
         (assert-true (same-header? first (node-best-header* reopened)))
         (node-close* reopened))))
+
+  (test "retains the durable active tip on an exact score tie after reopen"
+    (let* ((dir (test-data-dir))
+           (chain (test-chain '() (rules-extensions %first-seen-rules)))
+           (h0 (chain-config-genesis-header* chain))
+           (first (make-keyed-block (list h0) 1 1296688602 2))
+           (first-header (block-header-field first))
+           (second (make-keyed-block (list h0) 1 1296689202 8))
+           (second-header (block-header-field second))
+           (first-hash (hex-encode (block-header-hash first-header)))
+           (n (node-open* chain dir)))
+      (node-ingest-headers* n (list first-header))
+      (node-store-block* n first)
+      (assert-equal 1 (node-validate-blocks* n))
+      (node-ingest-headers* n (list second-header))
+      (node-store-block* n second)
+      (assert-equal 0 (node-validate-blocks* n))
+      (assert-true (same-header? first-header (node-best-header* n)))
+      (assert-equal first-hash
+                    (node-status-snapshot-best-block-hash* (node-status* n)))
+      (node-close* n)
+      (let ((reopened (node-open* chain dir)))
+        (assert-true (same-header? first-header (node-best-header* reopened)))
+        (assert-equal first-hash
+                      (node-status-snapshot-best-block-hash*
+                        (node-status* reopened)))
+        (node-close* reopened))))
+
+  (test "preserves the durable active tip while a better downloaded fork awaits validation"
+    (let* ((dir (test-data-dir))
+           (chain (test-chain '() (rules-extensions %first-seen-rules)))
+           (h0 (chain-config-genesis-header* chain))
+           (blocks (make-coinbase-chain h0 2 1296688602))
+           (tip (block-header-field (cadr blocks)))
+           (other-blocks (make-coinbase-chain h0 3 1296698602))
+           (other-tip (block-header-field (caddr other-blocks)))
+           (n (node-open* chain dir)))
+      (node-ingest-headers* n (map block-header-field blocks))
+      (store-blocks n blocks)
+      (assert-equal 2 (node-validate-blocks* n))
+      (node-ingest-headers* n (map block-header-field other-blocks))
+      (store-blocks n other-blocks)
+      (node-close* n)
+      (let ((reopened (node-open* chain dir)))
+        (assert-true (same-header? other-tip (node-best-header* reopened)))
+        (assert-equal (hex-encode (block-header-hash tip))
+                      (node-status-snapshot-best-block-hash*
+                        (node-status* reopened)))
+        (assert-equal 2 (node-status-snapshot-best-block-height*
+                         (node-status* reopened)))
+        (assert-equal 2 (node-status-snapshot-validated-block-count*
+                         (node-status* reopened)))
+        (assert-equal 3 (node-validate-blocks* reopened))
+        (assert-equal (hex-encode (block-header-hash other-tip))
+                      (node-status-snapshot-best-block-hash*
+                        (node-status* reopened)))
+        (node-close* reopened))))
+
+  (test "rebases a bodyless child when its parent score settles"
+    (let* ((dir (test-data-dir))
+           (chain
+             (test-chain '() (rules-extensions %additive-body-rules)))
+           (n (node-open* chain dir))
+           (h0 (chain-config-genesis-header* chain))
+           (parent (make-keyed-block (list h0) 1 1296688602 9))
+           (parent-header (block-header-field parent))
+           (child
+             (make-keyed-block (list h0 parent-header) 2 1296689202 1))
+           (child-header (block-header-field child)))
+      (assert-equal 2
+                    (node-ingest-headers*
+                      n
+                      (list parent-header child-header)))
+      (assert-equal 2 (node-status-snapshot-best-work* (node-status* n)))
+      (node-store-block* n parent)
+      (assert-equal 10 (node-status-snapshot-best-work* (node-status* n)))
+      (assert-equal 1 (node-validate-blocks* n))
+      (assert-true (same-header? child-header (node-best-header* n)))
+      (let ((row
+              (sqlite-query-row
+                (node-db* n)
+                "SELECT work FROM headers WHERE hash = ?"
+                (hex-encode (block-header-hash child-header)))))
+        (assert-equal "10" (test-row-ref row "work")))
+      (node-close* n)))
+
+  (test "rebases an in-hand child's full provisional score"
+    (let* ((dir (test-data-dir))
+           (chain
+             (test-chain '() (rules-extensions %additive-body-rules)))
+           (n (node-open* chain dir))
+           (h0 (chain-config-genesis-header* chain))
+           (parent (make-keyed-block (list h0) 1 1296688602 9))
+           (parent-header (block-header-field parent))
+           (child
+             (make-keyed-block (list h0 parent-header) 2 1296689202 5))
+           (child-header (block-header-field child)))
+      (node-ingest-headers* n (list parent-header child-header))
+      (node-store-block* n child)
+      (assert-equal 6 (node-status-snapshot-best-work* (node-status* n)))
+      (node-store-block* n parent)
+      (assert-equal 14 (node-status-snapshot-best-work* (node-status* n)))
+      (assert-equal 2 (node-validate-blocks* n))
+      (assert-equal 14 (node-status-snapshot-best-work* (node-status* n)))
+      (node-close* n)))
+
+  (test "validates an in-hand sibling that can beat the active score"
+    (let* ((dir (test-data-dir))
+           (chain
+             (test-chain '() (rules-extensions %additive-body-rules)))
+           (n (node-open* chain dir))
+           (h0 (chain-config-genesis-header* chain))
+           (first (make-keyed-block (list h0) 1 1296688602 2))
+           (first-header (block-header-field first))
+           (better (make-keyed-block (list h0) 1 1296689202 9))
+           (better-header (block-header-field better)))
+      (node-ingest-headers* n (list first-header))
+      (node-store-block* n first)
+      (assert-equal 1 (node-validate-blocks* n))
+      (node-ingest-headers* n (list better-header))
+      (assert-true (same-header? first-header (node-best-header* n)))
+      (node-store-block* n better)
+      (assert-true (same-header? better-header (node-best-header* n)))
+      (assert-equal 1 (node-validate-blocks* n))
+      (assert-equal 9 (node-status-snapshot-best-work* (node-status* n)))
+      (node-close* n)))
 
   (test "ranks by a body-derived key that settles when the block validates"
     (let* ((dir (test-data-dir))
@@ -1275,8 +1604,7 @@
                         (node-status* n)))
       (assert-equal (hex-encode (block-header-hash h2))
                     (node-status-snapshot-best-block-hash* (node-status* n)))
-      ;; Reopening rebuilds the active-chain metadata, which must not be a
-      ;; second route to the same rollback.
+      ;; Another validation pass must not become a route to the same rollback.
       (assert-equal 0 (node-validate-blocks* n))
       (assert-equal 2 (node-status-snapshot-validated-block-count*
                         (node-status* n)))
@@ -1363,6 +1691,63 @@
       (assert-true (same-header? bad (node-best-header* custom-node)))
       (node-close* default-node)
       (node-close* custom-node)))
+
+  (test "invalid and replayed headers cannot evict accepted cache rows"
+    (let* ((rules
+             (header-rules
+               accept?:
+                 (lambda (params previous header)
+                   (not (= 7 (block-header-nonce header))))
+               chain-work:
+                 (lambda (header height block previous-work)
+                   (+ previous-work 1))
+               better-chain?:
+                 (header-rules-better-chain? bitcoin-header-rules)))
+           (chain
+             (test-chain
+               '()
+               (append
+                 (rules-extensions rules)
+                 (list
+                   (cons 'policy
+                         (list (cons 'max-unsettled-headers 1)))))))
+           (n (node-open* chain (test-data-dir)))
+           (genesis (chain-config-genesis-header* chain))
+           (accepted (unmined-next genesis 1296688602))
+           (invalid
+             (block-header
+               version: 1
+               previous-block: (block-header-hash accepted)
+               merkle-root: %zero32
+               time: 1296688603
+               bits: #x1d00ffff
+               nonce: 7)))
+      (assert-equal 1 (node-ingest-headers* n (list accepted)))
+      (assert-error (node-ingest-headers* n (list invalid)))
+      (assert-equal 0 (node-ingest-headers* n (list accepted)))
+      (assert-equal 2
+                    (node-status-snapshot-header-count* (node-status* n)))
+      (assert-true (same-header? accepted (node-best-header* n)))
+      (node-close* n)))
+  (test "rejects a header before deriving its score"
+    (let* ((scored? #f)
+           (bitcoin-work (header-rules-chain-work bitcoin-header-rules))
+           (rules
+             (header-rules
+               accept?: (lambda (params previous header) #f)
+               chain-work:
+                 (lambda (header height block previous-work)
+                   (when (> height 0) (set! scored? #t))
+                   (bitcoin-work header height block previous-work))
+               better-chain?:
+                 (header-rules-better-chain? bitcoin-header-rules)))
+           (chain (test-chain '() (rules-extensions rules)))
+           (n (node-open* chain (test-data-dir)))
+           (genesis (chain-config-genesis-header* chain))
+           (candidate (unmined-next genesis 1296688602)))
+      (assert-error (node-ingest-headers* n (list candidate)))
+      (assert-false scored?)
+      (node-close* n)))
 
   (test "persists headers across opens"
     (let* ((dir (test-data-dir))
@@ -1789,8 +2174,12 @@
            (n (node-open* bitcoin-regtest-chain* dir))
            (h0 (chain-config-genesis-header* bitcoin-regtest-chain*))
            (b1 (make-coinbase-block (list h0) 1 1296688602))
-           (h1 (block-header-field b1)))
+           (h1 (block-header-field b1))
+           (wrong-body
+             (block header-field: h1
+                    transactions: (list (make-coinbase-tx 1 1)))))
       (node-ingest-headers* n (list h1))
+      (assert-error (node-store-block* n wrong-body))
       (let ((info (node-store-block* n b1)))
         (assert-equal "downloaded" (node-block-info-status* info)))
       (assert-equal 1 (node-validate-blocks* n))
@@ -1801,6 +2190,42 @@
         (assert-equal 0 (node-status-snapshot-peer-count* status))
         (assert-equal 0 (node-status-snapshot-pending-block-count* status)))
       (node-close* n)))
+
+  (test "preserves validated duplicate bodies and rejects conflicting bytes"
+    (let* ((dir (test-data-dir))
+           (n (node-open* bitcoin-regtest-chain* dir))
+           (h0 (chain-config-genesis-header* bitcoin-regtest-chain*))
+           (blocks (make-coinbase-chain h0 2 1296688602))
+           (parent (car blocks))
+           (tip (cadr blocks))
+           (tip-hash (hex-encode (block-header-hash (block-header-field tip))))
+           (conflict
+             (block header-field: (block-header-field parent)
+                    transactions: (list (make-coinbase-tx 1 1)))))
+      (node-ingest-headers* n (map block-header-field blocks))
+      (store-blocks n blocks)
+      (assert-equal 2 (node-validate-blocks* n))
+      (assert-equal
+        "valid"
+        (node-block-info-status*
+          (node-store-block* n (block-parse (block-serialize parent)))))
+      (assert-equal 2 (node-status-snapshot-validated-block-count*
+                       (node-status* n)))
+      (assert-false (node-validation-ready?* n))
+      (assert-error (node-store-block* n conflict))
+      (assert-equal "valid"
+                    (node-block-info-status* (node-store-block* n parent)))
+      (assert-equal 0 (node-validate-blocks* n))
+      (assert-equal tip-hash
+                    (node-status-snapshot-best-block-hash* (node-status* n)))
+      (node-close* n)
+      (let ((reopened (node-open* bitcoin-regtest-chain* dir)))
+        (assert-equal 2 (node-status-snapshot-validated-block-count*
+                         (node-status* reopened)))
+        (assert-equal tip-hash
+                      (node-status-snapshot-best-block-hash*
+                        (node-status* reopened)))
+        (node-close* reopened))))
 
   (test "requests and stores announced transactions"
     (let* ((dir (test-data-dir))
@@ -1871,6 +2296,21 @@
                       (node-status* n)))
       (node-close* n)))
 
+  (test "rejects structurally empty regular transactions"
+    (let* ((n (node-open* bitcoin-regtest-chain* (test-data-dir)))
+           (empty (transaction version: 1
+                               inputs: '()
+                               outputs: '()
+                               lock-time: 0))
+           (entry
+             (node-store-transaction* n empty "relay.example:18444")))
+      (assert-equal "rejected" (node-mempool-entry-status* entry))
+      (assert-equal "malformed-transaction"
+                    (node-mempool-entry-last-error* entry))
+      (assert-equal 0
+                    (node-status-snapshot-mempool-count* (node-status* n)))
+      (node-close* n)))
+
   (test "rejects missing and immature mempool inputs"
     (let* ((dir (test-data-dir))
            (n (node-open* bitcoin-regtest-chain* dir))
@@ -1894,6 +2334,30 @@
                       (node-status* n)))
       (node-close* n)))
 
+  (test "chain policy rejects invalid mempool scripts"
+    (let* ((chain
+             (test-chain
+               '()
+               (list
+                 (cons 'policy
+                       (list (cons 'verify-mempool-scripts? #t))))))
+           (n (node-open* chain (test-data-dir)))
+           (blocks (prepare-mature-utxo-node n))
+           (funding (car (block-transactions (car blocks))))
+           (_
+             (sqlite-run
+               (node-db* n)
+               "UPDATE utxos SET script_pubkey = '00140000000000000000000000000000000000000000' WHERE txid = ? AND output_index = 0 AND active = 1"
+               (hex-encode (transaction-txid funding))))
+           (unsigned (make-spend-tx funding 0 4999990000))
+           (entry
+             (node-store-transaction*
+               n unsigned "relay.example:18444")))
+      (assert-equal "rejected" (node-mempool-entry-status* entry))
+      (assert-equal "invalid-script"
+                    (node-mempool-entry-last-error* entry))
+      (node-close* n)))
+
   (test "uses chain coinbase maturity for mempool and block admission"
     (let* ((rules
              (block-rules
@@ -1901,7 +2365,9 @@
                subsidy: (block-rules-subsidy bitcoin-block-rules)
                coinbase-maturity: 1
                coinbase-script-bounds:
-                 (block-rules-coinbase-script-bounds bitcoin-block-rules)))
+                 (block-rules-coinbase-script-bounds bitcoin-block-rules)
+               commitment-valid?: block-merkle-root-valid?
+               storage-valid?: (lambda (block bytes) #t)))
            (chain
              (test-chain
                '()
@@ -2347,6 +2813,41 @@
                       (node-status* n)))
       (node-close* n)))
 
+  (test "caps persisted transaction announcements at chain policy"
+    (let* ((chain
+             (test-chain
+               '()
+               (list (cons 'policy
+                           (list (cons 'max-mempool-count 2))))))
+           (n (node-open* chain (test-data-dir)))
+           (items
+             (list
+               (inventory-vector type: inv-tx hash: (make-bytevector 32 1))
+               (inventory-vector type: inv-tx hash: (make-bytevector 32 2))
+               (inventory-vector type: inv-tx hash: (make-bytevector 32 3))
+               (inventory-vector type: inv-tx hash: (make-bytevector 32 4))))
+           (writes '()))
+      (assert-equal
+        2
+        (node-request-transactions*
+          n items "relay.example:18444"
+          (lambda (envelope) (set! writes (cons envelope writes)))
+          8))
+      (assert-equal 2 (length (node-mempool* n)))
+      (assert-equal 1 (length writes))
+      (assert-equal
+        0
+        (node-request-transactions*
+          n
+          (list
+            (inventory-vector type: inv-tx hash: (make-bytevector 32 5)))
+          "relay.example:18444"
+          (lambda (envelope) (set! writes (cons envelope writes)))
+          8))
+      (assert-equal 2 (length (node-mempool* n)))
+      (assert-equal 1 (length writes))
+      (node-close* n)))
+
   (test "does not immediately re-request fresh transactions from same peer"
     (let* ((dir (test-data-dir))
            (n (node-open* bitcoin-regtest-chain* dir))
@@ -2458,7 +2959,7 @@
                    "SELECT updated_at, request_count FROM mempool WHERE txid = ?"
                    txid)))
         (assert-true (> (test-row-ref row "updated_at") 1))
-        (assert-equal 2 (test-row-ref row "request_count")))
+        (assert-equal 1 (test-row-ref row "request_count")))
       (node-close* n)))
 
   (test "does not immediately re-request failed transactions from same peer"
@@ -2662,6 +3163,10 @@
       (node-store-block* first b1)
       (node-store-block* first b2)
       (assert-equal 2 (node-validate-blocks* first))
+      ;; A higher-ranked header branch is not evidence that its common prefix
+      ;; is the active UTXO tip.
+      (node-ingest-headers*
+        first (make-header-chain h0 3 1296698602))
       ;; Simulate an older DB created before active-chain-tip metadata existed.
       (sqlite-run (node-db* first)
                   "DELETE FROM metadata WHERE key = ? OR key = ?"
@@ -2854,8 +3359,8 @@
           (assert-equal "failure" (node-peer-last-result* bad))
           (assert-equal "connect failed: simulated connect failure"
                         (node-peer-last-error* bad))
-          (assert-equal 1 (node-peer-score* good))
-          (assert-equal "success" (node-peer-last-result* good))))
+          (assert-equal 0 (node-peer-score* good))
+          (assert-equal "" (node-peer-last-result* good))))
       (node-close* n)))
 
   (test "retries another peer after handshake failure"
@@ -2885,7 +3390,7 @@
         (assert-equal 2 closed)
         (assert-equal "handshake failed: simulated handshake timeout"
                       (node-peer-last-error* bad))
-        (assert-equal "success" (node-peer-last-result* good)))
+        (assert-equal "" (node-peer-last-result* good)))
       (node-close* n)))
 
   (test "honors the configured peer retry limit"
@@ -2904,7 +3409,7 @@
       (assert-equal 3 attempts)
       (let ((peer (car (node-peers* n))))
         (assert-equal 2 (node-peer-failures* peer))
-        (assert-equal "success" (node-peer-last-result* peer)))
+        (assert-equal "" (node-peer-last-result* peer)))
       (node-close* n)))
 
   (test "diversifies bounded peer attempts across network buckets"
@@ -3072,7 +3577,13 @@
             (set! second-writes (append second-writes (list envelope))))
           8
           0)
-        (let* ((request (cadddr second-writes))
+        (let* ((request
+                 (car
+                   (filter
+                     (lambda (envelope)
+                       (string=? "getheaders"
+                                 (p2p-envelope-command envelope)))
+                     second-writes)))
                (payload (getheaders-message-parse
                           (p2p-envelope-payload request))))
           (assert-equal "getheaders" (p2p-envelope-command request))
@@ -3119,13 +3630,17 @@
         (member "getdata" (map p2p-envelope-command writes)))
       (node-close* n)))
 
-  (test "bounded peer sync yields progress after header timeout"
+  (test "header-only sync does not earn peer success"
     (let* ((dir (test-data-dir))
            (n (node-open* bitcoin-regtest-chain* dir))
            (h0 (chain-config-genesis-header* bitcoin-regtest-chain*))
            (b1 (make-coinbase-block (list h0) 1 1296688602))
            (h1 (block-header-field b1))
-           (full-batch (repeat-item h1 p2p-max-headers-per-message))
+           (full-batch
+             (cons h1
+                   (make-header-chain h1
+                                      (- p2p-max-headers-per-message 1)
+                                      1296689202)))
            (writes '()))
       (node-add-peer* n "progress.example" 18444)
       (let ((status
@@ -3160,10 +3675,10 @@
                 0)))
         (assert-equal "idle" (node-status-snapshot-sync-stage* status))
         (assert-equal "" (node-status-snapshot-sync-last-error* status))
-        (assert-equal 2 (node-status-snapshot-header-count* status))
+        (assert-equal 1025 (node-status-snapshot-header-count* status))
         (assert-equal 0 (node-status-snapshot-block-count* status)))
       (let ((peer (find-peer-by-address (node-peers* n) "progress.example")))
-        (assert-equal "success" (node-peer-last-result* peer))
+        (assert-equal "" (node-peer-last-result* peer))
         (assert-equal "" (node-peer-last-error* peer)))
       (assert-true (member "getheaders" (map p2p-envelope-command writes)))
       (node-close* n)))
@@ -3173,13 +3688,26 @@
            (bounded (headers-for-sync-attempt* (repeat-item header 1200))))
       (assert-equal 1024 (length bounded))))
 
+  (test "rejects sibling headers in one peer response"
+    (let* ((h0 (chain-config-genesis-header* bitcoin-regtest-chain*))
+           (first (block-header-field
+                    (make-coinbase-block (list h0) 1 1296688602)))
+           (sibling (block-header-field
+                      (make-coinbase-block (list h0) 1 1296689202))))
+      (assert-true (headers-contiguous?* (list h0 first)))
+      (assert-false (headers-contiguous?* (list first sibling)))))
+
   (test "continues to block download after bounded full header batches"
     (let* ((dir (test-data-dir))
            (n (node-open* bitcoin-regtest-chain* dir))
            (h0 (chain-config-genesis-header* bitcoin-regtest-chain*))
            (b1 (make-coinbase-block (list h0) 1 1296688602))
            (h1 (block-header-field b1))
-           (full-batch (repeat-item h1 p2p-max-headers-per-message))
+           (full-batch
+             (cons h1
+                   (make-header-chain h1
+                                      (- p2p-max-headers-per-message 1)
+                                      1296689202)))
            (writes '()))
       (node-sync-with-peer*
         n
@@ -3194,8 +3722,8 @@
                               command: "headers"
                               payload: (headers-message-serialize full-batch))
                 (p2p-envelope magic: (chain-config-magic* bitcoin-regtest-chain*)
-                              command: "headers"
-                              payload: (headers-message-serialize full-batch))
+                              command: "block"
+                              payload: (block-message b1))
                 (p2p-envelope magic: (chain-config-magic* bitcoin-regtest-chain*)
                               command: "block"
                               payload: (block-message b1))))
@@ -3207,7 +3735,7 @@
         (assert-true (member "getdata" commands)))
       (let ((status (node-status* n)))
         (assert-equal "idle" (node-status-snapshot-sync-stage* status))
-        (assert-equal 2 (node-status-snapshot-header-count* status))
+        (assert-equal 1025 (node-status-snapshot-header-count* status))
         (assert-equal 1 (node-status-snapshot-block-count* status))
         (assert-equal 1 (node-status-snapshot-validated-block-count* status))
         (assert-equal 1 (node-status-snapshot-best-block-height* status)))
@@ -4540,7 +5068,7 @@
                     (node-status-snapshot-block-count* (node-status* n)))
       (node-close* n)))
 
-  (test "downloads missing blocks only from the best header chain"
+  (test "prioritizes the best header chain without starving another branch"
     (let* ((dir (test-data-dir))
            (n (node-open* bitcoin-regtest-chain* dir))
            (h0 (chain-config-genesis-header* bitcoin-regtest-chain*))
@@ -4567,12 +5095,12 @@
       (assert-equal 1 (length writes))
       (let ((items (inventory-message-parse
                      (p2p-envelope-payload (car writes)))))
-        (assert-equal 2 (length items))
+        (assert-equal 3 (length items))
         (assert-true
           (inventory-hash-member? (block-header-hash best-h1) items))
         (assert-true
           (inventory-hash-member? (block-header-hash best-h2) items))
-        (assert-false
+        (assert-true
           (inventory-hash-member? (block-header-hash stale-h1) items)))
       (let ((status (node-status* n)))
         (assert-equal 0 (node-status-snapshot-pending-block-count* status))

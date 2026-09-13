@@ -61,6 +61,7 @@
     block-rules block-rules?
     block-rules-connect block-rules-subsidy
     block-rules-coinbase-maturity block-rules-coinbase-script-bounds
+    block-rules-commitment-valid? block-rules-storage-valid?
     bitcoin-block-rules
     bitcoin-coinbase-script-bounds
     block-header-valid-after?
@@ -70,6 +71,7 @@
     bitcoin-max-money
     block-subsidy
     coinbase-transaction?
+    validate-regular-transaction
     verify-standard-input-script
     standard-input-script-valid?
     utxo-set-lookup
@@ -494,10 +496,11 @@
     ;;; `accept?` is called as `(accept? params previous-headers header)` and
     ;;; returns whether the header extends the chain.
     ;;;
-    ;;; `chain-work` is called as `(chain-work header block previous-work)`
-    ;;; and returns the accumulated ranking value of the chain ending at
-    ;;; `header`, given the accumulated value of its parent. `block` is the
-    ;;; validated block body when one is available and `#f` when it is not,
+    ;;; `chain-work` is called as
+    ;;; `(chain-work header height block previous-work)` and returns the
+    ;;; accumulated ranking value of the chain ending at `header`, given its
+    ;;; zero-based `height` and the accumulated value of its parent. `block` is
+    ;;; the validated block body when available and `#f` when it is not,
     ;;; so a chain whose ranking key lives in the body returns a provisional
     ;;; value for `#f` and the settled value once the body arrives. The value
     ;;; is recomputed and re-persisted when a body is validated, so a chain
@@ -528,9 +531,9 @@
                (block-header-links? (last-item previous-headers) header))))
 
     ;; Bitcoin's ranking key is hash proof-of-work, which the header carries
-    ;; in full. The body is irrelevant, so the provisional value computed at
-    ;; header ingest is already the final one and never changes.
-    (define (bitcoin-chain-work header block previous-work)
+    ;; in full. Height and body are irrelevant, so the provisional value
+    ;; computed at header ingest is already final and never changes.
+    (define (bitcoin-chain-work header height block previous-work)
       (+ previous-work (block-header-chain-work header)))
 
     ;; Bitcoin prefers the most accumulated work, and on an exact work tie the
@@ -551,7 +554,7 @@
     ;;; argument is exactly Bitcoin behavior.
     ;;;
     ;;; ```scheme
-    ;;; ((header-rules-chain-work bitcoin-header-rules) header #f 0)
+    ;;; ((header-rules-chain-work bitcoin-header-rules) header 0 #f 0)
     ;;; ```
     (define bitcoin-header-rules
       (header-rules accept?: bitcoin-header-accept?
@@ -566,8 +569,9 @@
     ;;; `#f` for genesis-parent or standalone calls without parent context. `connect`
     ;;; returns the updated UTXO set and raises on an invalid block. It is
     ;;; handed the rules record it was reached through, so the default
-    ;;; connector reads `subsidy`, `coinbase-maturity`, and
-    ;;; `coinbase-script-bounds` from the chain's own record.
+    ;;; connector reads `subsidy`, `coinbase-maturity`,
+    ;;; `coinbase-script-bounds`, and `commitment-valid?` from the chain's own
+    ;;; record.
     ;;;
     ;;; `subsidy` is called as `(subsidy height)` and returns the newly
     ;;; issued value, in the chain's smallest unit, that a coinbase may claim
@@ -578,6 +582,10 @@
     ;;; `coinbase-script-bounds` is an inclusive `(min . max)` pair of
     ;;; coinbase scriptSig byte lengths. Bitcoin uses `(2 . 100)`; a chain
     ;;; that commits data in its coinbase input raises the upper bound.
+    ;;; `commitment-valid?` verifies that the body matches the header's Merkle
+    ;;; commitment. `storage-valid?` receives the block and its serialized
+    ;;; bytes and rejects chain-specific storage abuse before hex encoding or
+    ;;; persistence.
     ;;;
     ;;; A chain that only changes emission, maturity, or coinbase size passes
     ;;; `(block-rules-connect bitcoin-block-rules)` as its own `connect` and
@@ -589,13 +597,17 @@
     ;;; (block-rules connect: (block-rules-connect bitcoin-block-rules)
     ;;;              subsidy: (lambda (height) 100000000)
     ;;;              coinbase-maturity: 1
-    ;;;              coinbase-script-bounds: (cons 2 512))
+    ;;;              coinbase-script-bounds: (cons 2 512)
+    ;;;              commitment-valid?: block-merkle-root-valid?
+    ;;;              storage-valid?: (lambda (block bytes) #t))
     ;;; ```
     (define-struct block-rules
       (connect procedure?)
       (subsidy procedure?)
       (coinbase-maturity integer?)
-      (coinbase-script-bounds pair?))
+      (coinbase-script-bounds pair?)
+      (commitment-valid? procedure?)
+      (storage-valid? procedure?))
 
     (define (rules-argument who maybe-rules)
       (cond ((null? maybe-rules)
@@ -688,10 +700,12 @@
                 (rules-argument "header-chain-work" maybe-rules))))
         ;; No bodies are available here, so every header contributes its
         ;; provisional value.
-        (let loop ((xs headers) (work 0))
+        (let loop ((xs headers) (height 0) (work 0))
           (if (null? xs)
               work
-              (loop (cdr xs) (work-of (car xs) #f work))))))
+              (loop (cdr xs)
+                    (+ height 1)
+                    (work-of (car xs) height #f work))))))
 
     (define (require-money who value)
       (require-uint who value bitcoin-max-money))
@@ -1371,7 +1385,7 @@
       (validate-consensus-params params)
       (require-uint "connect-block height" height %u32-max)
       (validate-block b)
-      (unless (block-merkle-root-valid? b)
+      (unless ((block-rules-commitment-valid? rules) b)
         (error "connect-block: invalid merkle root"))
       (validate-buried-deployment-versions params height b)
       (let* ((txs (block-transactions b))
@@ -1416,7 +1430,9 @@
       (block-rules connect: connect-block-core
                    subsidy: block-subsidy
                    coinbase-maturity: %bitcoin-coinbase-maturity
-                   coinbase-script-bounds: bitcoin-coinbase-script-bounds))
+                   coinbase-script-bounds: bitcoin-coinbase-script-bounds
+                   commitment-valid?: block-merkle-root-valid?
+                   storage-valid?: (lambda (block bytes) #t)))
 
     ;;; Connect a block using structural and UTXO validation but without
     ;;; executing standard script signature checks. This is useful for sync

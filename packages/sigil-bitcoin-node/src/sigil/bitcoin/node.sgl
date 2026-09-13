@@ -5,6 +5,7 @@
           (sigil fs)
           (sigil error)
           (sigil math)
+          (sigil list)
           (sigil string)
           (sigil time)
           (sigil sqlite)
@@ -110,7 +111,8 @@
     node-sync-configured-peer
     node-sync-with-peers
     node-sync
-    headers-for-sync-attempt)
+    headers-for-sync-attempt
+    headers-contiguous?)
   (begin
 
     (define %schema-version "1")
@@ -133,6 +135,12 @@
     (define %block-give-up-seconds 600)
     (define %transaction-request-stale-seconds 120)
     (define %validation-attempt-blocks 128)
+    ;; Defaults preserve broad Bitcoin relay behavior. Chains with much smaller
+    ;; blocks override these under their `policy` extension.
+    (define %mempool-max-transaction-bytes 4000000)
+    (define %mempool-max-bytes 300000000)
+    (define %mempool-max-count 300000)
+    (define %max-unsettled-headers 100000)
     ;; How many inventory vectors one inbound `getdata` is answered from, and
     ;; the ceiling this node's own requests are clamped to. The wire format
     ;; allows 50000, which no honest peer needs: this node asks for 16 bodies
@@ -184,7 +192,8 @@
     ;;; entry may hold `(rules . <header-rules>)` to replace Bitcoin's header
     ;;; acceptance and fork choice, or `(rules . external)` to declare that
     ;;; the rules are owned elsewhere. The `mining` entry carries mining
-    ;;; policy such as a coordination channel.
+    ;;; policy such as a coordination channel. The top-level `checkpoints`
+    ;;; entry is an ascending alist of heights and internal block-header hashes.
     ;;;
     ;;; ```scheme
     ;;; (chain-config-name bitcoin-mainnet-chain)
@@ -428,6 +437,32 @@
             (cdr entry)
             default)))
 
+    (define (chain-config-checkpoints chain)
+      (let ((checkpoints (chain-config-extension chain 'checkpoints '())))
+        (unless (list? checkpoints)
+          (error "chain checkpoints must be an ascending height/hash alist"))
+        (let loop ((xs checkpoints) (previous-height -1))
+          (unless (null? xs)
+            (let ((entry (car xs)))
+              (unless (and (pair? entry)
+                           (number? (car entry))
+                           (exact? (car entry))
+                           (integer? (car entry))
+                           (> (car entry) previous-height)
+                           (bytevector? (cdr entry))
+                           (= 32 (bytevector-length (cdr entry))))
+                (error "chain checkpoints must have ascending nonnegative heights and 32-byte hashes"))
+              (loop (cdr xs) (car entry)))))
+        checkpoints))
+
+    (define (chain-checkpoints-match? checkpoints headers)
+      (let loop ((points checkpoints) (xs headers) (height 0))
+        (cond ((or (null? points) (null? xs)) #t)
+              ((= height (caar points))
+               (and (equal? (cdar points) (block-header-hash (car xs)))
+                    (loop (cdr points) (cdr xs) (+ height 1))))
+              (else (loop points (cdr xs) (+ height 1))))))
+
     (define (extension-ref extension key default)
       (let ((entry (assoc key extension)))
         (if entry
@@ -452,17 +487,30 @@
       (: chain-config? -> list?)
       (chain-config-extension chain 'mining '()))
 
+    (define (chain-policy-limit chain key fallback)
+      (let ((value
+              (extension-ref
+                (chain-config-extension chain 'policy '())
+                key
+                fallback)))
+        (if (not (and (number? value)
+                      (exact? value)
+                      (integer? value)
+                      (> value 0)))
+            (error "chain policy limit must be a positive integer"))
+        value))
+
+    (define (chain-policy-flag chain key fallback)
+      (let ((value
+              (extension-ref
+                (chain-config-extension chain 'policy '())
+                key
+                fallback)))
+        (if (not (boolean? value))
+            (error "chain policy flag must be boolean"))
+        value))
+
     ;;; Return the header acceptance and fork-choice rules for a chain.
-    ;;;
-    ;;; A chain attaches its own rules as `(consensus (rules . <header-rules>))`
-    ;;; in `extensions`. A chain that attaches nothing uses Bitcoin's rules, so
-    ;;; every Bitcoin chain config keeps today's behavior. The symbol `external`
-    ;;; declares that the rules belong to another project, which must build a
-    ;;; chain config carrying them before a node can run.
-    ;;;
-    ;;; ```scheme
-    ;;; (header-rules? (chain-config-header-rules bitcoin-mainnet-chain))
-    ;;; ```
     (define (chain-config-header-rules chain)
       (: chain-config? -> header-rules?)
       (let ((rules (extension-ref (chain-config-extension chain 'consensus '())
@@ -633,6 +681,11 @@
       (db-ensure-column db "blocks" "request_count" "INTEGER NOT NULL DEFAULT 0")
       (db-ensure-column db "blocks" "last_error" "TEXT NOT NULL DEFAULT ''")
       (db-ensure-column db "headers" "body_known" "INTEGER NOT NULL DEFAULT 0")
+      ;; Legacy validated blocks predate the header settlement bit. Backfill
+      ;; before cache accounting can treat their headers as unsettled leaves.
+      (sqlite-run
+        db
+        "UPDATE headers SET body_known = 1 WHERE hash IN (SELECT hash FROM blocks WHERE validated = 1)")
       (sqlite-run db
                   "INSERT OR REPLACE INTO metadata(key, value) VALUES (?, ?)"
                   "schema-version"
@@ -738,27 +791,69 @@
         1))
 
     ;; Replace a header's provisional ranking value with the one its validated
-    ;; body produces. Bitcoin's rule ignores the body, so this rewrites the
-    ;; same number it already stored; a chain whose key lives in the body sees
-    ;; its real key here for the first time. Descendants keep their provisional
-    ;; values and pick this one up when their own bodies are validated, which
-    ;; happens in height order.
-    (define (db-settle-header-work db hash-text work)
+    ;; body produces.
+    (define (db-set-header-work db hash-text work)
       (require-sqlite-mutation
         (sqlite-run
           db
-          "UPDATE headers SET work = ?, body_known = 1 WHERE hash = ?"
+          "UPDATE headers SET work = ? WHERE hash = ?"
           (number->string work)
           hash-text)
         "header work update"))
 
-    ;; Preserve insertion order for rules whose equal-rank policy is first-seen.
+    (define (db-settle-header-work db hash-text work)
+      (db-set-header-work db hash-text work)
+      (require-sqlite-mutation
+        (sqlite-run
+          db
+          "UPDATE headers SET body_known = 1 WHERE hash = ?"
+          hash-text)
+        "header body-known update"))
+
+    ;; Preserve first-seen order among candidates other than the active tip.
     (define (db-all-header-rows db)
       (sqlite-query db (header-select "WHERE valid = 1 ORDER BY rowid ASC")))
 
     (define (db-header-count db)
       (let ((row (sqlite-query-row db "SELECT COUNT(*) AS count FROM headers WHERE valid = 1")))
         (if row (row-ref row "count") 0)))
+
+    (define (db-unsettled-header-count db)
+      (let ((row
+              (sqlite-query-row
+                db
+                "SELECT COUNT(*) AS count FROM headers WHERE valid = 1 AND height > 0 AND body_known = 0")))
+        (if row (row-ref row "count") 0)))
+
+    (define (db-delete-unsettled-header db hash-text)
+      (require-sqlite-mutation
+        (sqlite-run
+          db
+          "DELETE FROM blocks WHERE hash = ? AND validated = 0"
+          hash-text)
+        "unsettled block prune")
+      (require-sqlite-mutation
+        (sqlite-run
+          db
+          "DELETE FROM headers WHERE hash = ? AND body_known = 0"
+          hash-text)
+        "unsettled header prune"))
+
+    (define (db-prune-unsettled-header-leaves db max-rows needed protected-hash)
+      ;; Unsettled rows are a refetchable cache. Evict oldest leaves only after
+      ;; a new header has passed acceptance, and never evict its parent.
+      (let loop ((excess
+                   (max 0 (- (+ (db-unsettled-header-count db) needed)
+                             max-rows))))
+        (when (> excess 0)
+          (let ((row
+                  (sqlite-query-row
+                    db
+                    "SELECT h.hash AS hash FROM headers AS h LEFT JOIN headers AS child ON child.prev_hash = h.hash AND child.valid = 1 WHERE h.valid = 1 AND h.height > 0 AND h.body_known = 0 AND child.hash IS NULL AND h.hash <> ? ORDER BY h.rowid ASC LIMIT 1"
+                    protected-hash)))
+            (when row
+              (db-delete-unsettled-header db (row-ref row "hash"))
+              (loop (- excess 1)))))))
 
     (define (db-block-count db)
       (let ((row (sqlite-query-row db "SELECT COUNT(*) AS count FROM blocks WHERE block_hex IS NOT NULL")))
@@ -767,6 +862,29 @@
     (define (db-mempool-count db)
       (let ((row (sqlite-query-row db "SELECT COUNT(*) AS count FROM mempool WHERE tx_hex IS NOT NULL AND status = 'available'")))
         (if row (row-ref row "count") 0)))
+
+    (define (db-mempool-row-count db)
+      (let ((row
+              (sqlite-query-row db "SELECT COUNT(*) AS count FROM mempool")))
+        (if row (row-ref row "count") 0)))
+
+    (define (db-trim-terminal-mempool db max-rows needed)
+      ;; A disconnected peer cannot reserve table capacity forever.
+      (require-sqlite-mutation
+        (sqlite-run
+          db
+          "DELETE FROM mempool WHERE tx_hex IS NULL AND status IN ('announced', 'requested') AND updated_at <= ?"
+          (- (current-unix-second) %transaction-request-stale-seconds))
+        "mempool stale-placeholder trim")
+      (let ((excess (max 0 (- (+ (db-mempool-row-count db) needed)
+                              max-rows))))
+        (when (> excess 0)
+          (require-sqlite-mutation
+            (sqlite-run
+              db
+              "DELETE FROM mempool WHERE txid IN (SELECT txid FROM mempool WHERE status IN ('rejected', 'failed', 'confirmed', 'conflicted') ORDER BY updated_at ASC, txid ASC LIMIT ?)"
+              excess)
+            "mempool terminal-row trim"))))
 
     (define (db-mempool-status-count db status)
       (let ((row (sqlite-query-row
@@ -789,20 +907,31 @@
       (db-set-metadata db "active-chain-tip-hash" hash-text)
       (db-set-metadata db "active-chain-tip-height" (number->string height)))
 
-    (define (db-reconcile-active-chain-tip db rules genesis-hash-text)
-      ;; Older databases predate active-chain metadata. Rebuild it from the
-      ;; validated prefix on the current best-header chain at open time —
-      ;; subject to the same rule `node-validate-blocks` follows, so reopening
-      ;; a node is not a second way to walk the active chain backwards onto a
-      ;; branch whose body has not arrived.
-      (let* ((best (db-best-header-row db rules))
-             (rows (if best (db-chain-rows-to-row db best) '()))
-             (height (validated-on-best-chain-height db rows)))
-        (when (active-chain-may-follow? db rows height)
-          (let ((row (row-at-height rows height)))
-            (if row
-                (db-set-active-chain-tip db (row-ref row "hash") height)
-                (db-set-active-chain-tip db genesis-hash-text 0))))))
+    (define (db-reconcile-active-chain-tip db genesis-hash-text)
+      ;; Opening is not fork choice. Keep valid durable metadata, even when a
+      ;; different header ranks first and its bodies are already downloaded.
+      (let* ((height (metadata-number db "active-chain-tip-height" -1))
+             (active
+               (and (exact? height) (integer? height) (>= height 0)
+                    (db-header-row-by-height-and-hash
+                      db height (db-best-block-hash db))))
+             (body (and active (db-block-row db (row-ref active "hash")))))
+        (unless (and active
+                     (or (and (= height 0)
+                              (string=? (row-ref active "hash")
+                                         genesis-hash-text))
+                         (and body (= 1 (row-ref body "validated")))))
+          ;; Legacy databases have no active-tip metadata. Validated bodies,
+          ;; not today's header ranking, identify the state their UTXOs back.
+          (let ((tip
+                  (sqlite-query-row
+                    db
+                    (header-select
+                      "WHERE valid = 1 AND (hash = ? OR hash IN (SELECT hash FROM blocks WHERE validated = 1)) ORDER BY height DESC LIMIT 1")
+                    genesis-hash-text)))
+            (db-set-active-chain-tip db
+                                     (row-ref tip "hash")
+                                     (header-row-height tip))))))
 
     (define (db-peer-count db)
       (let ((row (sqlite-query-row db "SELECT COUNT(*) AS count FROM peers")))
@@ -910,16 +1039,26 @@
     ;; accumulated work then height, which is the behavior this loop had before
     ;; the rule became pluggable. Each row is converted to a candidate once,
     ;; because the conversion decodes the hash a rule may never read.
+    ;; Seed it with the durable active tip so exact ties cannot displace it.
     ;;
     ;; `unbacked` is not part of the chain's rule and is never shown to it. It
     ;; is the library's own liveness bound: a header whose body the node gave
     ;; up fetching ranks below every header that still might be backed,
     ;; whatever the rule thinks of it. With nothing given up the list is empty
     ;; and the loop is exactly the rule's own order.
-    (define (best-row rules rows unbacked)
+    (define (best-row rules rows unbacked active . maybe-max-height)
       (let ((better-chain? (header-rules-better-chain? rules))
-            (max-height (max-header-row-height rows)))
-        (let loop ((xs rows) (best #f) (best-candidate #f) (best-unbacked? #f))
+            (max-height
+              (if (null? maybe-max-height)
+                  (max-header-row-height rows)
+                  (car maybe-max-height))))
+        (let loop ((xs rows)
+                   (best active)
+                   (best-candidate
+                     (and active
+                          (header-row->chain-candidate active max-height)))
+                   (best-unbacked?
+                     (and active (row-unbacked? unbacked active))))
           (cond ((null? xs) best)
                 ((not best)
                  (loop (cdr xs)
@@ -942,7 +1081,9 @@
     (define (db-best-header-row db rules)
       (best-row rules
                 (db-all-header-rows db)
-                (db-unbacked-header-hashes db)))
+                (db-unbacked-header-hashes db)
+                (db-header-row-by-height-and-hash
+                  db (db-best-block-height db) (db-best-block-hash db))))
 
     (define (db-header-row-by-height db height)
       (sqlite-query-row
@@ -960,12 +1101,12 @@
     (define (db-child-header-rows db hash-text)
       (sqlite-query
         db
-        (header-select "WHERE prev_hash = ? AND valid = 1")
+        (header-select "WHERE prev_hash = ?")
         hash-text))
 
     (define (db-mark-header-branch-invalid db hash-text reason)
-      ;; Invalid block data makes this header and every connected descendant
-      ;; unusable for active-chain selection.
+      ;; Invalid headers make every connected descendant and body unusable
+      ;; for active-chain selection, including previously invalidated parents.
       (let loop ((queue (list (cons hash-text reason))))
         (unless (null? queue)
           (let* ((entry (car queue))
@@ -991,6 +1132,25 @@
                 (map (lambda (child)
                        (cons (row-ref child "hash") "ancestor-invalid"))
                      children)))))))
+
+    (define (db-enforce-checkpoints db checkpoints)
+      (unless (null? checkpoints)
+        (let ((active (db-header-row db (db-best-block-hash db))))
+          (unless (chain-checkpoints-match?
+                    checkpoints (db-chain-to-row db active))
+            (error "node-open: active chain conflicts with checkpoint")))
+        (for-each
+          (lambda (checkpoint)
+            (for-each
+              (lambda (row)
+                (db-mark-header-branch-invalid
+                  db (row-ref row "hash") "checkpoint-mismatch"))
+              (sqlite-query
+                db
+                "SELECT hash FROM headers WHERE height = ? AND hash <> ?"
+                (car checkpoint)
+                (hex-encode (cdr checkpoint)))))
+          checkpoints)))
 
     (define (chain-hash-member-height rows hashes)
       (cond ((null? hashes) #f)
@@ -1070,14 +1230,37 @@
                                                            "requested_by")
                                                   "")))))))))))))
 
-    (define (db-best-chain-requestable-block-rows db rules peer-key limit)
-      ;; Request blocks only for the active best-header path. Stale fork
-      ;; headers stay persisted, but they should not consume sync bandwidth.
-      (let ((rows (let ((best (db-best-header-row db rules)))
-                    (if best (db-chain-rows-to-row db best) '()))))
+    (define (block-request-count db row)
+      (let ((block-row (db-block-row db (row-ref row "hash"))))
+        (if block-row (row-ref block-row "request_count") 0)))
+
+    (define (best-path-row? row best-hashes)
+      (if (member (row-ref row "hash") best-hashes) #t #f))
+
+    (define (block-request-row-before? db best-hashes left right)
+      (let ((left-count (block-request-count db left))
+            (right-count (block-request-count db right)))
+        (or (< left-count right-count)
+            (and (= left-count right-count)
+                 (best-path-row? left best-hashes)
+                 (not (best-path-row? right best-hashes))))))
+
+    (define (db-fair-requestable-block-rows db rules peer-key limit)
+      ;; Fill the request across every attempt-count band. Preferred-path rows
+      ;; win only ties, so a stream of new untried headers cannot leave older
+      ;; candidates permanently below unused request capacity.
+      (let* ((best (db-best-header-row db rules))
+             (best-rows (if best (db-chain-rows-to-row db best) '()))
+             (best-hashes (map (lambda (row) (row-ref row "hash")) best-rows))
+             (requestable
+               (filter (lambda (row)
+                         (requestable-block-row? db peer-key row))
+                       (db-all-header-rows db))))
         (take-up-to
-          (filter (lambda (row) (requestable-block-row? db peer-key row))
-                  rows)
+          (list-sort
+            (lambda (left right)
+              (block-request-row-before? db best-hashes left right))
+            requestable)
           limit)))
 
     (define (db-mark-block-requested db hash-text height peer-key)
@@ -1169,36 +1352,63 @@
                      (cons current rows))))))
 
     (define (db-initialize-chain db chain)
-      (sqlite-run db
-                  "INSERT OR REPLACE INTO metadata(key, value) VALUES (?, ?)"
-                  "chain"
-                  (chain-config-name chain))
-      (db-ensure-metadata db "sync-stage" "idle")
-      (db-ensure-metadata db "sync-failed-stage" "")
-      (db-ensure-metadata db "sync-last-error" "")
-      (db-ensure-metadata db "run-attempts" "0")
-      (db-ensure-metadata db "run-last-result" "")
-      (db-ensure-metadata db "run-last-error" "")
-      (db-ensure-metadata db "run-mode" "")
-      (db-ensure-metadata db "run-target-iterations" "0")
-      (db-ensure-metadata db "run-completed-iterations" "0")
-      (db-ensure-metadata db "run-retry-count" "0")
-      (db-ensure-metadata db "bootstrap-last-result" "")
-      (db-ensure-metadata db "bootstrap-last-error" "")
-      (let* ((genesis (chain-config-genesis-header chain))
-             (rules (chain-config-header-rules chain))
-             (hash-text (hex-encode (chain-config-genesis-hash chain))))
-        (db-ensure-metadata db "active-chain-tip-hash" hash-text)
-        (db-ensure-metadata db "active-chain-tip-height" "0")
-        (unless (db-header-row db hash-text)
-          (db-insert-header
-            db
-            hash-text
-            (hex-encode (block-header-previous-block genesis))
-            0
-            ((header-rules-chain-work rules) genesis #f 0)
-            genesis))
-        (db-reconcile-active-chain-tip db rules hash-text)))
+      (let ((transaction-open? #f))
+        (require-sqlite-mutation
+          (sqlite-exec db "BEGIN IMMEDIATE")
+          "chain initialization transaction begin")
+        (set! transaction-open? #t)
+        (guard
+          (err
+            (#t
+             (when transaction-open? (sqlite-exec db "ROLLBACK"))
+             (raise err)))
+          (let* ((genesis (chain-config-genesis-header chain))
+                 (rules (chain-config-header-rules chain))
+                 (checkpoints (chain-config-checkpoints chain))
+                 (hash-text (hex-encode (chain-config-genesis-hash chain)))
+                 (recorded (db-metadata db "genesis-hash" ""))
+                 (roots (sqlite-query
+                          db
+                          "SELECT hash FROM headers WHERE height = 0")))
+            (when (and (not (string=? recorded ""))
+                       (not (string=? recorded hash-text)))
+              (error "node-open: database genesis does not match configured chain"))
+            (unless
+              (or (null? roots)
+                  (and (null? (cdr roots))
+                       (string=? hash-text (row-ref (car roots) "hash"))))
+              (error "node-open: database contains a different genesis; use fresh state"))
+            (sqlite-run db
+                        "INSERT OR REPLACE INTO metadata(key, value) VALUES (?, ?)"
+                        "chain"
+                        (chain-config-name chain))
+            (db-ensure-metadata db "genesis-hash" hash-text)
+            (db-ensure-metadata db "sync-stage" "idle")
+            (db-ensure-metadata db "sync-failed-stage" "")
+            (db-ensure-metadata db "sync-last-error" "")
+            (db-ensure-metadata db "run-attempts" "0")
+            (db-ensure-metadata db "run-last-result" "")
+            (db-ensure-metadata db "run-last-error" "")
+            (db-ensure-metadata db "run-mode" "")
+            (db-ensure-metadata db "run-target-iterations" "0")
+            (db-ensure-metadata db "run-completed-iterations" "0")
+            (db-ensure-metadata db "run-retry-count" "0")
+            (db-ensure-metadata db "bootstrap-last-result" "")
+            (db-ensure-metadata db "bootstrap-last-error" "")
+            (unless (db-header-row db hash-text)
+              (db-insert-header
+                db
+                hash-text
+                (hex-encode (block-header-previous-block genesis))
+                0
+                ((header-rules-chain-work rules) genesis 0 #f 0)
+                genesis))
+            (db-reconcile-active-chain-tip db hash-text)
+            (db-enforce-checkpoints db checkpoints)
+            (require-sqlite-mutation
+              (sqlite-exec db "COMMIT")
+              "chain initialization transaction commit")
+            (set! transaction-open? #f)))))
 
     (define (db-peer-row->peer row)
       (node-peer address: (row-ref row "address")
@@ -1598,9 +1808,11 @@
              (db (sqlite-open db-path)))
         (unless db
           (error "node-open: could not open SQLite database"))
-        (db-create-schema db)
-        (db-initialize-chain db chain)
-        (node config: chain data-dir: data-dir db-path: db-path db: db)))
+        (guard (err
+                (#t (sqlite-close db) (raise err)))
+          (db-create-schema db)
+          (db-initialize-chain db chain)
+          (node config: chain data-dir: data-dir db-path: db-path db: db))))
 
     ;;; Close a node database handle.
     ;;;
@@ -1715,33 +1927,57 @@
     (define (ingest-one-header n header)
       (let* ((db (node-db n))
              (rules (node-header-rules n))
-             (hash-text (header-hash-text header)))
-        (if (db-header-row db hash-text)
-            #f
+             (checkpoints (chain-config-checkpoints (node-config n)))
+             (hash-text (header-hash-text header))
+             (known (db-header-row db hash-text)))
+        (if known
+            (begin
+              (unless (or (null? checkpoints)
+                          (chain-checkpoints-match?
+                            checkpoints (db-chain-to-row db known)))
+                (error "node-ingest-headers: checkpoint mismatch"))
+              #f)
             (let* ((previous (previous-chain-for-header db header))
                    (prev-row (db-header-row db (header-prev-text header)))
                    (height (+ 1 (header-row-height prev-row)))
-                   ;; Headers-first sync has no body yet, so the rule supplies
-                   ;; a provisional value that `db-settle-header-work` replaces
-                   ;; once the body validates.
-                   (work ((header-rules-chain-work rules)
-                          header
-                          #f
-                          (header-row-work prev-row))))
+                   (checkpoint (extension-ref checkpoints height #f)))
+              (unless (and (or (not checkpoint)
+                               (string=? hash-text
+                                          (hex-encode checkpoint)))
+                           (chain-checkpoints-match? checkpoints previous))
+                (error "node-ingest-headers: checkpoint mismatch"))
               (unless (block-header-valid-after?
                         (chain-config-consensus-params (node-config n))
                         previous
                         header
                         rules)
                 (error "node-ingest-headers: invalid header"))
-              (db-insert-header db
-                                hash-text
-                                (header-prev-text header)
-                                height
-                                work
-                                header)
-              (db-mark-header-block db hash-text height)
-              #t))))
+              ;; Score only an accepted header. A custom rule may derive work
+              ;; from consensus fields that hostile input can vary cheaply.
+              (let* ((work
+                       ((header-rules-chain-work rules)
+                        header
+                        height
+                        #f
+                        (header-row-work prev-row)))
+                     (header-limit
+                       (chain-policy-limit
+                         (node-config n)
+                         'max-unsettled-headers
+                         %max-unsettled-headers))
+                     (prev-text (header-prev-text header)))
+                (db-prune-unsettled-header-leaves
+                  db header-limit 1 prev-text)
+                (when (>= (db-unsettled-header-count db) header-limit)
+                  (error "node-ingest-headers: unsettled header cache full"))
+                (db-insert-header db
+                                  hash-text
+                                  prev-text
+                                  height
+                                  work
+                                  header)
+                (db-mark-header-block db hash-text height)
+                #t)))))
 
     ;;; Validate and persist linked headers, returning the insert count.
     ;;;
@@ -2248,14 +2484,26 @@
                     address
                     port)))
 
-    (define (node-peer-failure-with-error n address port reason)
+    (define (node-peer-neutral n address port)
       (let ((now (current-unix-second)))
-        (sqlite-run (node-db n)
+        (sqlite-run
+          (node-db n)
+          "UPDATE peers SET last_seen = ?, last_attempt = ?, last_result = '', last_error = '' WHERE address = ? AND port = ?"
+          now now address port)))
+
+    (define (node-peer-failure-with-error n address port reason)
+      (let ((now (current-unix-second))
+            (db (node-db n)))
+        (sqlite-run db
                     "UPDATE peers SET failures = failures + 1, score = score - 1, last_attempt = ?, last_result = 'failure', last_error = ? WHERE address = ? AND port = ?"
                     now
                     reason
                     address
-                    port)))
+                    port)
+        (sqlite-run
+          db
+          "DELETE FROM mempool WHERE tx_hex IS NULL AND status = 'requested' AND requested_by = ?"
+          (peer-key address port))))
 
     (define (node-peer-failure n address port)
       (node-peer-failure-with-error n address port "failure"))
@@ -2384,11 +2632,12 @@
           (p2p-envelope
             magic: (chain-config-magic chain)
             command: "getheaders"
-            payload: (getheaders-message-serialize
-                       (getheaders-message
-                         version: (chain-config-protocol-version chain)
-                         locator-hashes: (node-header-locator n)
-                         stop-hash: %zero32))))))
+            payload:
+              (getheaders-message-serialize
+                (getheaders-message
+                  version: (chain-config-protocol-version chain)
+                  locator-hashes: (node-header-locator n)
+                  stop-hash: %zero32))))))
 
     (define (write-getaddr n write-envelope)
       (write-envelope
@@ -2400,6 +2649,13 @@
 
     (define (headers-for-sync-attempt headers)
       (take-up-to headers %node-headers-per-sync-attempt))
+
+    (define (headers-contiguous? headers)
+      (or (null? headers)
+          (let loop ((previous (car headers)) (remaining (cdr headers)))
+            (or (null? remaining)
+                (and (block-header-links? previous (car remaining))
+                     (loop (car remaining) (cdr remaining)))))))
 
     (define (sync-headers-loop n read-envelope write-envelope max-steps peer-name)
       (write-getaddr n write-envelope)
@@ -2414,6 +2670,9 @@
               (if (string=? "headers" (p2p-envelope-command envelope))
                   (let* ((headers (headers-message-parse
                                     (p2p-envelope-payload envelope)))
+                         (_ (unless (headers-contiguous? headers)
+                              (error
+                                "node-sync-headers: non-contiguous headers response")))
                          (attempt-headers
                            (headers-for-sync-attempt headers))
                          (count (node-ingest-headers n attempt-headers))
@@ -2440,7 +2699,7 @@
     (define (pending-block-rows n peer-name max-blocks)
       ;; Never ask for more bodies in one `getdata` than a peer running this
       ;; code will answer, however large a batch the caller configured.
-      (db-best-chain-requestable-block-rows
+      (db-fair-requestable-block-rows
         (node-db n)
         (node-header-rules n)
         peer-name
@@ -2915,6 +3174,36 @@
         max-steps
         max-tx))
 
+    (define (policy-prevout db op txid-text)
+      (let ((row (db-active-utxo-row db op)))
+        (if row
+            (txout value: (row-ref row "value")
+                   script-pubkey: (hex-decode (row-ref row "script_pubkey")))
+            (mempool-parent-output db op txid-text))))
+
+    (define (transaction-standard-scripts-valid? db tx)
+      (let ((txid-text (hex-encode (transaction-txid tx))))
+        (let collect ((inputs (transaction-inputs tx)) (prevouts '()))
+          (if (null? inputs)
+              (let ((ordered (reverse prevouts)))
+                (let verify ((remaining ordered) (index 0))
+                  (or (null? remaining)
+                      (and (standard-input-script-valid?
+                             tx index (car remaining) ordered)
+                           (verify (cdr remaining) (+ index 1))))))
+              (let ((output
+                      (policy-prevout
+                        db
+                        (txin-previous-output (car inputs))
+                        txid-text)))
+                (and output
+                     (collect (cdr inputs) (cons output prevouts))))))))
+
+    (define (regular-transaction-structurally-valid? tx)
+      (guard (err (else #f))
+        (validate-regular-transaction tx)
+        #t))
+
     (define (node-outpoint=? left right)
       (and (= (outpoint-index left) (outpoint-index right))
            (equal? (outpoint-txid left) (outpoint-txid right))))
@@ -3031,29 +3320,123 @@
                         db tx (row-ref row "announced_by") failure)
                       (loop (cdr rows) #t))))))))
 
-    ;;; Persist a transaction in the local mempool cache.
-    ;;;
-    ;;; Basic mempool policy rejects coinbase transactions, missing or immature
-    ;;; inputs, conflicting spends, duplicate inputs, and transactions spending
-    ;;; more than their active UTXO or mempool parent inputs.
-    ;;;
-    ;;; ```scheme
-    ;;; (node-store-transaction n tx "peer")
-    ;;; ```
+    (define (transient-mempool-rejection tx reason)
+      (node-mempool-entry txid: (hex-encode (transaction-txid tx))
+                          status: "rejected"
+                          last-error: reason))
+
+    (define (mempool-cap-failure db txid-text serialized chain)
+      (let* ((row
+               (sqlite-query-row
+                 db
+                 "SELECT COUNT(*) AS count, COALESCE(SUM(length(tx_hex) / 2), 0) AS bytes FROM mempool WHERE tx_hex IS NOT NULL AND status = 'available' AND txid <> ?"
+                 txid-text))
+             (count (row-ref row "count"))
+             (bytes (row-ref row "bytes"))
+             (size (bytevector-length serialized)))
+        (cond
+          ((> size
+              (chain-policy-limit
+                chain 'max-mempool-transaction-bytes
+                %mempool-max-transaction-bytes))
+           "transaction-oversize")
+          ((>= count
+               (chain-policy-limit
+                 chain 'max-mempool-count %mempool-max-count))
+           "mempool-full")
+          ((> (+ bytes size)
+              (chain-policy-limit
+                chain 'max-mempool-bytes %mempool-max-bytes))
+           "mempool-full")
+          (else ""))))
+
+    (define (mempool-table-room? db chain txid-text)
+      (if (db-mempool-row db txid-text)
+          #t
+          (let ((max-rows
+                  (chain-policy-limit
+                    chain 'max-mempool-count %mempool-max-count)))
+            (db-trim-terminal-mempool db max-rows 1)
+            (< (db-mempool-row-count db) max-rows))))
+
+    (define (inventory-with-mempool-room db chain items)
+      (let* ((max-rows
+               (chain-policy-limit
+                 chain 'max-mempool-count %mempool-max-count))
+             (_ (db-trim-terminal-mempool db max-rows (length items)))
+             (room (max 0 (- max-rows (db-mempool-row-count db)))))
+        (let loop ((remaining items) (available room) (out '()))
+          (if (null? remaining)
+              (reverse out)
+              (let* ((item (car remaining))
+                     (known?
+                       (db-mempool-row
+                         db (hex-encode (inventory-vector-hash item)))))
+                (cond (known?
+                       (loop (cdr remaining) available (cons item out)))
+                      ((> available 0)
+                       (loop (cdr remaining)
+                             (- available 1)
+                             (cons item out)))
+                      (else
+                        (loop (cdr remaining) available out))))))))
+
+    ;;; Persist a bounded transaction in the local mempool cache.
     (define (node-store-transaction n tx source)
       (: node? transaction? string? -> node-mempool-entry?)
-      (let ((db (node-db n)))
-        (if (coinbase-transaction? tx)
-            (db-reject-transaction db tx source "coinbase")
-            (let* ((coinbase-maturity
-                     (block-rules-coinbase-maturity
-                       (chain-config-block-rules (node-config n))))
-                   (failure
-                     (transaction-input-policy-failure
-                       db tx coinbase-maturity)))
-              (if (string=? failure "")
-                  (db-store-transaction db tx source)
-                  (db-reject-transaction db tx source failure))))))
+      (let* ((db (node-db n))
+             (chain (node-config n))
+             (serialized (transaction-serialize tx))
+             (txid-text (hex-encode (transaction-txid tx)))
+             (transaction-open? #f))
+        (require-sqlite-mutation
+          (sqlite-exec db "BEGIN IMMEDIATE")
+          "mempool transaction begin")
+        (set! transaction-open? #t)
+        (guard
+          (err
+            (#t
+             (when transaction-open? (sqlite-exec db "ROLLBACK"))
+             (raise err)))
+          (let* ((room? (mempool-table-room? db chain txid-text))
+                 (cap-failure
+                   (if room?
+                       (mempool-cap-failure db txid-text serialized chain)
+                       "mempool-full"))
+                 (result
+                   (cond
+                     ((not (string=? cap-failure ""))
+                      (transient-mempool-rejection tx cap-failure))
+                     ((coinbase-transaction? tx)
+                      (db-reject-transaction db tx source "coinbase"))
+                     ((not (regular-transaction-structurally-valid? tx))
+                      (db-reject-transaction
+                        db tx source "malformed-transaction"))
+                     (else
+                       (let* ((coinbase-maturity
+                                (block-rules-coinbase-maturity
+                                  (chain-config-block-rules chain)))
+                              (policy-failure
+                                (transaction-input-policy-failure
+                                  db tx coinbase-maturity))
+                              (failure
+                                (if (and (string=? policy-failure "")
+                                         (chain-policy-flag
+                                           chain 'verify-mempool-scripts? #f)
+                                         (not
+                                           (transaction-standard-scripts-valid?
+                                             db tx)))
+                                    "invalid-script"
+                                    policy-failure)))
+                         (if (string=? failure "")
+                             (db-store-transaction db tx source)
+                             (db-reject-transaction
+                               db tx source failure)))))))
+            (require-sqlite-mutation
+              (sqlite-exec db "COMMIT")
+              "mempool transaction commit")
+            (set! transaction-open? #f)
+            result))))
 
     ;;; Request announced transaction inventory that is not already stored.
     ;;;
@@ -3065,23 +3448,36 @@
       (when (<= max-tx 0)
         (error "node-request-transactions: max-tx must be positive"))
       (let* ((db (node-db n))
-             ;; Callers pass the wire limit (50000) as `max-tx`; clamp it so
-             ;; this node never emits a `getdata` past what it would serve.
-             (requestable (requestable-transaction-inventory
-                            db
-                            items
-                            peer-name
-                            (min max-tx %getdata-max-items))))
-        (mark-transaction-announcements db items peer-name)
-        (if (null? requestable)
-            0
-            (begin
-              (mark-requested-transaction-inventory db requestable peer-name)
+             (chain (node-config n))
+             (transaction-open? #f))
+        (require-sqlite-mutation
+          (sqlite-exec db "BEGIN IMMEDIATE")
+          "transaction request begin")
+        (set! transaction-open? #t)
+        (guard
+          (err
+            (#t
+             (when transaction-open? (sqlite-exec db "ROLLBACK"))
+             (raise err)))
+          (let* ((requestable
+                   (requestable-transaction-inventory
+                     db items peer-name
+                     (min max-tx %getdata-max-items)))
+                 (bounded
+                   (inventory-with-mempool-room db chain requestable)))
+            ;; Persist only inventory this node actually requests.
+            (mark-transaction-announcements db bounded peer-name)
+            (mark-requested-transaction-inventory db bounded peer-name)
+            (require-sqlite-mutation
+              (sqlite-exec db "COMMIT")
+              "transaction request commit")
+            (set! transaction-open? #f)
+            (unless (null? bounded)
               (write-envelope
-                (p2p-envelope magic: (chain-config-magic (node-config n))
+                (p2p-envelope magic: (chain-config-magic chain)
                               command: "getdata"
-                              payload: (getdata-message requestable)))
-              (length requestable)))))
+                              payload: (getdata-message bounded))))
+            (length bounded)))))
 
     ;;; Process transaction relay envelopes during sync.
     ;;;
@@ -3124,25 +3520,67 @@
                  peer-name))
               (else 0))))
 
-    ;;; Persist a block and mark it downloaded.
+
+    ;;; Persist a downloaded block, preserving an identical validated body.
     ;;;
     ;;; ```scheme
     ;;; (node-store-block n block)
     ;;; ```
     (define (node-store-block n b)
       (: node? block? -> node-block-info?)
-      (let* ((header (block-header-field b))
+      (let* ((db (node-db n))
+             (header (block-header-field b))
              (hash-text (header-hash-text header))
-             (row (db-header-row (node-db n) hash-text)))
-        (unless row
-          (error "node-store-block: block header is unknown"))
-        (db-set-block-status (node-db n)
-                             hash-text
-                             (header-row-height row)
-                             "downloaded"
-                             (hex-encode (block-serialize b))
-                             #f)
-        (db-block-info (db-block-row (node-db n) hash-text))))
+             (header-hex (hex-encode (block-header-serialize header)))
+             (serialized (block-serialize b))
+             (rules (chain-config-block-rules (node-config n)))
+             (commitment-valid? (block-rules-commitment-valid? rules))
+             (storage-valid? (block-rules-storage-valid? rules))
+             (transaction-open? #f))
+        (unless (storage-valid? b serialized)
+          (error "node-store-block: block rejected by chain storage policy"))
+        (unless (commitment-valid? b)
+          (error "node-store-block: block body does not match header commitment"))
+        (guard
+          (err
+            (#t
+             (when transaction-open? (sqlite-exec db "ROLLBACK"))
+             (raise err)))
+          (require-sqlite-mutation
+            (sqlite-exec db "BEGIN IMMEDIATE")
+            "block storage transaction begin")
+          (set! transaction-open? #t)
+          (let ((row (db-header-row db hash-text)))
+            (unless row
+              (error "node-store-block: block header is unknown"))
+            ;; A committed body supplies the chain's provisional body-derived
+            ;; rank before full validation. This lets an in-hand better sibling
+            ;; be selected for validation without trusting a bodyless claim.
+            (provision-header-work-from-body n row b)
+            (let* ((block-hex (hex-encode serialized))
+                   (stored (db-block-row db hash-text))
+                   (result
+                     (if (and stored (= 1 (row-ref stored "validated")))
+                         (begin
+                           (unless
+                             (and (string=? (row-ref row "header_hex")
+                                            header-hex)
+                                  (equal? (row-ref stored "block_hex") block-hex))
+                             (error "node-store-block: conflicting validated block"))
+                           (db-block-info stored))
+                         (begin
+                           (db-set-block-status db
+                                                hash-text
+                                                (header-row-height row)
+                                                "downloaded"
+                                                block-hex
+                                                #f)
+                           (db-block-info (db-block-row db hash-text))))))
+              (require-sqlite-mutation
+                (sqlite-exec db "COMMIT")
+                "block storage transaction commit")
+              (set! transaction-open? #f)
+              result)))))
 
     ;;; Request missing blocks and persist received block payloads.
     ;;;
@@ -3213,10 +3651,10 @@
                                       ;; out of batch order. Store any block
                                       ;; whose header is known; unknown headers
                                       ;; still fail through `node-store-block`.
-                                      (node-store-block n b)
-                                      (loop (- remaining 1)
-                                            (+ stored 1)
-                                            failed))))
+                                      (node-store-block n b)))
+                                  (loop (- remaining 1)
+                                        (+ stored 1)
+                                        failed))
                                  ((string=? "notfound" (p2p-envelope-command envelope))
                                   (let ((count (mark-notfound-inventory
                                                  (node-db n)
@@ -3357,19 +3795,67 @@
             ((= height (header-row-height (car rows))) (car rows))
             (else (row-at-height (cdr rows) height))))
 
-    ;; The block body is only available here, so this is where a chain that
-    ;; ranks by something the header does not carry learns its real value.
-    (define (settle-header-work n row b)
+    (define (ranked-row-body db row)
+      (let ((block-row (db-block-row db (row-ref row "hash"))))
+        (cond ((and block-row (row-ref block-row "block_hex"))
+               (block-parse (hex-decode (row-ref block-row "block_hex"))))
+              ((header-row-body-known? row)
+               (error "node-validate-blocks: settled header body missing"))
+              (else #f))))
+
+    (define (string-pair-ref pairs key)
+      (cond ((null? pairs) #f)
+            ((string=? key (caar pairs)) (car pairs))
+            (else (string-pair-ref (cdr pairs) key))))
+
+    (define (rebase-descendant-work n parent-hash parent-work)
+      (let ((db (node-db n))
+            (work-rule (header-rules-chain-work (node-header-rules n))))
+        ;; Parents are inserted before children. One forward pass propagates
+        ;; every changed cumulative value through this parent's whole subtree.
+        (let loop ((rows (db-all-header-rows db))
+                   (rebased (list (cons parent-hash parent-work))))
+          (unless (null? rows)
+            (let* ((row (car rows))
+                   (parent
+                     (string-pair-ref rebased (row-ref row "prev_hash"))))
+              (if parent
+                  (let ((work
+                          (work-rule
+                            (header-row->header row)
+                            (header-row-height row)
+                            (ranked-row-body db row)
+                            (cdr parent))))
+                    (unless (= work (header-row-work row))
+                      (db-set-header-work db (row-ref row "hash") work))
+                    (loop (cdr rows)
+                          (cons (cons (row-ref row "hash") work) rebased)))
+                  (loop (cdr rows) rebased)))))))
+
+    (define (header-work-from-body n row b)
       (let* ((db (node-db n))
              (prev-row (db-header-row db (row-ref row "prev_hash")))
              (previous-work (if prev-row (header-row-work prev-row) 0)))
-        (db-settle-header-work
-          db
-          (row-ref row "hash")
-          ((header-rules-chain-work (node-header-rules n))
-           (header-row->header row)
-           b
-           previous-work))))
+        ((header-rules-chain-work (node-header-rules n))
+         (header-row->header row)
+         (header-row-height row)
+         b
+         previous-work)))
+
+    ;; Rank a committed in-hand body so a candidate better than the active
+    ;; chain can reach validation. `body_known` remains false until validation.
+    (define (provision-header-work-from-body n row b)
+      (let ((work (header-work-from-body n row b)))
+        (unless (= work (header-row-work row))
+          (db-set-header-work (node-db n) (row-ref row "hash") work)
+          (rebase-descendant-work n (row-ref row "hash") work))))
+
+    ;; Mark a validated body's ranking value final, then rebase descendants.
+    (define (settle-header-work n row b)
+      (let ((work (header-work-from-body n row b)))
+        (db-settle-header-work (node-db n) (row-ref row "hash") work)
+        (unless (= work (header-row-work row))
+          (rebase-descendant-work n (row-ref row "hash") work))))
 
     ;; Resolve parent bodies by the current header's persisted previous hash,
     ;; never from process-local state or a height-only lookup across forks.
@@ -3462,36 +3948,56 @@
                           (if (row-ref block-row "block_hex") #t #f)
                           (loop (cdr xs)))))))))
 
-    ;; "Which chain should I download?" and "which chain have I validated?"
-    ;; are two questions, and only the first one is answerable from headers.
-    ;;
-    ;; Header ranking has to stay body-blind, or headers-first sync is
-    ;; circular: a better sibling would never be fetched, so it could never be
-    ;; validated, so it could never win. That is why `db-best-header-row` does
-    ;; not consult `body-known?`.
-    ;;
-    ;; The ACTIVE chain is the other question, and it has no such excuse. It
-    ;; may follow the header chain forward one downloaded body at a time, but
-    ;; an atomic reorg can start only when every replacement body is in hand.
-    ;; Otherwise a bodyless sibling tail would repeatedly roll back the same
-    ;; prefix without allowing block sync to fetch the gap.
-    ;;
-    ;; Bitcoin is unaffected: a header that outranks the active tip there
-    ;; carries more proof-of-work than the chain being displaced, so this is a
-    ;; bound on what an incomplete branch can do, not on fork choice.
     (define (active-chain-may-follow? db rows height)
       (or (>= height (db-best-block-height db))
           (all-block-bodies-in-hand-after-height? db rows height)))
 
-    ;;; Return true when the next best-chain block is downloaded and ready.
-    ;;;
-    ;;; ```scheme
-    ;;; (node-validation-ready? n)
-    ;;; ```
+    ;; Header rank schedules downloads; an in-hand body-derived rank schedules
+    ;; validation. Keeping those queues distinct prevents a withheld header
+    ;; from blocking a valid sibling whose body is already available.
+    ;;
+    ;; Reorganizations remain atomic: a replacement branch is actionable only
+    ;; when every body after its common validated prefix is in hand.
+    (define (unsettled-body-in-hand? db row)
+      (and (not (header-row-body-known? row))
+           (let ((block-row (db-block-row db (row-ref row "hash"))))
+             (and block-row
+                  (if (row-ref block-row "block_hex") #t #f)))))
+
+    (define (validation-candidate-actionable? db row)
+      (let* ((rows (db-chain-rows-to-row db row))
+             (height (validated-on-best-chain-height db rows)))
+        (and (next-block-body-in-hand? db rows height)
+             (active-chain-may-follow? db rows height))))
+
+    (define (validation-chain-rows n)
+      (let* ((db (node-db n))
+             (rules (node-header-rules n))
+             (all-rows (db-all-header-rows db))
+             (active
+               (db-header-row-by-height-and-hash
+                 db (db-best-block-height db) (db-best-block-hash db)))
+             (candidates
+               (filter
+                 (lambda (row)
+                   (and (unsettled-body-in-hand? db row)
+                        (validation-candidate-actionable? db row)))
+                 all-rows))
+             (winner
+               (best-row rules candidates '() active
+                         (max-header-row-height all-rows))))
+        (if (and winner
+                 (or (not active)
+                     (not (string=? (row-ref winner "hash")
+                                    (row-ref active "hash")))))
+            (db-chain-rows-to-row db winner)
+            (best-chain-rows n))))
+
+    ;;; Return true when the next selected block is downloaded and ready.
     (define (node-validation-ready? n)
       (: node? -> boolean?)
       (let* ((db (node-db n))
-             (rows (best-chain-rows n))
+             (rows (validation-chain-rows n))
              (height (validated-on-best-chain-height db rows)))
         (and (next-block-body-in-hand? db rows height)
              (active-chain-may-follow? db rows height))))
@@ -3509,30 +4015,37 @@
     (define (node-validate-blocks n . maybe-limit)
       (: node? integer? ... -> integer?)
       (let* ((limit (if (null? maybe-limit) #f (car maybe-limit)))
-             (db (node-db n)))
-        (db-set-sync-stage db "validation")
-        (let* ((rows (best-chain-rows n))
-               (resume-height (validated-on-best-chain-height db rows))
-               (active-height (db-best-block-height db))
-               (reorg? (< resume-height active-height)))
-          (if (not (active-chain-may-follow? db rows resume-height))
-              ;; The best header chain leads somewhere this node cannot follow
-              ;; yet. Downloading still targets it; the validated chain stays
-              ;; exactly where it is rather than being torn down for a promise.
-              (begin
-                (db-set-sync-stage db "idle")
-                0)
-              (let ((transaction-open? #f))
-                (require-sqlite-mutation
-                  (sqlite-exec db "BEGIN IMMEDIATE")
-                  "validation transaction begin")
-                (set! transaction-open? #t)
-                (guard (err
-                        (else
-                         (when transaction-open?
-                           (rollback-validation-transaction db)
-                           (set! transaction-open? #f))
-                         (raise err)))
+             (db (node-db n))
+             (transaction-open? #f))
+        (require-sqlite-mutation
+          (sqlite-exec db "BEGIN IMMEDIATE")
+          "validation transaction begin")
+        (set! transaction-open? #t)
+        (guard (err
+                (else
+                 (when transaction-open?
+                   (rollback-validation-transaction db)
+                   (set! transaction-open? #f))
+                 (raise err)))
+          ;; Choose the branch only after holding the writer lock. Another
+          ;; process may have activated a stronger branch while this process
+          ;; was waiting for the database.
+          (db-set-sync-stage db "validation")
+          (let* ((rows (validation-chain-rows n))
+                 (resume-height (validated-on-best-chain-height db rows))
+                 (active-height (db-best-block-height db))
+                 (reorg? (< resume-height active-height)))
+            (if (not (active-chain-may-follow? db rows resume-height))
+                ;; The best header chain leads somewhere this node cannot
+                ;; follow yet. Keep the validated chain intact.
+                (begin
+                  (db-set-sync-stage db "idle")
+                  (require-sqlite-mutation
+                    (sqlite-exec db "COMMIT")
+                    "validation transaction commit")
+                  (set! transaction-open? #f)
+                  0)
+                (begin
                   (db-rollback-active-chain-to-height db resume-height)
                   (let ((resume-row (row-at-height rows resume-height)))
                     (when resume-row
@@ -3669,110 +4182,118 @@
       (db-clear-sync-failure (node-db n))
       (node-status n))
 
-    ;;; Handshake with a peer, then download and validate currently pending blocks.
-    ;;;
-    ;;; Use this after a bounded header sync has already persisted headers and
-    ;;; the caller wants to exercise the block path without waiting for another
-    ;;; full header walk.
-    ;;;
-    ;;; ```scheme
-    ;;; (node-fetch-blocks-with-peer n "127.0.0.1" 18444 read write 64 1)
-    ;;; ```
-    (define (node-fetch-blocks-with-peer n address port read-envelope write-envelope max-steps max-blocks)
-      (: node? string? integer? procedure? procedure? integer? integer? -> node-status-snapshot?)
-      (node-ensure-peer n address port)
-      (guard (err
-              (else
-               (node-peer-failure-with-error
-                 n
-                 address
-                 port
-                 (db-metadata (node-db n) "sync-last-error" "sync failed"))
-               (raise err)))
-        (let* ((start (node-status-snapshot-best-height (node-status n)))
-               (session (make-node-session n start)))
-          (db-set-sync-stage (node-db n) "handshake")
+    (define (validate-peer-blocks n)
+      (db-clear-sync-failure (node-db n))
+      (let ((validated
+              (node-validate-blocks n %validation-attempt-blocks)))
+        (let ((status (node-status n)))
+          (when (string=? "validation"
+                          (node-status-snapshot-sync-failed-stage status))
+            (error
+              (string-append "peer supplied an invalid block: "
+                             (node-status-snapshot-sync-last-error status)))))
+        validated))
+
+    (define (download-peer-blocks n peer-name read-envelope write-envelope
+                                  max-steps max-blocks)
+      (let* ((wanted?
+               (and (> max-blocks 0)
+                    (pair? (pending-block-rows n peer-name max-blocks))))
+             (stored
+               (node-download-block-batches-for-peer
+                 n peer-name read-envelope write-envelope
+                 max-steps max-blocks)))
+        (when (and wanted? (= stored 0))
+          (error "peer supplied none of the requested block bodies"))
+        stored))
+
+    ;;; Handshake with a peer, then download and validate pending blocks.
+    (define (node-fetch-blocks-with-peer n address port read-envelope
+                                         write-envelope max-steps max-blocks)
+      (: node? string? integer? procedure? procedure? integer? integer?
+         -> node-status-snapshot?)
+      (let ((before (node-sync-progress-snapshot n)))
+        (node-ensure-peer n address port)
+        (guard (err
+                (else
+                 (node-peer-failure-with-error
+                   n address port
+                   (db-metadata (node-db n) "sync-last-error" "sync failed"))
+                 (raise err)))
+          (let* ((start (node-status-snapshot-best-height (node-status n)))
+                 (session (make-node-session n start)))
+            (db-set-sync-stage (node-db n) "handshake")
+            (guard (err
+                    (else
+                     (db-set-sync-failure
+                       (node-db n)
+                       "handshake"
+                       (stage-failure-reason "handshake failed" err))
+                     (raise err)))
+              (p2p-session-handshake read-envelope write-envelope
+                                     session max-steps)))
           (guard (err
                   (else
                    (db-set-sync-failure
                      (node-db n)
-                     "handshake"
-                     (stage-failure-reason "handshake failed" err))
+                     "block-download"
+                     (stage-failure-reason "block download failed" err))
                    (raise err)))
-            (p2p-session-handshake read-envelope
-                                   write-envelope
-                                   session
-                                   max-steps)))
-        (guard (err
-                (else
-                 (db-set-sync-failure
-                   (node-db n)
-                   "block-download"
-                   (stage-failure-reason "block download failed" err))
-                 (raise err)))
-          (node-download-block-batches-for-peer n
-                                                (peer-key address port)
-                                                read-envelope
-                                                write-envelope
-                                                max-steps
-                                                max-blocks))
-        (guard (err
-                (else
-                 (db-set-sync-failure
-                   (node-db n)
-                   "validation"
-                   (stage-failure-reason "validation failed" err))
-                 (raise err)))
-          (node-validate-blocks n %validation-attempt-blocks))
-        (db-clear-sync-failure (node-db n))
-        (node-peer-success n address port)
-        (node-status n)))
+            (download-peer-blocks n (peer-key address port)
+                                  read-envelope write-envelope
+                                  max-steps max-blocks))
+          (guard (err
+                  (else
+                   (db-set-sync-failure
+                     (node-db n)
+                     "validation"
+                     (stage-failure-reason "validation failed" err))
+                   (raise err)))
+            (validate-peer-blocks n))
+          (db-clear-sync-failure (node-db n))
+          (if (node-sync-progress-made? before n)
+              (node-peer-success n address port)
+              (node-peer-neutral n address port))
+          (node-status n))))
 
     ;;; Run a sync attempt for a persisted peer and update peer score.
-    ;;;
-    ;;; ```scheme
-    ;;; (node-sync-with-peer n "127.0.0.1" 18444 read write 64 16)
-    ;;; ```
-    (define (node-sync-with-peer n address port read-envelope write-envelope max-steps max-blocks)
-      (: node? string? integer? procedure? procedure? integer? integer? -> node-status-snapshot?)
-      (node-ensure-peer n address port)
-      (guard (err
-              (else
-               (node-peer-failure-with-error
-                 n
-                 address
-                 port
-                 (db-metadata (node-db n) "sync-last-error" "sync failed"))
-               (raise err)))
-        (node-sync-headers-for-peer n
-                                    read-envelope
-                                    write-envelope
-                                    max-steps
-                                    (peer-key address port))
+    (define (node-sync-with-peer n address port read-envelope write-envelope
+                                 max-steps max-blocks)
+      (: node? string? integer? procedure? procedure? integer? integer?
+         -> node-status-snapshot?)
+      (let ((before (node-sync-progress-snapshot n)))
+        (node-ensure-peer n address port)
         (guard (err
                 (else
-                 (db-set-sync-failure
-                   (node-db n)
-                   "block-download"
-                   (stage-failure-reason "block download failed" err))
+                 (node-peer-failure-with-error
+                   n address port
+                   (db-metadata (node-db n) "sync-last-error" "sync failed"))
                  (raise err)))
-          (node-download-block-batches-for-peer n
-                                                (peer-key address port)
-                                                read-envelope
-                                                write-envelope
-                                                max-steps
-                                                max-blocks))
-        (guard (err
-                (else
-                 (db-set-sync-failure
-                   (node-db n)
-                   "validation"
-                   (stage-failure-reason "validation failed" err))
-                 (raise err)))
-          (node-validate-blocks n %validation-attempt-blocks))
-        (db-clear-sync-failure (node-db n))
-        (node-peer-success n address port)
-        (node-status n)))
+          (node-sync-headers-for-peer n read-envelope write-envelope max-steps
+                                      (peer-key address port))
+          (guard (err
+                  (else
+                   (db-set-sync-failure
+                     (node-db n)
+                     "block-download"
+                     (stage-failure-reason "block download failed" err))
+                   (raise err)))
+            (download-peer-blocks n (peer-key address port)
+                                  read-envelope write-envelope
+                                  max-steps max-blocks))
+          (guard (err
+                  (else
+                   (db-set-sync-failure
+                     (node-db n)
+                     "validation"
+                     (stage-failure-reason "validation failed" err))
+                   (raise err)))
+            (validate-peer-blocks n))
+          (db-clear-sync-failure (node-db n))
+          (if (node-sync-progress-made? before n)
+              (node-peer-success n address port)
+              (node-peer-neutral n address port))
+          (node-status n))))
 
     (define (take-up-to items count)
       (let loop ((xs items) (remaining count) (out '()))
@@ -3837,13 +4358,11 @@
           #f))
 
     (define (node-sync-progress-snapshot n)
+      ;; Only durable active-chain movement is useful progress. Raw headers and
+      ;; unvalidated bodies are bounded cache churn and cannot suppress retry
+      ;; backoff or earn peer score.
       (let ((status (node-status n)))
-        (list (node-status-snapshot-best-hash status)
-              (node-status-snapshot-best-height status)
-              (node-status-snapshot-header-count status)
-              (node-status-snapshot-block-count status)
-              (node-status-snapshot-validated-block-count status)
-              (node-status-snapshot-best-block-height status)
+        (list (node-status-snapshot-best-block-height status)
               (node-status-snapshot-best-block-hash status))))
 
     (define (node-sync-progress-made? before n)
@@ -3854,26 +4373,26 @@
           (> (node-status-snapshot-requested-block-count status) 0)))
 
     (define (yield-progress-status n address port before)
-      ;; Live peers can advance headers or blocks and then time out while the
-      ;; node asks for more. Preserve the useful progress as a bounded sync
-      ;; yield, but do not hide consensus validation failures.
-      (let ((status (node-status n)))
-        (if (and (node-sync-progress-made? before n)
-                 (not (string=? "validation"
-                                (node-status-snapshot-sync-failed-stage
-                                  status))))
-            (begin
-              (node-validate-blocks n %validation-attempt-blocks)
-              (when (string=? "validation"
-                              (node-status-snapshot-sync-failed-stage
-                                (node-status n)))
-                (error (node-status-snapshot-sync-last-error
-                         (node-status n))))
-              (db-set-sync-stage (node-db n) "idle")
-              (db-clear-sync-failure (node-db n))
-              (node-peer-success n address port)
-              (node-status n))
-            #f)))
+      ;; A partial download may have stored enough bodies to advance the active
+      ;; chain. Validate first; raw cache writes alone never erase the failure
+      ;; or earn peer score.
+      (if (string=? "validation"
+                    (node-status-snapshot-sync-failed-stage (node-status n)))
+          #f
+          (begin
+            (node-validate-blocks n %validation-attempt-blocks)
+            (when (string=? "validation"
+                            (node-status-snapshot-sync-failed-stage
+                              (node-status n)))
+              (error (node-status-snapshot-sync-last-error
+                       (node-status n))))
+            (if (node-sync-progress-made? before n)
+                (begin
+                  (db-set-sync-stage (node-db n) "idle")
+                  (db-clear-sync-failure (node-db n))
+                  (node-peer-success n address port)
+                  (node-status n))
+                #f))))
 
     (define (sync-peer-via-connector n peer connect-peer max-steps max-blocks)
       (let ((address (node-peer-address peer))
